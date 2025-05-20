@@ -1,6 +1,5 @@
 streamlit
 pandas
-lightgbm
 requests
 pybaseball
 joblib
