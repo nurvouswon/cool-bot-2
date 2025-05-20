@@ -1,6 +1,6 @@
 streamlit
-pybaseball
 pandas
-scikit-learn
+numpy
 requests
+lightgbm
 joblib
