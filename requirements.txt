@@ -1,0 +1,6 @@
+streamlit
+pybaseball
+pandas
+scikit-learn
+requests
+joblib
