@@ -1,4 +1,6 @@
 import streamlit as st
+st.write("DEBUG secrets:", st.secrets)
+import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
 from pybaseball import statcast, playerid_reverse_lookup, playerid_lookup, statcast_batter, statcast_pitcher
