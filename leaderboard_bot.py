@@ -1,217 +1,223 @@
 import streamlit as st
 import pandas as pd
+import requests
 from datetime import datetime, timedelta
-from pybaseball import statcast, playerid_reverse_lookup, playerid_lookup, statcast_batter, statcast_pitcher
-from pybaseball.lahman import people
-import requests, time
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report
+from io import BytesIO
 import joblib
-import unicodedata
 
-# ====== SETTINGS ======
-API_KEY = st.secrets["general"]["weather_api"]  # <-- uses .streamlit/secrets.toml
-
-# Update this with any other park factors you use
+# --- Park Factors & City Map (expand as needed)
 PARK_FACTORS = {
-    "Coors Field": 1.30,
-    "Great American Ball Park": 1.26,
-    "Yankee Stadium": 1.19,
-    "Fenway Park": 0.97,
-    # Add more as needed...
+    "Yankee Stadium": 1.19, "Fenway Park": 0.97, "Tropicana Field": 0.85,
+    "Camden Yards": 1.13, "Rogers Centre": 1.10, "Comerica Park": 0.96,
+    "Progressive Field": 1.01, "Target Field": 1.04, "Kauffman Stadium": 0.98,
+    "Guaranteed Rate Field": 1.18, "Angel Stadium": 1.05, "Minute Maid Park": 1.06,
+    "Oakland Coliseum": 0.82, "T-Mobile Park": 0.86, "Globe Life Field": 1.00,
+    "Dodger Stadium": 1.10, "Chase Field": 1.06, "Coors Field": 1.30,
+    "Oracle Park": 0.82, "Wrigley Field": 1.12, "Great American Ball Park": 1.26,
+    "American Family Field": 1.17, "PNC Park": 0.87, "Busch Stadium": 0.87,
+    "Truist Park": 1.06, "LoanDepot Park": 0.86, "Citi Field": 1.05,
+    "Nationals Park": 1.05, "Petco Park": 0.85, "Citizens Bank Park": 1.19
 }
-# All feature columns for ML
-FEATURES = ['launch_speed','launch_angle','ParkFactor','Temp','Wind','Bats_R','Throws_R']
+PARK_CITY = {
+    "Yankee Stadium": "Bronx", "Fenway Park": "Boston", "Tropicana Field": "St. Petersburg",
+    "Camden Yards": "Baltimore", "Rogers Centre": "Toronto", "Comerica Park": "Detroit",
+    "Progressive Field": "Cleveland", "Target Field": "Minneapolis", "Kauffman Stadium": "Kansas City",
+    "Guaranteed Rate Field": "Chicago", "Angel Stadium": "Anaheim", "Minute Maid Park": "Houston",
+    "Oakland Coliseum": "Oakland", "T-Mobile Park": "Seattle", "Globe Life Field": "Arlington",
+    "Dodger Stadium": "Los Angeles", "Chase Field": "Phoenix", "Coors Field": "Denver",
+    "Oracle Park": "San Francisco", "Wrigley Field": "Chicago", "Great American Ball Park": "Cincinnati",
+    "American Family Field": "Milwaukee", "PNC Park": "Pittsburgh", "Busch Stadium": "St. Louis",
+    "Truist Park": "Atlanta", "LoanDepot Park": "Miami", "Citi Field": "Queens",
+    "Nationals Park": "Washington", "Petco Park": "San Diego", "Citizens Bank Park": "Philadelphia"
+}
+API_KEY = st.secrets["general"]["weather_api"]
 
-# ====== HELPERS ======
-
-def normalize_name(name):
-    if not isinstance(name, str): return ""
-    name = ''.join(c for c in unicodedata.normalize('NFD', name) if unicodedata.category(c) != 'Mn')
-    name = name.lower().replace('.', '').replace('-', ' ').replace("’", "'").strip()
-    return ' '.join(name.split())
-
-@st.cache_data(show_spinner=False)
-def get_weather(city, date, hour):
+def get_stadium_name(game_pk):
     try:
-        url = f"http://api.weatherapi.com/v1/history.json?key={API_KEY}&q={city}&dt={date}"
-        r = requests.get(url)
-        data = r.json()
-        hours = data['forecast']['forecastday'][0]['hour']
-        target_hour = min(hours, key=lambda h: abs(int(h['time'].split(' ')[1].split(':')[0]) - hour))
-        return {
-            "Temp": target_hour.get('temp_f'),
-            "Wind": target_hour.get('wind_mph'),
-            "Humidity": target_hour.get('humidity'),
-            "Condition": target_hour.get('condition', {}).get('text')
-        }
-    except:
-        return {"Temp": None, "Wind": None, "Humidity": None, "Condition": None}
+        url = f"https://statsapi.mlb.com/api/v1.1/game/{int(game_pk)}/feed/live"
+        resp = requests.get(url)
+        data = resp.json()
+        return data['gameData']['venue']['name']
+    except Exception:
+        return "TBD"
 
-@st.cache_data(show_spinner=False)
 def get_game_time(game_pk):
     try:
-        url = f"https://statsapi.mlb.com/api/v1.1/game/{game_pk}/feed/live"
-        r = requests.get(url)
-        data = r.json()
-        datetime_str = data['gameData']['datetime']['dateTime']
-        return datetime.fromisoformat(datetime_str[:-1])
-    except:
-        return None
+        url = f"https://statsapi.mlb.com/api/v1.1/game/{int(game_pk)}/feed/live"
+        resp = requests.get(url)
+        data = resp.json()
+        dt = data['gameData']['datetime']['dateTime']
+        game_time = dt.split('T')[1][:5]
+        return game_time
+    except Exception:
+        return "14:00"
 
-@st.cache_data(show_spinner=False)
-def get_handedness(name):
-    clean_name = normalize_name(name)
-    parts = clean_name.split()
-    if len(parts) >= 2:
-        first, last = parts[0], parts[-1]
-    else:
-        first, last = clean_name, ""
+def get_weather(city, date, time_str, api_key):
     try:
-        lookup = playerid_lookup(last.capitalize(), first.capitalize())
-        if not lookup.empty:
-            bats = lookup.iloc[0].get('bats')
-            throws = lookup.iloc[0].get('throws')
-            if pd.notnull(bats) and pd.notnull(throws): return bats, throws
-    except: pass
+        url = f"http://api.weatherapi.com/v1/history.json?key={api_key}&q={city}&dt={date}"
+        resp = requests.get(url)
+        data = resp.json()
+        if "forecast" in data:
+            hours = data['forecast']['forecastday'][0]['hour']
+            game_hour = int(time_str.split(":")[0]) if time_str else 14
+            hour_data = min(hours, key=lambda h: abs(int(h['time'].split(' ')[1].split(':')[0]) - game_hour))
+            return {
+                "temp_f": hour_data.get("temp_f"),
+                "wind_mph": hour_data.get("wind_mph"),
+                "wind_dir": hour_data.get("wind_dir"),
+                "humidity": hour_data.get("humidity"),
+                "condition": hour_data.get("condition", {}).get("text", "")
+            }
+    except Exception:
+        pass
+    return {
+        "temp_f": None, "wind_mph": None, "wind_dir": None, "humidity": None, "condition": None
+    }
+
+def get_hand_from_mlb(player_id):
+    """Fetch handedness from MLB API for a player_id (bats, throws)."""
     try:
-        df = people()
-        df['nname'] = (df['name_first'].fillna('') + ' ' + df['name_last'].fillna('')).map(normalize_name)
-        match = df[df['nname'] == clean_name]
-        if not match.empty:
-            return match.iloc[0].get('bats'), match.iloc[0].get('throws')
-    except: pass
-    return "UNK", "UNK"
+        url = f"https://statsapi.mlb.com/api/v1/people/{int(player_id)}"
+        resp = requests.get(url)
+        p = resp.json()['people'][0]
+        bats = p.get("batSide", {}).get("code", "UNK")
+        throws = p.get("pitchHand", {}).get("code", "UNK")
+        return bats, throws
+    except Exception:
+        return "UNK", "UNK"
 
-@st.cache_data(show_spinner=False)
-def get_rolling_stats(pid, days, is_batter=True):
-    start = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
-    end = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
-    try:
-        df = statcast_batter(start, end, pid) if is_batter else statcast_pitcher(start, end, pid)
-        df = df[df['launch_speed'].notnull() & df['launch_angle'].notnull()]
-        if df.empty: return None, None
-        barrels = df[(df['launch_speed'] > 95) & (df['launch_angle'].between(20, 35))].shape[0]
-        total = len(df)
-        barrel_rate = round(barrels / total, 3) if total > 0 else 0
-        ev = round(df['launch_speed'].mean(), 1) if total > 0 else None
-        return barrel_rate, ev
-    except:
-        return None, None
+def fetch_statcast_data(start_date, end_date):
+    from pybaseball import statcast
+    df = statcast(start_date, end_date)
+    if df.empty:
+        return df
+    cols_needed = [
+        'game_date', 'batter', 'pitcher', 'home_team', 'away_team', 'game_pk',
+        'events', 'launch_angle', 'launch_speed'
+    ]
+    for c in cols_needed:
+        if c not in df.columns:
+            df[c] = None
+    return df[cols_needed]
 
-# ====== STREAMLIT UI ======
+def build_backtest_csv(start, end):
+    df_all = fetch_statcast_data(start, end)
+    if df_all.empty:
+        st.error("No Statcast data fetched for given date range.")
+        return
+    stadiums, park_factors, is_hr, weathers, cities, times = [], [], [], [], [], []
+    batter_hands, pitcher_hands = [], []
+    for idx, row in df_all.iterrows():
+        stadium = get_stadium_name(row['game_pk'])
+        stadiums.append(stadium)
+        pf = PARK_FACTORS.get(stadium, 1.0)
+        park_factors.append(pf)
+        city = PARK_CITY.get(stadium, "TBD")
+        cities.append(city)
+        time_str = get_game_time(row['game_pk'])
+        times.append(time_str)
+        weather = get_weather(city, str(row['game_date']), time_str, API_KEY)
+        weathers.append(weather)
+        is_hr.append(1 if str(row['events']) == "home_run" else 0)
+        # Handedness fetch
+        bats, _ = get_hand_from_mlb(row['batter'])
+        _, throws = get_hand_from_mlb(row['pitcher'])
+        batter_hands.append(bats)
+        pitcher_hands.append(throws)
+        if idx % 200 == 0:
+            st.write(f"Processed {idx} rows...")
+    df_all['stadium'] = stadiums
+    df_all['park_factor'] = park_factors
+    df_all['city'] = cities
+    df_all['game_time'] = times
+    df_all['is_hr'] = is_hr
+    df_all['batter_hand'] = batter_hands
+    df_all['pitcher_hand'] = pitcher_hands
+    df_all['temp_f'] = [w['temp_f'] for w in weathers]
+    df_all['wind_mph'] = [w['wind_mph'] for w in weathers]
+    df_all['wind_dir'] = [w['wind_dir'] for w in weathers]
+    df_all['humidity'] = [w['humidity'] for w in weathers]
+    df_all['condition'] = [w['condition'] for w in weathers]
+    st.dataframe(df_all.head(20))
+    csv = df_all.to_csv(index=False).encode()
+    st.download_button("Download Backtest CSV", csv, "mlb_hr_backtest.csv")
+    st.success("Done! Your historical backtest CSV is ready.")
 
-st.title("MLB HR Backtest + ML + Leaderboard Bot")
+def encode_hand(hand):
+    # One-hot encoding for handedness: 'R'->0, 'L'->1, 'S'->2, 'UNK'->-1
+    return {'R':0, 'L':1, 'S':2, 'UNK':-1}.get(str(hand).upper(), -1)
 
-mode = st.radio("Mode", ["Build CSV", "Train Model", "Predict Today"])
+def train_model(uploaded_file):
+    st.write("Training model (RandomForest)...")
+    df = pd.read_csv(uploaded_file)
+    # Feature columns (add handedness as encoded)
+    for col in ['batter_hand', 'pitcher_hand']:
+        if col in df.columns:
+            df[col + "_num"] = df[col].map(encode_hand)
+    feature_cols = ['launch_angle', 'launch_speed', 'park_factor', 'temp_f', 'wind_mph', 'humidity',
+                    'batter_hand_num', 'pitcher_hand_num']
+    feature_cols = [col for col in feature_cols if col in df.columns]
+    if not feature_cols or 'is_hr' not in df.columns:
+        st.error("Missing required columns for training!")
+        return
+    df = df.dropna(subset=feature_cols + ['is_hr'])
+    X = df[feature_cols]
+    y = df['is_hr']
+    from sklearn.ensemble import RandomForestClassifier
+    model = RandomForestClassifier(n_estimators=200, random_state=42)
+    model.fit(X, y)
+    acc = model.score(X, y)
+    st.success(f"Training accuracy: {acc:.3f}")
+    buffer = BytesIO()
+    joblib.dump(model, buffer)
+    st.download_button("Download Trained Model", buffer.getvalue(), "mlb_hr_rf_model.joblib")
+    st.write("Feature importance:", dict(zip(feature_cols, model.feature_importances_)))
+
+def predict_today(uploaded_file, model_file):
+    df = pd.read_csv(uploaded_file)
+    # Encode handedness
+    for col in ['batter_hand', 'pitcher_hand']:
+        if col in df.columns:
+            df[col + "_num"] = df[col].map(encode_hand)
+    feature_cols = ['launch_angle', 'launch_speed', 'park_factor', 'temp_f', 'wind_mph', 'humidity',
+                    'batter_hand_num', 'pitcher_hand_num']
+    feature_cols = [col for col in feature_cols if col in df.columns]
+    if not feature_cols:
+        st.error("Missing required columns in uploaded file!")
+        return
+    if model_file is None:
+        st.error("Please upload a trained model file!")
+        return
+    buffer = BytesIO(model_file.read())
+    model = joblib.load(buffer)
+    df['hr_prob'] = model.predict_proba(df[feature_cols])[:, 1]
+    st.dataframe(df.sort_values('hr_prob', ascending=False).head(20))
+    csv = df.to_csv(index=False).encode()
+    st.download_button("Download Predictions", csv, "mlb_hr_predictions.csv")
+    st.success("Prediction complete!")
+
+# --- Streamlit UI
+st.title("MLB HR Backtest + ML + Leaderboard Bot (2025-ready, Handedness)")
+
+mode = st.selectbox("Mode", ["Build CSV", "Train Model", "Predict Today"])
 
 if mode == "Build CSV":
     st.header("Build Historical Dataset (Backtest Builder)")
-    start_date = st.date_input("Start Date", datetime(2025, 4, 1))
-    end_date = st.date_input("End Date", datetime(2025, 4, 7))
-    run_button = st.button("Run Backtest Builder")
-    if run_button:
-        st.info("Fetching Statcast data (can take several minutes for large ranges)...")
-        all_data = []
-        loop_dates = [start_date + timedelta(days=i) for i in range((end_date - start_date).days + 1)]
-        for date in loop_dates:
-            day = date.strftime('%Y-%m-%d')
-            try:
-                df = statcast(day, day)
-                df = df[df['events'].notnull() & df['batter'].notnull() & df['pitcher'].notnull()]
-                df['Hit_HR'] = (df['events'] == 'home_run').astype(int)
-                df = df[['game_date','batter','pitcher','home_team','away_team','stadium','game_pk',
-                         'Hit_HR', 'launch_angle', 'launch_speed']].copy()
-                all_data.append(df)
-            except Exception as e:
-                st.warning(f"{day} error: {e}")
-            time.sleep(1)
-        if all_data:
-            df_all = pd.concat(all_data, ignore_index=True)
-            df_all.rename(columns={'game_date': 'Date'}, inplace=True)
-            st.info("Mapping player names and handedness...")
-            batters = playerid_reverse_lookup(df_all['batter'].unique(), key_type='mlbam')
-            pitchers = playerid_reverse_lookup(df_all['pitcher'].unique(), key_type='mlbam')
-            bdict = dict(zip(batters['key_mlbam'], batters['name_first'] + ' ' + batters['name_last']))
-            pdict = dict(zip(pitchers['key_mlbam'], pitchers['name_first'] + ' ' + pitchers['name_last']))
-            df_all['Batter'] = df_all['batter'].map(bdict)
-            df_all['Pitcher'] = df_all['pitcher'].map(pdict)
-            weather_rows, park_rows, time_rows, handed_b, handed_p, barrels, evs = [], [], [], [], [], [], []
-            for _, row in df_all.iterrows():
-                city, date, game_pk = row['home_team'], row['Date'], row['game_pk']
-                park_factor = PARK_FACTORS.get(row['stadium'], 1.0)
-                game_time = get_game_time(game_pk)
-                hour = game_time.hour if game_time else 13
-                weather = get_weather(city, date, hour)
-                park_rows.append({"ParkFactor": park_factor})
-                weather_rows.append(weather)
-                time_rows.append({"GameTime": game_time.strftime('%H:%M') if game_time else "TBD"})
-                b, _ = get_handedness(row['Batter'])
-                _, p = get_handedness(row['Pitcher'])
-                handed_b.append(b or 'UNK')
-                handed_p.append(p or 'UNK')
-                pid = row['batter']
-                pid2 = row['pitcher']
-                bbr, bev = get_rolling_stats(pid, 7, True)
-                pbr, pev = get_rolling_stats(pid2, 7, False)
-                barrels.append({'BarrelRate_Batter_7': bbr, 'EV_Batter_7': bev, 'BarrelRate_Pitcher_7': pbr, 'EV_Pitcher_7': pev})
-            df_all = pd.concat([
-                df_all.reset_index(drop=True), 
-                pd.DataFrame(weather_rows), 
-                pd.DataFrame(park_rows), 
-                pd.DataFrame(time_rows), 
-                pd.DataFrame(barrels)
-            ], axis=1)
-            df_all['BatterHandedness'] = handed_b
-            df_all['PitcherHandedness'] = handed_p
-            st.success("Done! Preview below.")
-            st.dataframe(df_all.head(50))
-            csv = df_all.to_csv(index=False).encode()
-            st.download_button("Download CSV", csv, "hr_backtest.csv")
-        else:
-            st.warning("No Statcast data fetched for given date range.")
+    start = st.date_input("Start Date", datetime.now() - timedelta(days=7))
+    end = st.date_input("End Date", datetime.now())
+    if st.button("Run Backtest Builder"):
+        st.info("Fetching Statcast and weather data (can take several minutes for large ranges)...")
+        build_backtest_csv(start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
 
 elif mode == "Train Model":
-    st.header("Train Model")
-    uploaded_file = st.file_uploader("Upload Clean CSV for Training", type="csv")
-    if uploaded_file:
-        df = pd.read_csv(uploaded_file)
-        # Drop rows missing core features
-        df.dropna(subset=['launch_speed','launch_angle','ParkFactor','Temp','Wind'], inplace=True)
-        df['Bats_R'] = (df['BatterHandedness'] == 'R').astype(int)
-        df['Throws_R'] = (df['PitcherHandedness'] == 'R').astype(int)
-        X = df[FEATURES]
-        y = df['Hit_HR']
-        X_train, X_test, y_train, y_test = train_test_split(X, y, stratify=y, test_size=0.2, random_state=42)
-        model = RandomForestClassifier(n_estimators=200, max_depth=6, random_state=42)
-        model.fit(X_train, y_train)
-        preds = model.predict(X_test)
-        st.code(classification_report(y_test, preds))
-        # Save model
-        joblib.dump(model, 'hr_model.pkl')
-        st.success("Model trained and saved as hr_model.pkl. Ready to predict today’s matchups!")
+    st.header("Train ML Model on HR Backtest CSV")
+    uploaded_file = st.file_uploader("Upload CSV (from Build CSV step)", type=["csv"])
+    if uploaded_file is not None:
+        train_model(uploaded_file)
 
 elif mode == "Predict Today":
-    st.header("Predict Today's Matchups")
-    uploaded_daily = st.file_uploader("Upload Today's Matchup CSV", type="csv")
-    model = None
-    try:
-        model = joblib.load('hr_model.pkl')
-    except:
-        st.warning("Trained model (hr_model.pkl) not found. Train model first.")
-    if uploaded_daily and model is not None:
-        df_leaderboard = pd.read_csv(uploaded_daily)
-        # Ensure features are present
-        df_leaderboard['Bats_R'] = (df_leaderboard['BatterHandedness'] == 'R').astype(int)
-        df_leaderboard['Throws_R'] = (df_leaderboard['PitcherHandedness'] == 'R').astype(int)
-        missing = [col for col in FEATURES if col not in df_leaderboard.columns]
-        if missing:
-            st.warning(f"Missing columns in upload: {missing}")
-        else:
-            X_new = df_leaderboard[FEATURES]
-            df_leaderboard['ML_HR_Prob'] = model.predict_proba(X_new)[:, 1]
-            if 'HR_Score' in df_leaderboard.columns:
-                df_leaderboard['BlendedScore'] = 0.5 * df_leaderboard['HR_Score'] + 0.5 * df_leaderboard['ML_HR_Prob']
-            st.dataframe(df_leaderboard.sort_values('ML_HR_Prob', ascending=False).head(20))
-            st.download_button("Download with ML HR Prob", df_leaderboard.to_csv(index=False).encode(), "today_predicted.csv")
+    st.header("Predict HR Outcomes for Today's Matchups")
+    uploaded_file = st.file_uploader("Upload Today's Data CSV (with features)", type=["csv"])
+    model_file = st.file_uploader("Upload Trained Model (.joblib)", type=["joblib"])
+    if uploaded_file is not None and model_file is not None:
+        predict_today(uploaded_file, model_file)
