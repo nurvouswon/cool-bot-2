@@ -2,60 +2,85 @@ import streamlit as st
 import pandas as pd
 import requests
 import pickle
-from datetime import datetime, timedelta
+from pybaseball import statcast, playerid_lookup, playerid_reverse_lookup
+from pybaseball.lahman import people
+from datetime import datetime
 import pytz
 import unicodedata
 import difflib
-
-from pybaseball import statcast, playerid_lookup, playerid_reverse_lookup
-from pybaseball.lahman import people
-
-# Try to import LightGBM for toggle
-try:
-    import lightgbm as lgb
-    LGBM_AVAILABLE = True
-except ImportError:
-    LGBM_AVAILABLE = False
-
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score, accuracy_score
 
-# ====== CONFIGURATION ======
+# Toggle for LightGBM support
+USE_LIGHTGBM = st.sidebar.checkbox("Use LightGBM instead of RandomForest", value=False)
+if USE_LIGHTGBM:
+    import lightgbm as lgb
+
 API_KEY = st.secrets["general"]["weather_api"]
+
+# --- MLB Venue to City (for weather, never missed) ---
+VENUE_CITY = {
+    "Yankee Stadium": "New York",
+    "Fenway Park": "Boston",
+    "Coors Field": "Denver",
+    "Oracle Park": "San Francisco",
+    "Wrigley Field": "Chicago",
+    "Dodger Stadium": "Los Angeles",
+    "Petco Park": "San Diego",
+    "Great American Ball Park": "Cincinnati",
+    "T-Mobile Park": "Seattle",
+    "Citi Field": "New York",
+    "Target Field": "Minneapolis",
+    "Minute Maid Park": "Houston",
+    "Angel Stadium": "Anaheim",
+    "PNC Park": "Pittsburgh",
+    "Camden Yards": "Baltimore",
+    "Kauffman Stadium": "Kansas City",
+    "Chase Field": "Phoenix",
+    "Busch Stadium": "St. Louis",
+    "Tropicana Field": "St. Petersburg",
+    "Nationals Park": "Washington",
+    "American Family Field": "Milwaukee",
+    "Guaranteed Rate Field": "Chicago",
+    "Rogers Centre": "Toronto",
+    "Globe Life Field": "Arlington",
+    "Oakland Coliseum": "Oakland",
+    "LoanDepot Park": "Miami",
+    "Truist Park": "Atlanta",
+    "Comerica Park": "Detroit",
+    "Progressive Field": "Cleveland",
+    "Citizens Bank Park": "Philadelphia",
+    "Busch Stadium II": "St. Louis",
+    "Old Yankee Stadium": "New York",
+    "TBD": "TBD",
+}
 
 PARK_FACTORS = {
     "Yankee Stadium": 1.19, "Fenway Park": 0.97, "Coors Field": 1.30, "TBD": 1.0
+    # ...extend as needed...
 }
-BALLPARK_ORIENTATIONS = {
-    "Yankee Stadium": "N", "Fenway Park": "N", "Coors Field": "N", "TBD": "N"
-}
-COMPASS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
 
-# --- Name normalization (robust) ---
+# --- Normalize Name ---
 def normalize_name(name):
     if not isinstance(name, str): return ""
-    name = ''.join(c for c in unicodedata.normalize('NFD', name)
-                   if unicodedata.category(c) != 'Mn')
+    name = ''.join(c for c in unicodedata.normalize('NFD', name) if unicodedata.category(c) != 'Mn')
     name = name.lower().replace('.', '').replace('-', ' ').replace("’", "'").strip()
     if ',' in name:
         last, first = name.split(',', 1)
         name = f"{first.strip()} {last.strip()}"
     return ' '.join(name.split())
 
-# --- Handedness sources setup ---
+# --- Handedness lookup with MLB API, manual overrides, Fangraphs, Lahman, fuzzy match ---
 MANUAL_HANDEDNESS = {
-    'alexander canario': ('R', 'R'),
-    'liam hicks': ('L', 'R'),
-    'patrick bailey': ('B', 'R'),
-    # Add more as needed
+    # add manual corrections here
 }
 UNKNOWNS_LOG = set()
 
 try:
     from pybaseball.fangraphs import fg_player_info
     FG_INFO = fg_player_info()
-    FG_INFO['norm_name'] = FG_INFO['Name'].map(lambda x: x.lower().replace('.', '').replace('-', ' ').replace("’", "'").strip())
+    FG_INFO['norm_name'] = FG_INFO['Name'].map(lambda x: normalize_name(x))
 except Exception:
     FG_INFO = pd.DataFrame()
 
@@ -66,7 +91,7 @@ def get_handedness(name):
         first, last = parts[0], parts[-1]
     else:
         first, last = clean_name, ""
-    # 1. MLB Stats API
+    # 1. Try MLB Stats API
     try:
         info = playerid_lookup(last.capitalize(), first.capitalize())
         if not info.empty and 'key_mlbam' in info.columns:
@@ -76,7 +101,7 @@ def get_handedness(name):
             if resp.status_code == 200:
                 data = resp.json()
                 hand = data['people'][0]
-                bats = hand['batSide']['code']
+                bats = hand['batSide']['code']  # "R", "L", or "S"
                 throws = hand['pitchHand']['code']
                 if bats and throws:
                     return bats, throws
@@ -115,10 +140,11 @@ def get_handedness(name):
             return row.get('bats'), row.get('throws')
     except Exception:
         pass
+    # 5. Log as unknown
     UNKNOWNS_LOG.add(clean_name)
     return "UNK", "UNK"
 
-# --- MLB schedule + local time + city lookup ---
+# --- MLB Schedule ---
 def fetch_schedule_df(date_str):
     url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={date_str}"
     resp = requests.get(url)
@@ -128,7 +154,8 @@ def fetch_schedule_df(date_str):
         for g in games:
             game_pk = g["gamePk"]
             venue = g["venue"]["name"]
-            city = g["venue"].get("location", "TBD")
+            # Use dictionary for city
+            city = VENUE_CITY.get(venue, "TBD")
             utc_dt = datetime.strptime(g["gameDate"][:19], "%Y-%m-%dT%H:%M:%S")
             utc_dt = pytz.utc.localize(utc_dt)
             pacific_dt = utc_dt.astimezone(pytz.timezone("US/Pacific"))
@@ -147,7 +174,7 @@ def fetch_schedule_df(date_str):
         print(f"Error fetching schedule for {date_str}: {e}")
     return pd.DataFrame(schedule)
 
-# --- Weather ---
+# --- Weather lookup ---
 def get_weather(city, date, time, api_key=API_KEY):
     try:
         url = f"http://api.weatherapi.com/v1/history.json?key={api_key}&q={city}&dt={date}"
@@ -166,7 +193,6 @@ def get_weather(city, date, time, api_key=API_KEY):
     except Exception:
         return {"temp_f": None, "wind_mph": None, "wind_dir": None, "humidity": None, "condition": None}
 
-# --- Feature prep for ML ---
 def feature_prepare(df):
     df = df.copy()
     df['batter_hand'] = df['batter_hand'].map({'R':1, 'L':-1, 'S':0, 'UNK':0}).fillna(0)
@@ -177,7 +203,7 @@ def feature_prepare(df):
     return df
 
 # ====== STREAMLIT UI ======
-st.title("MLB HR Backtest + ML + Leaderboard Bot (Cool Bot 2, Advanced Handedness, Weather, LightGBM Toggle)")
+st.title("MLB HR Backtest + ML + Leaderboard Bot (Cool Bot 2, Batted Ball, Names, Weather, Handedness)")
 
 mode = st.selectbox("Mode", [
     "Build CSV (Backtest Builder)",
@@ -237,9 +263,11 @@ if mode.startswith("Build"):
             _, throws = get_handedness(row['pitcher_name'])
             batter_hands.append(bats if bats else "UNK")
             pitcher_hands.append(throws if throws else "UNK")
+            # City logic: always use dictionary, fallback to schedule/row city
+            city_val = VENUE_CITY.get(row['venue'], row.get('city', 'TBD'))
             date_val = str(row['game_time_pst'])[:10] if pd.notnull(row['game_time_pst']) else str(row['game_date'])[:10]
             time_val = str(row['game_time_pst'])[11:16] if pd.notnull(row['game_time_pst']) else "14:00"
-            weather = get_weather(row['city'] if pd.notnull(row['city']) else "TBD", date_val, time_val, API_KEY)
+            weather = get_weather(city_val, date_val, time_val, API_KEY)
             weather_rows.append(weather)
             pct = int((idx + 1) / total * 100)
             progress_bar.progress((idx + 1) / total)
@@ -268,13 +296,12 @@ if mode.startswith("Build"):
         st.dataframe(df.head(20))
         csv = df.to_csv(index=False).encode()
         st.download_button("Download Backtest CSV", csv, "mlb_hr_batted_balls.csv")
-        st.success("Done! Batted ball CSV (with names, advanced stats, weather, handedness) ready.")
+        st.success("Done! Batted ball CSV (with names, advanced stats, weather, handedness, city) ready.")
 
 # ====== TRAIN MODEL ======
 elif mode == "Train Model":
     st.header("Train ML Model")
     uploaded = st.file_uploader("Upload CSV built from 'Build CSV' step", type="csv")
-    ml_alg = st.radio("ML Algorithm", ["RandomForest", "LightGBM" if LGBM_AVAILABLE else None])
     if uploaded:
         df = pd.read_csv(uploaded)
         st.write("Data preview:", df.head())
@@ -286,8 +313,8 @@ elif mode == "Train Model":
         X = df[features]
         y = df['is_hr']
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-        if ml_alg == "LightGBM" and LGBM_AVAILABLE:
-            model = lgb.LGBMClassifier(n_estimators=80, random_state=42)
+        if USE_LIGHTGBM:
+            model = lgb.LGBMClassifier(n_estimators=90, random_state=42)
         else:
             model = RandomForestClassifier(n_estimators=80, random_state=42)
         model.fit(X_train, y_train)
@@ -323,13 +350,14 @@ elif mode == "Predict Today":
         st.download_button("Download Prediction CSV", csv, "mlb_hr_predicted.csv")
         st.success("Predictions complete.")
 
-# ====== LEADERBOARD (Simple demo, expand as desired) ======
+# ====== LEADERBOARD ======
 elif mode == "Leaderboard":
-    st.header("Home Run Leaderboard (Sample)")
+    st.header("Home Run Leaderboard")
     uploaded = st.file_uploader("Upload predictions CSV", type="csv")
     if uploaded:
         df = pd.read_csv(uploaded)
         if 'HR_Prob' not in df.columns:
             st.error("No HR_Prob column in uploaded CSV!")
         else:
-            st.write(df.sort_values("HR_Prob", ascending=False).head(25)[['batter_name','pitcher_name','venue','HR_Prob']])
+            show_cols = [col for col in ['batter_name', 'pitcher_name', 'venue', 'HR_Prob'] if col in df.columns]
+            st.dataframe(df.sort_values("HR_Prob", ascending=False).head(25)[show_cols])
