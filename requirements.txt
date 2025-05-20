@@ -1,8 +1,9 @@
-streamlit>=1.25.0
-pandas>=1.5.0
+streamlit
+pandas
 requests
-pybaseball>=2.2.0
+pybaseball
 scikit-learn
 lightgbm
-pytz
 unicodedata2
+beautifulsoup4
+pytz
