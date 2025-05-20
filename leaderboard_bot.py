@@ -107,6 +107,8 @@ def build_backtest_csv(start, end):
         return
     stadiums, park_factors, is_hr, weathers, cities, times = [], [], [], [], [], []
     batter_hands, pitcher_hands = [], []
+    progress_bar = st.progress(0)
+    total = len(df_all)
     for idx, row in df_all.iterrows():
         stadium = get_stadium_name(row['game_pk'])
         stadiums.append(stadium)
@@ -119,13 +121,16 @@ def build_backtest_csv(start, end):
         weather = get_weather(city, str(row['game_date']), time_str, API_KEY)
         weathers.append(weather)
         is_hr.append(1 if str(row['events']) == "home_run" else 0)
-        # Handedness fetch
         bats, _ = get_hand_from_mlb(row['batter'])
         _, throws = get_hand_from_mlb(row['pitcher'])
         batter_hands.append(bats)
         pitcher_hands.append(throws)
-        if idx % 200 == 0:
-            st.write(f"Processed {idx} rows...")
+        
+        # Progress bar + percent
+        pct = int((idx + 1) / total * 100)
+        progress_bar.progress((idx + 1) / total)
+        if (idx + 1) % max(1, total // 20) == 0 or idx == total - 1:
+            st.markdown(f"**Progress:** {pct}% ({idx + 1} of {total})")
     df_all['stadium'] = stadiums
     df_all['park_factor'] = park_factors
     df_all['city'] = cities
