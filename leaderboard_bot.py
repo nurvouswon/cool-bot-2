@@ -11,7 +11,7 @@ import joblib
 import unicodedata
 
 # ====== SETTINGS ======
-API_KEY = st.secrets["weather_api"]  # <-- uses .streamlit/secrets.toml
+API_KEY = st.secrets["general"]["weather_api"]  # <-- uses .streamlit/secrets.toml
 
 # Update this with any other park factors you use
 PARK_FACTORS = {
