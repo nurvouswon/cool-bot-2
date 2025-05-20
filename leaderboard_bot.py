@@ -21,15 +21,51 @@ except ImportError:
 # ====== CONFIGURATION ======
 API_KEY = st.secrets["general"]["weather_api"]
 
-# Ballpark dictionary for park factors & city mapping
+# All MLB ballpark park factors (2024, rounded as typical)
 PARK_FACTORS = {
-    "Yankee Stadium": 1.19, "Fenway Park": 0.97, "Coors Field": 1.30, "TBD": 1.0
+    "Angel Stadium": 1.05, "Busch Stadium": 0.87, "Camden Yards": 1.13, "Chase Field": 1.06,
+    "Citi Field": 1.05, "Citizens Bank Park": 1.19, "Comerica Park": 0.96, "Coors Field": 1.30,
+    "Dodger Stadium": 1.10, "Fenway Park": 0.97, "Globe Life Field": 1.00, "Great American Ball Park": 1.26,
+    "Guaranteed Rate Field": 1.18, "Kauffman Stadium": 0.98, "loanDepot park": 0.86, "Minute Maid Park": 1.06,
+    "Nationals Park": 1.05, "Oakland Coliseum": 0.82, "Oracle Park": 0.82, "Petco Park": 0.85,
+    "PNC Park": 0.87, "Progressive Field": 1.01, "Rogers Centre": 1.10, "T-Mobile Park": 0.86,
+    "Target Field": 1.04, "Tropicana Field": 0.85, "Truist Park": 1.06, "Wrigley Field": 1.12,
+    "Yankee Stadium": 1.19, "American Family Field": 1.17, "Chisholm Trail Ballpark": 1.00, "TBD": 1.0
 }
+# All MLB ballpark to city mappings
 BALLPARK_CITY = {
-    "Yankee Stadium": "New York",
-    "Fenway Park": "Boston",
+    "Angel Stadium": "Anaheim",
+    "Busch Stadium": "St. Louis",
+    "Camden Yards": "Baltimore",
+    "Chase Field": "Phoenix",
+    "Citi Field": "New York",
+    "Citizens Bank Park": "Philadelphia",
+    "Comerica Park": "Detroit",
     "Coors Field": "Denver",
-    # ...add more mappings for every park...
+    "Dodger Stadium": "Los Angeles",
+    "Fenway Park": "Boston",
+    "Globe Life Field": "Arlington",
+    "Great American Ball Park": "Cincinnati",
+    "Guaranteed Rate Field": "Chicago",
+    "Kauffman Stadium": "Kansas City",
+    "loanDepot park": "Miami",
+    "Minute Maid Park": "Houston",
+    "Nationals Park": "Washington",
+    "Oakland Coliseum": "Oakland",
+    "Oracle Park": "San Francisco",
+    "Petco Park": "San Diego",
+    "PNC Park": "Pittsburgh",
+    "Progressive Field": "Cleveland",
+    "Rogers Centre": "Toronto",
+    "T-Mobile Park": "Seattle",
+    "Target Field": "Minneapolis",
+    "Tropicana Field": "St. Petersburg",
+    "Truist Park": "Atlanta",
+    "Wrigley Field": "Chicago",
+    "Yankee Stadium": "New York",
+    "American Family Field": "Milwaukee",
+    "Chisholm Trail Ballpark": "TBD",
+    "TBD": "TBD"
 }
 DEFAULT_CITY = "TBD"
 
@@ -43,10 +79,7 @@ def normalize_name(name):
         name = f"{first.strip()} {last.strip()}"
     return ' '.join(name.split())
 
-# Handedness lookup with MLB API, Lahman, and manual fallback
-MANUAL_HANDEDNESS = {
-    # 'player name': ('Bats', 'Throws'),  # add manual fixes here as needed
-}
+MANUAL_HANDEDNESS = {}
 def get_handedness(name):
     clean_name = normalize_name(name)
     parts = clean_name.split()
@@ -54,7 +87,6 @@ def get_handedness(name):
         first, last = parts[0], parts[-1]
     else:
         first, last = clean_name, ""
-    # 1. Try MLB API
     try:
         info = playerid_lookup(last.capitalize(), first.capitalize())
         if not info.empty and 'key_mlbam' in info.columns:
@@ -64,16 +96,14 @@ def get_handedness(name):
             if resp.status_code == 200:
                 data = resp.json()
                 hand = data['people'][0]
-                bats = hand['batSide']['code']  # "R", "L", or "S"
+                bats = hand['batSide']['code']
                 throws = hand['pitchHand']['code']
                 if bats and throws:
                     return bats, throws
     except Exception:
         pass
-    # 2. Manual
     if clean_name in MANUAL_HANDEDNESS:
         return MANUAL_HANDEDNESS[clean_name]
-    # 3. Lahman
     try:
         df = people()
         df['nname'] = (df['name_first'].fillna('') + ' ' + df['name_last'].fillna('')).map(normalize_name)
@@ -302,4 +332,11 @@ elif mode == "Leaderboard":
         if 'HR_Prob' not in df.columns:
             st.error("No HR_Prob column in uploaded CSV!")
         else:
-            st.write(df.sort_values("HR_Prob", ascending=False).head(25)[['batter_name','pitcher_name','venue','HR_Prob']])
+            show_cols = [
+                'batter_name','pitcher_name','venue','city','game_time_pst',
+                'batter_hand','pitcher_hand','launch_speed','launch_angle',
+                'estimated_ba_using_speedangle','estimated_woba_using_speedangle',
+                'park_factor','temp_f','wind_mph','wind_dir','humidity','condition','HR_Prob'
+            ]
+            present = [c for c in show_cols if c in df.columns]
+            st.write(df.sort_values("HR_Prob", ascending=False).head(25)[present])
