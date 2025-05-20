@@ -2,7 +2,7 @@ streamlit
 pandas
 numpy
 requests
-pybaseball
+pybaseball==2.2.2
 lightgbm
 joblib
 scikit-learn
