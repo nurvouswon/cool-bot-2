@@ -4,3 +4,4 @@ requests
 pybaseball
 joblib
 scikit-learn
+lightgbm
