@@ -11,12 +11,12 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score, accuracy_score
 
-# Try LightGBM import (optional)
+# Try to import lightgbm for optional use
 try:
     import lightgbm as lgb
-    LGB_AVAILABLE = True
+    HAS_LGB = True
 except ImportError:
-    LGB_AVAILABLE = False
+    HAS_LGB = False
 
 # ====== CONFIGURATION ======
 API_KEY = st.secrets["general"]["weather_api"]
@@ -25,7 +25,6 @@ PARK_FACTORS = {
     "Yankee Stadium": 1.19, "Fenway Park": 0.97, "Coors Field": 1.30, "TBD": 1.0
 }
 
-# ====== SCHEDULE/LOOKUPS ======
 def fetch_schedule_df(date_str):
     url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={date_str}"
     resp = requests.get(url)
@@ -76,7 +75,6 @@ def get_hand_from_mlb(name):
             bats = lookup.iloc[0].get('bats')
             throws = lookup.iloc[0].get('throws')
             return bats if pd.notnull(bats) else "UNK", throws if pd.notnull(throws) else "UNK"
-        # Lahman fallback
         df = people()
         df['nname'] = (df['name_first'].fillna('') + ' ' + df['name_last'].fillna('')).map(normalize_name)
         match = df[df['nname'] == clean_name]
@@ -113,8 +111,7 @@ def feature_prepare(df):
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
     return df
 
-# ====== STREAMLIT UI ======
-st.title("MLB HR Backtest + ML + Leaderboard Bot (Cool Bot 2, Batted Ball, Names, Weather, Handedness)")
+st.title("MLB HR Backtest + ML + Leaderboard Bot (Cool Bot 2, Batted Ball, Names, Weather, Handedness, LGBM Option)")
 
 mode = st.selectbox("Mode", [
     "Build CSV (Backtest Builder)",
@@ -123,7 +120,6 @@ mode = st.selectbox("Mode", [
     "Leaderboard"
 ])
 
-# ====== BUILD DATASET ======
 if mode.startswith("Build"):
     st.header("Build Historical Dataset (Backtest Builder)")
     start = st.text_input("Start Date", "2025-05-12")
@@ -142,27 +138,23 @@ if mode.startswith("Build"):
         if batted_df.empty:
             st.error("No batted ball events for selected date range.")
             st.stop()
-        # Add batter names
         batter_ids = batted_df['batter'].unique().tolist()
         batter_lookup = playerid_reverse_lookup(batter_ids, key_type='mlbam')
         batted_df = batted_df.merge(batter_lookup[['key_mlbam','name_first','name_last']],
                                    left_on='batter', right_on='key_mlbam', how='left')
         batted_df['batter_name'] = batted_df['name_first'].fillna('') + ' ' + batted_df['name_last'].fillna('')
-        # Add pitcher names
         pitcher_ids = batted_df['pitcher'].unique().tolist()
         pitcher_lookup = playerid_reverse_lookup(pitcher_ids, key_type='mlbam')
         pitcher_lookup = pitcher_lookup.rename(columns={'key_mlbam': 'pitcher', 'name_first': 'pitcher_first', 'name_last': 'pitcher_last'})
         batted_df = batted_df.merge(pitcher_lookup[['pitcher','pitcher_first','pitcher_last']],
                                     on='pitcher', how='left')
         batted_df['pitcher_name'] = batted_df['pitcher_first'].fillna('') + ' ' + batted_df['pitcher_last'].fillna('')
-        # Schedule merge
         date_range = pd.date_range(start, end)
         sched_frames = []
         for date in date_range:
             sched_frames.append(fetch_schedule_df(date.strftime("%Y-%m-%d")))
         schedule_df = pd.concat(sched_frames, ignore_index=True)
         df = batted_df.merge(schedule_df, on="game_pk", how="left")
-        # Features
         weather_rows, batter_hands, pitcher_hands, pf_list = [], [], [], []
         progress_bar = st.progress(0)
         progress_txt = st.empty()
@@ -190,7 +182,6 @@ if mode.startswith("Build"):
         df['humidity'] = [w['humidity'] for w in weather_rows]
         df['condition'] = [w['condition'] for w in weather_rows]
         df['is_hr'] = (df['events'] == "home_run").astype(int)
-        # Save only columns of interest
         cols = [
             'game_date','game_pk','home_team','away_team','venue','city','game_time_pst',
             'batter','batter_name','batter_hand',
@@ -207,14 +198,13 @@ if mode.startswith("Build"):
         st.download_button("Download Backtest CSV", csv, "mlb_hr_batted_balls.csv")
         st.success("Done! Batted ball CSV (with names, advanced stats, weather, handedness) ready.")
 
-# ====== TRAIN MODEL ======
 elif mode == "Train Model":
     st.header("Train ML Model")
     uploaded = st.file_uploader("Upload CSV built from 'Build CSV' step", type="csv")
-    model_type_opts = ["RandomForest"]
-    if LGB_AVAILABLE:
-        model_type_opts.append("LightGBM")
-    model_type = st.selectbox("Model Type", model_type_opts)
+    model_type = st.radio("Model Type", ["Random Forest", "LightGBM"], index=0,
+                          help="LightGBM may not be available if not installed.")
+    if model_type == "LightGBM" and not HAS_LGB:
+        st.warning("LightGBM is not installed on this system. Please use Random Forest or install LightGBM.")
     if uploaded:
         df = pd.read_csv(uploaded)
         st.write("Data preview:", df.head())
@@ -226,30 +216,27 @@ elif mode == "Train Model":
         X = df[features]
         y = df['is_hr']
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
-        # --- Model selection
-        if model_type == "RandomForest":
-            model = RandomForestClassifier(n_estimators=80, random_state=42)
+        if model_type == "LightGBM" and HAS_LGB:
+            model = lgb.LGBMClassifier(n_estimators=120, random_state=42)
         else:
-            model = lgb.LGBMClassifier(n_estimators=80, random_state=42)
-        
+            model = RandomForestClassifier(n_estimators=80, random_state=42)
         model.fit(X_train, y_train)
         preds = model.predict(X_test)
         auc = roc_auc_score(y_test, preds)
         acc = accuracy_score(y_test, preds)
         st.write(f"Test ROC AUC: {auc:.3f}  |  Accuracy: {acc:.3f}")
-        with open("mlb_hr_rf.pkl", "wb") as f:
-            pickle.dump(model, f)
-        st.success(f"{model_type} Model trained and saved as mlb_hr_rf.pkl")
+        with open("mlb_hr_model.pkl", "wb") as f:
+            pickle.dump({"model": model, "type": model_type}, f)
+        st.success(f"{model_type} model trained and saved as mlb_hr_model.pkl")
 
-# ====== PREDICT TODAY ======
 elif mode == "Predict Today":
     st.header("Predict Today's Home Runs")
     uploaded = st.file_uploader("Upload new games CSV (with required columns)", type="csv")
     if uploaded:
         try:
-            with open("mlb_hr_rf.pkl", "rb") as f:
-                model = pickle.load(f)
+            with open("mlb_hr_model.pkl", "rb") as f:
+                obj = pickle.load(f)
+                model, model_type = obj["model"], obj["type"]
         except Exception as e:
             st.error("Model not found. Please train model first!")
             st.stop()
@@ -264,9 +251,8 @@ elif mode == "Predict Today":
         st.dataframe(df_pred.sort_values("HR_Prob", ascending=False).head(20))
         csv = df_pred.to_csv(index=False).encode()
         st.download_button("Download Prediction CSV", csv, "mlb_hr_predicted.csv")
-        st.success("Predictions complete.")
+        st.success(f"Predictions complete using {model_type} model.")
 
-# ====== LEADERBOARD (Simple demo, expand as desired) ======
 elif mode == "Leaderboard":
     st.header("Home Run Leaderboard (Sample)")
     uploaded = st.file_uploader("Upload predictions CSV", type="csv")
