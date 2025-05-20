@@ -11,6 +11,13 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score, accuracy_score
 
+# Try LightGBM import (optional)
+try:
+    import lightgbm as lgb
+    LGB_AVAILABLE = True
+except ImportError:
+    LGB_AVAILABLE = False
+
 # ====== CONFIGURATION ======
 API_KEY = st.secrets["general"]["weather_api"]
 
@@ -204,6 +211,10 @@ if mode.startswith("Build"):
 elif mode == "Train Model":
     st.header("Train ML Model")
     uploaded = st.file_uploader("Upload CSV built from 'Build CSV' step", type="csv")
+    model_type_opts = ["RandomForest"]
+    if LGB_AVAILABLE:
+        model_type_opts.append("LightGBM")
+    model_type = st.selectbox("Model Type", model_type_opts)
     if uploaded:
         df = pd.read_csv(uploaded)
         st.write("Data preview:", df.head())
@@ -215,7 +226,13 @@ elif mode == "Train Model":
         X = df[features]
         y = df['is_hr']
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-        model = RandomForestClassifier(n_estimators=80, random_state=42)
+
+        # --- Model selection
+        if model_type == "RandomForest":
+            model = RandomForestClassifier(n_estimators=80, random_state=42)
+        else:
+            model = lgb.LGBMClassifier(n_estimators=80, random_state=42)
+        
         model.fit(X_train, y_train)
         preds = model.predict(X_test)
         auc = roc_auc_score(y_test, preds)
@@ -223,7 +240,7 @@ elif mode == "Train Model":
         st.write(f"Test ROC AUC: {auc:.3f}  |  Accuracy: {acc:.3f}")
         with open("mlb_hr_rf.pkl", "wb") as f:
             pickle.dump(model, f)
-        st.success("Model trained and saved as mlb_hr_rf.pkl")
+        st.success(f"{model_type} Model trained and saved as mlb_hr_rf.pkl")
 
 # ====== PREDICT TODAY ======
 elif mode == "Predict Today":
