@@ -199,7 +199,8 @@ if mode.startswith("Build"):
         missing = [c for c in cols if c not in df.columns]
         st.write("Missing columns:", missing)
 
-        df = df[cols]
+        present_cols = [c for c in cols if c in df.columns]
+        df = df[present_cols]
         st.dataframe(df.head(20))
         csv = df.to_csv(index=False).encode()
         st.download_button("Download Backtest CSV", csv, "mlb_hr_batted_balls.csv")
