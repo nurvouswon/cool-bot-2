@@ -193,6 +193,12 @@ if mode.startswith("Build"):
             'park_factor','temp_f','wind_mph','wind_dir','humidity','condition',
             'is_hr'
         ]
+        # DEBUG: Show what columns are available and which are missing
+        st.write("Available columns:", df.columns.tolist())
+        st.write("Requested columns:", cols)
+        missing = [c for c in cols if c not in df.columns]
+        st.write("Missing columns:", missing)
+
         df = df[cols]
         st.dataframe(df.head(20))
         csv = df.to_csv(index=False).encode()
