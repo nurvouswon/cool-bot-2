@@ -1,9 +1,5 @@
 streamlit
 pandas
-requests
-pybaseball
+numpy
 scikit-learn
-lightgbm
-unicodedata2
-beautifulsoup4
-pytz
+matplotlib
