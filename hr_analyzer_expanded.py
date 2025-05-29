@@ -8,43 +8,47 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score
 
-st.header("1️⃣ Generate Last 7 Days Batted Ball Events CSV")
+st.header("📅 Generate Batted Ball Events (Last N Days) — In-Play Only")
 
 @st.cache_data
 def get_statcast_data(start_date, end_date):
     return statcast(start_date, end_date)
 
-if st.button("Generate and Download 7-Day Batted Ball Events CSV"):
+# Let user choose date range
+num_days = st.slider("Select number of past days to collect Statcast data", 7, 60, 30)
+
+if st.button(f"Generate and Download {num_days}-Day Batted Ball Events CSV"):
     today = datetime.now().date()
-    seven_days_ago = today - timedelta(days=7)
-    with st.spinner(f"Fetching batted ball data from {seven_days_ago} to {today}..."):
-        df_events = get_statcast_data(seven_days_ago.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d"))
+    start_date = today - timedelta(days=num_days)
+    with st.spinner(f"Fetching batted ball data from {start_date} to {today}..."):
+        df_events = get_statcast_data(start_date.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d"))
         df_events = df_events[df_events['type'] == 'X']  # only balls in play
     st.success(f"Downloaded {len(df_events)} batted ball events.")
     csv_bytes = df_events.to_csv(index=False).encode()
-    st.download_button("Download CSV", csv_bytes, file_name="batted_ball_7days.csv")
+    st.download_button("Download CSV", csv_bytes, file_name=f"batted_ball_{num_days}days.csv")
     st.write(df_events.head())
 
-st.title("MLB HR Analyzer — 7-Day Batted Ball Events & Feature Weighting")
+st.title("MLB HR Analyzer — Batted Ball Events & Feature Weighting")
 
 st.markdown("""
-Upload your 7-day batted ball events CSV (Statcast/Savant export).  
-**This app will:**
-- Filter for batted balls in play
+Upload your Statcast/Savant CSV file of batted ball events (in-play only).  
+This analyzer will:
+- Filter for batted balls in play (`type == 'X'`)
 - Auto-tag HR outcomes
 - Engineer advanced Statcast features
 - Show mean differences & logistic regression weightings
-- Compute AUC for logistic model
-- Visualize HR rates by pitch type and histograms
+- Compute model AUC
+- Visualize HR rates by pitch type
+- Compare feature distributions for HR vs Non-HR
 """)
 
-csv = st.file_uploader("Upload 7-day Batted Ball Events CSV", type=["csv"])
+csv = st.file_uploader("Upload Batted Ball Events CSV", type=["csv"])
 
 def engineer_features(df):
     cols = [c.lower().replace(' ', '_') for c in df.columns]
     df.columns = cols
 
-    df = df[df['type'] == 'X']  # only in-play
+    df = df[df['type'] == 'X']  # only in-play events
 
     hr_events = ['home_run', 'home run', 'hr']
     if 'events' in df.columns:
@@ -110,7 +114,7 @@ if csv:
     df = pd.read_csv(csv)
     df = engineer_features(df)
 
-    st.subheader("Sample Data (HR-tagged, In-Play Only)")
+    st.subheader("Sample Data (Tagged HRs — In-Play Only)")
     st.dataframe(df.head(10))
 
     feature_cols = [
