@@ -1,12 +1,25 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
+from datetime import datetime, timedelta
+from pybaseball import statcast
 from datetime import datetime, timedelta
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score
 
+st.header("1️⃣ Generate Last 7 Days Batted Ball Events CSV")
+
+if st.button("Generate and Download 7-Day Batted Ball Events CSV"):
+    today = datetime.now().date()
+    seven_days_ago = today - timedelta(days=7)
+    with st.spinner(f"Fetching batted ball data from {seven_days_ago} to {today}..."):
+        df_events = statcast(seven_days_ago.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d"))
+    st.success(f"Downloaded {len(df_events)} batted ball events.")
+    csv_bytes = df_events.to_csv(index=False).encode()
+    st.download_button("Download CSV", csv_bytes, file_name="batted_ball_7days.csv")
+    st.write(df_events.head())
+    
 st.title("MLB HR Analyzer — 7-Day Batted Ball Events & Feature Weighting")
 
 st.markdown("""
