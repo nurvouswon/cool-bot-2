@@ -14,7 +14,7 @@ st.header("📅 Generate Batted Ball Events (Last N Days) — In-Play Only")
 def get_statcast_data(start_date, end_date):
     return statcast(start_date, end_date)
 
-# Let user choose date range
+# User input for number of days
 num_days = st.slider("Select number of past days to collect Statcast data", 7, 60, 30)
 
 if st.button(f"Generate and Download {num_days}-Day Batted Ball Events CSV"):
@@ -22,7 +22,7 @@ if st.button(f"Generate and Download {num_days}-Day Batted Ball Events CSV"):
     start_date = today - timedelta(days=num_days)
     with st.spinner(f"Fetching batted ball data from {start_date} to {today}..."):
         df_events = get_statcast_data(start_date.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d"))
-        df_events = df_events[df_events['type'] == 'X']  # only balls in play
+        df_events = df_events[df_events['type'] == 'X']  # only in-play
     st.success(f"Downloaded {len(df_events)} batted ball events.")
     csv_bytes = df_events.to_csv(index=False).encode()
     st.download_button("Download CSV", csv_bytes, file_name=f"batted_ball_{num_days}days.csv")
@@ -31,15 +31,14 @@ if st.button(f"Generate and Download {num_days}-Day Batted Ball Events CSV"):
 st.title("MLB HR Analyzer — Batted Ball Events & Feature Weighting")
 
 st.markdown("""
-Upload your Statcast/Savant CSV file of batted ball events (in-play only).  
-This analyzer will:
-- Filter for batted balls in play (`type == 'X'`)
-- Auto-tag HR outcomes
-- Engineer advanced Statcast features
-- Show mean differences & logistic regression weightings
-- Compute model AUC
-- Visualize HR rates by pitch type
-- Compare feature distributions for HR vs Non-HR
+Upload your CSV file of Statcast batted ball events (in-play only).  
+This tool will:
+- Tag HR outcomes
+- Engineer Statcast features
+- Compute mean diffs and logistic regression weights
+- Show AUC score
+- Visualize pitch types and distributions
+- 📤 Export logistic weights for use in your HR prediction bot
 """)
 
 csv = st.file_uploader("Upload Batted Ball Events CSV", type=["csv"])
@@ -48,7 +47,7 @@ def engineer_features(df):
     cols = [c.lower().replace(' ', '_') for c in df.columns]
     df.columns = cols
 
-    df = df[df['type'] == 'X']  # only in-play events
+    df = df[df['type'] == 'X']
 
     hr_events = ['home_run', 'home run', 'hr']
     if 'events' in df.columns:
@@ -114,7 +113,7 @@ if csv:
     df = pd.read_csv(csv)
     df = engineer_features(df)
 
-    st.subheader("Sample Data (Tagged HRs — In-Play Only)")
+    st.subheader("Sample Data (Tagged & In-Play Only)")
     st.dataframe(df.head(10))
 
     feature_cols = [
@@ -151,6 +150,14 @@ if csv:
         ax.set_title(f'{c} distribution')
         ax.legend()
         st.pyplot(fig)
+
+    # Export weights CSV for use in bot
+    st.subheader("📤 Export Logistic Regression Weights")
+    st.download_button(
+        label="Download Weights as CSV",
+        data=logit_weights.to_csv().encode(),
+        file_name="logit_feature_weights.csv"
+    )
 
 else:
     st.info("Upload a CSV to begin analysis.")
