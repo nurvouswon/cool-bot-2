@@ -4,6 +4,7 @@ import numpy as np
 from datetime import datetime, timedelta
 from pybaseball import statcast
 import matplotlib.pyplot as plt
+import seaborn as sns
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score
@@ -14,7 +15,7 @@ st.header("📅 Generate Batted Ball Events (Last N Days) — In-Play Only")
 def get_statcast_data(start_date, end_date):
     return statcast(start_date, end_date)
 
-# User input for number of days
+# Select number of days
 num_days = st.slider("Select number of past days to collect Statcast data", 7, 60, 30)
 
 if st.button(f"Generate and Download {num_days}-Day Batted Ball Events CSV"):
@@ -22,7 +23,7 @@ if st.button(f"Generate and Download {num_days}-Day Batted Ball Events CSV"):
     start_date = today - timedelta(days=num_days)
     with st.spinner(f"Fetching batted ball data from {start_date} to {today}..."):
         df_events = get_statcast_data(start_date.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d"))
-        df_events = df_events[df_events['type'] == 'X']  # only in-play
+        df_events = df_events[df_events['type'] == 'X']  # in-play only
     st.success(f"Downloaded {len(df_events)} batted ball events.")
     csv_bytes = df_events.to_csv(index=False).encode()
     st.download_button("Download CSV", csv_bytes, file_name=f"batted_ball_{num_days}days.csv")
@@ -31,14 +32,14 @@ if st.button(f"Generate and Download {num_days}-Day Batted Ball Events CSV"):
 st.title("MLB HR Analyzer — Batted Ball Events & Feature Weighting")
 
 st.markdown("""
-Upload your CSV file of Statcast batted ball events (in-play only).  
-This tool will:
-- Tag HR outcomes
-- Engineer Statcast features
-- Compute mean diffs and logistic regression weights
-- Show AUC score
-- Visualize pitch types and distributions
-- 📤 Export logistic weights for use in your HR prediction bot
+Upload a CSV of Statcast batted ball events (in-play only).  
+This app will:
+- Tag HRs
+- Engineer advanced features
+- Show logistic regression weights & mean differences
+- Compute AUC score
+- Visualize HR trends by pitch type, handedness, and park
+- 📤 Export logistic weights + contextual HR patterns for your HR bot
 """)
 
 csv = st.file_uploader("Upload Batted Ball Events CSV", type=["csv"])
@@ -141,6 +142,17 @@ if csv:
         st.bar_chart(pitch_hr)
         st.write(pitch_hr)
 
+    st.subheader("HR Rate by Batter vs Pitcher Handedness")
+    if 'batter_hand' in df.columns and 'pitcher_hand' in df.columns:
+        hand_hr = df.groupby(['batter_hand', 'pitcher_hand'])['hr_outcome'].mean().unstack().fillna(0)
+        st.dataframe(hand_hr.style.format("{:.3f}").highlight_max(axis=1))
+
+    st.subheader("HR Rate by Ballpark (Home Team)")
+    if 'home_team' in df.columns:
+        park_hr = df.groupby('home_team')['hr_outcome'].mean().sort_values(ascending=False)
+        st.bar_chart(park_hr)
+        st.write(park_hr)
+
     st.subheader("Feature Distributions (HR vs Non-HR)")
     for c in feature_cols:
         st.write(f"**{c}**")
@@ -151,13 +163,43 @@ if csv:
         ax.legend()
         st.pyplot(fig)
 
-    # Export weights CSV for use in bot
+    # Export: Logistic Weights
     st.subheader("📤 Export Logistic Regression Weights")
     st.download_button(
-        label="Download Weights as CSV",
+        label="Download Logistic Feature Weights",
         data=logit_weights.to_csv().encode(),
         file_name="logit_feature_weights.csv"
     )
+
+    # Export: HR Rate by Handedness
+    if 'batter_hand' in df.columns and 'pitcher_hand' in df.columns:
+        hand_hr_df = df.groupby(['batter_hand', 'pitcher_hand'])['hr_outcome'].mean().reset_index()
+        hand_hr_csv = hand_hr_df.to_csv(index=False).encode()
+        st.download_button(
+            label="📤 Download HR Rate by Batter vs Pitcher Handedness",
+            data=hand_hr_csv,
+            file_name="hr_rate_by_hand.csv"
+        )
+
+    # Export: HR Rate by Pitch Type
+    if 'pitch_type' in df.columns:
+        pitch_hr_df = df.groupby('pitch_type')['hr_outcome'].mean().reset_index()
+        pitch_hr_csv = pitch_hr_df.to_csv(index=False).encode()
+        st.download_button(
+            label="📤 Download HR Rate by Pitch Type",
+            data=pitch_hr_csv,
+            file_name="hr_rate_by_pitch_type.csv"
+        )
+
+    # Export: HR Rate by Ballpark
+    if 'home_team' in df.columns:
+        park_hr_df = df.groupby('home_team')['hr_outcome'].mean().reset_index()
+        park_hr_csv = park_hr_df.to_csv(index=False).encode()
+        st.download_button(
+            label="📤 Download HR Rate by Ballpark (Home Team)",
+            data=park_hr_csv,
+            file_name="hr_rate_by_park.csv"
+        )
 
 else:
     st.info("Upload a CSV to begin analysis.")
