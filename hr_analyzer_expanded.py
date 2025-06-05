@@ -3,205 +3,237 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 from pybaseball import statcast
-import matplotlib.pyplot as plt
-import seaborn as sns
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score
 
-st.header("📅 Generate Batted Ball Events (Last N Days) — In-Play Only")
+st.set_page_config(layout="wide")
+st.title("MLB Statcast Downloader & Analyzer — Rolling Features & HR Context Exports")
 
-@st.cache_data
-def get_statcast_data(start_date, end_date):
-    return statcast(start_date, end_date)
+#### ============ SECTION 1: DATA DOWNLOAD ==============
 
-# Select number of days
-num_days = st.slider("Select number of past days to collect Statcast data", 7, 60, 30)
+st.header("📥 Download Statcast Batted Ball Events")
+num_days = st.slider("Number of days to fetch", 7, 60, 30)
+download_btn = st.button("Download Most Recent Data")
 
-if st.button(f"Generate and Download {num_days}-Day Batted Ball Events CSV"):
+if download_btn:
     today = datetime.now().date()
     start_date = today - timedelta(days=num_days)
-    with st.spinner(f"Fetching batted ball data from {start_date} to {today}..."):
-        df_events = get_statcast_data(start_date.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d"))
-        df_events = df_events[df_events['type'] == 'X']  # in-play only
-    st.success(f"Downloaded {len(df_events)} batted ball events.")
-    csv_bytes = df_events.to_csv(index=False).encode()
-    st.download_button("Download CSV", csv_bytes, file_name=f"batted_ball_{num_days}days.csv")
-    st.write(df_events.head())
+    with st.spinner(f"Downloading Statcast data from {start_date} to {today}..."):
+        df = statcast(start_date.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d"))
+        df = df[df['type'] == 'X']  # Only in-play
+    st.success(f"Fetched {len(df)} batted ball events!")
+    csv = df.to_csv(index=False).encode()
+    st.download_button("Download as CSV", csv, file_name=f"statcast_{num_days}days.csv")
+    st.write(df.head())
 
-st.title("MLB HR Analyzer — Batted Ball Events & Feature Weighting")
+#### ============ SECTION 2: UPLOAD FOR ANALYSIS ==============
 
-st.markdown("""
-Upload a CSV of Statcast batted ball events (in-play only).  
-This app will:
-- Tag HRs
-- Engineer advanced features
-- Show logistic regression weights & mean differences
-- Compute AUC score
-- Visualize HR trends by pitch type, handedness, and park
-- 📤 Export logistic weights + contextual HR patterns for your HR bot
-""")
+st.header("📤 Upload Statcast Batted Ball CSV for Rolling Feature Analysis")
 
-csv = st.file_uploader("Upload Batted Ball Events CSV", type=["csv"])
+csv_file = st.file_uploader("Upload Statcast Batted Ball Events CSV", type=["csv"])
+if not csv_file:
+    st.info("Upload a CSV or download one above to begin.")
+    st.stop()
 
-def engineer_features(df):
-    cols = [c.lower().replace(' ', '_') for c in df.columns]
-    df.columns = cols
+df = pd.read_csv(csv_file)
+df.columns = [c.lower().replace(" ", "_") for c in df.columns]
 
-    df = df[df['type'] == 'X']
+if 'game_date' in df.columns:
+    df['game_date'] = pd.to_datetime(df['game_date'])
+else:
+    st.error("Missing 'game_date' column in CSV.")
+    st.stop()
 
-    hr_events = ['home_run', 'home run', 'hr']
-    if 'events' in df.columns:
-        df['hr_outcome'] = df['events'].str.lower().isin(hr_events).astype(int)
-    elif 'result' in df.columns:
-        df['hr_outcome'] = df['result'].str.lower().isin(hr_events).astype(int)
-    else:
-        df['hr_outcome'] = 0
+# --------- Basic Cleaning and HR Tagging -----------
+hr_events = ['home_run', 'home run', 'hr']
+if 'events' in df.columns:
+    df['hr_outcome'] = df['events'].str.lower().isin(hr_events).astype(int)
+elif 'result' in df.columns:
+    df['hr_outcome'] = df['result'].str.lower().isin(hr_events).astype(int)
+else:
+    df['hr_outcome'] = 0
 
-    df['exit_velocity'] = df.get('launch_speed', df.get('exit_velocity', np.nan))
-    df['launch_angle'] = df.get('launch_angle', np.nan)
-    df['spin_rate'] = df.get('release_spin_rate', np.nan)
-    df['pitch_velocity'] = df.get('release_speed', np.nan)
-    df['pitch_type'] = df.get('pitch_type', df.get('pitch_name', 'NA')).fillna('NA')
-    df['plate_x'] = df.get('plate_x', np.nan)
-    df['plate_z'] = df.get('plate_z', np.nan)
-    df['batter_hand'] = df.get('stand', df.get('batter_hand', 'NA')).fillna('NA')
-    df['pitcher_hand'] = df.get('p_throws', df.get('pitcher_hand', 'NA')).fillna('NA')
-    df['balls'] = df.get('balls', 0)
-    df['strikes'] = df.get('strikes', 0)
-    df['description'] = df.get('description', '')
+df['batter_id'] = df.get('batter', df.get('batter_id', np.nan))
+df['pitcher_id'] = df.get('pitcher', df.get('pitcher_id', np.nan))
+df['exit_velocity'] = df.get('launch_speed', df.get('exit_velocity', np.nan))
+df['launch_angle'] = df.get('launch_angle', np.nan)
+df['release_spin_rate'] = df.get('release_spin_rate', np.nan)
+df['release_speed'] = df.get('release_speed', np.nan)
+df['p_throws'] = df.get('p_throws', df.get('pitcher_hand', 'NA')).fillna('NA')
+df['stand'] = df.get('stand', df.get('batter_hand', 'NA')).fillna('NA')
 
-    df['zone'] = (
-        pd.cut(df['plate_x'], [-2, -0.7, 0.7, 2], labels=['left', 'middle', 'right']).astype(str) + "_" +
-        pd.cut(df['plate_z'], [0, 2, 3.5, 5], labels=['low', 'middle', 'high']).astype(str)
-    ).fillna('unknown')
+# xwOBA: Use statcast "estimated_woba_using_speedangle" or fallback to "woba_value"
+if 'estimated_woba_using_speedangle' in df.columns:
+    df['xwoba'] = df['estimated_woba_using_speedangle']
+elif 'woba_value' in df.columns:
+    df['xwoba'] = df['woba_value']
+else:
+    df['xwoba'] = np.nan
 
-    df['barrel'] = ((df['exit_velocity'] > 98) & df['launch_angle'].between(26, 30)).astype(int)
-    df['is_whiff'] = df['description'].str.contains('miss', case=False, na=False).astype(int)
+# xBA: Use "estimated_ba_using_speedangle" if available
+df['xba'] = df['estimated_ba_using_speedangle'] if 'estimated_ba_using_speedangle' in df.columns else np.nan
 
-    if 'hit_direction' in df.columns:
-        df['pull'] = (df['hit_direction'].str.lower() == 'pull').astype(int)
-        df['oppo'] = (df['hit_direction'].str.lower() == 'opposite').astype(int)
-        df['straight'] = (df['hit_direction'].str.lower() == 'straight').astype(int)
+#### ------------- ROLLING FEATURE GENERATION -------------
 
-    if 'game_date' in df.columns:
-        df['game_date'] = pd.to_datetime(df['game_date'])
+windows = [3, 5, 7, 14, 30]
 
-    return df
+def rolling_batter_features(group):
+    group = group.sort_values('game_date')
+    feats = {}
+    for w in windows:
+        lastN = group.tail(w)
+        pa = len(lastN)
+        barrels = lastN[(lastN['exit_velocity'] > 95) & (lastN['launch_angle'].between(20, 35))].shape[0]
+        sweet = lastN[lastN['launch_angle'].between(8, 32)].shape[0]
+        hard = lastN[lastN['exit_velocity'] >= 95].shape[0]
+        slg = np.nansum([
+            (lastN['events'] == 'single').sum(),
+            2 * (lastN['events'] == 'double').sum(),
+            3 * (lastN['events'] == 'triple').sum(),
+            4 * (lastN['events'] == 'home_run').sum()
+        ])
+        ab = sum((lastN['events'] == x).sum() for x in ['single', 'double', 'triple', 'home_run', 'field_out', 'force_out', 'other_out'])
+        # xSLG and xISO
+        single = (lastN['xba'] >= 0.5) & (lastN['launch_angle'] < 15)
+        double = (lastN['xba'] >= 0.5) & (lastN['launch_angle'].between(15, 30))
+        triple = (lastN['xba'] >= 0.5) & (lastN['launch_angle'].between(30, 40))
+        hr = (lastN['launch_angle'] > 35) & (lastN['exit_velocity'] > 100)
+        xsingle = single.sum()
+        xdouble = double.sum()
+        xtriple = triple.sum()
+        xhr = hr.sum()
+        xab = xsingle + xdouble + xtriple + xhr
+        xslg = (1 * xsingle + 2 * xdouble + 3 * xtriple + 4 * xhr) / xab if xab else np.nan
+        xba = lastN['xba'].mean() if 'xba' in lastN.columns and not lastN['xba'].isnull().all() else np.nan
+        xiso = (xslg - xba) if xslg is not np.nan and xba is not np.nan else np.nan
 
-def mean_diff_weights(df, feature_cols):
-    means_hr = df[df['hr_outcome'] == 1][feature_cols].mean()
-    means_no = df[df['hr_outcome'] == 0][feature_cols].mean()
-    return (means_hr - means_no).sort_values(ascending=False)
+        feats[f'B_BarrelRate_{w}'] = barrels / pa if pa else np.nan
+        feats[f'B_EV_{w}'] = lastN['exit_velocity'].mean() if pa else np.nan
+        feats[f'B_SLG_{w}'] = slg / ab if ab else np.nan
+        feats[f'B_xSLG_{w}'] = xslg
+        feats[f'B_xISO_{w}'] = xiso
+        feats[f'B_xwoba_{w}'] = lastN['xwoba'].mean() if pa else np.nan
+        feats[f'B_sweet_spot_pct_{w}'] = sweet / pa if pa else np.nan
+        feats[f'B_hardhit_pct_{w}'] = hard / pa if pa else np.nan
+    return pd.Series(feats)
 
-def logistic_regression_weights(df, feature_cols):
-    X = df[feature_cols].fillna(0)
-    y = df['hr_outcome']
+def rolling_pitcher_features(group):
+    group = group.sort_values('game_date')
+    feats = {}
+    for w in windows:
+        lastN = group.tail(w)
+        total = len(lastN)
+        barrels = lastN[(lastN['exit_velocity'] > 95) & (lastN['launch_angle'].between(20, 35))].shape[0]
+        sweet = lastN[lastN['launch_angle'].between(8, 32)].shape[0]
+        hard = lastN[lastN['exit_velocity'] >= 95].shape[0]
+        slg = np.nansum([
+            (lastN['events'] == 'single').sum(),
+            2 * (lastN['events'] == 'double').sum(),
+            3 * (lastN['events'] == 'triple').sum(),
+            4 * (lastN['events'] == 'home_run').sum()
+        ])
+        ab = sum((lastN['events'] == x).sum() for x in ['single', 'double', 'triple', 'home_run', 'field_out', 'force_out', 'other_out'])
+        # xSLG and xISO
+        single = (lastN['xba'] >= 0.5) & (lastN['launch_angle'] < 15)
+        double = (lastN['xba'] >= 0.5) & (lastN['launch_angle'].between(15, 30))
+        triple = (lastN['xba'] >= 0.5) & (lastN['launch_angle'].between(30, 40))
+        hr = (lastN['launch_angle'] > 35) & (lastN['exit_velocity'] > 100)
+        xsingle = single.sum()
+        xdouble = double.sum()
+        xtriple = triple.sum()
+        xhr = hr.sum()
+        xab = xsingle + xdouble + xtriple + xhr
+        xslg = (1 * xsingle + 2 * xdouble + 3 * xtriple + 4 * xhr) / xab if xab else np.nan
+        xba = lastN['xba'].mean() if 'xba' in lastN.columns and not lastN['xba'].isnull().all() else np.nan
+        xiso = (xslg - xba) if xslg is not np.nan and xba is not np.nan else np.nan
+
+        feats[f'P_BarrelRateAllowed_{w}'] = barrels / total if total else np.nan
+        feats[f'P_EVAllowed_{w}'] = lastN['exit_velocity'].mean() if total else np.nan
+        feats[f'P_SLG_{w}'] = slg / ab if ab else np.nan
+        feats[f'P_xSLG_{w}'] = xslg
+        feats[f'P_xISO_{w}'] = xiso
+        feats[f'P_xwoba_{w}'] = lastN['xwoba'].mean() if total else np.nan
+        feats[f'P_sweet_spot_pct_{w}'] = sweet / total if total else np.nan
+        feats[f'P_hardhit_pct_{w}'] = hard / total if total else np.nan
+    return pd.Series(feats)
+
+st.subheader("🔄 Generating rolling averages (batter and pitcher)...")
+
+# --- Batter features ---
+batter_feats = df.groupby('batter_id').apply(rolling_batter_features).reset_index()
+df = df.merge(batter_feats, on='batter_id', how='left')
+
+# --- Pitcher features ---
+pitcher_feats = df.groupby('pitcher_id').apply(rolling_pitcher_features).reset_index()
+df = df.merge(pitcher_feats, on='pitcher_id', how='left')
+
+st.success("Rolling features added!")
+
+#### -------------- ML LOGISTIC REGRESSION --------------
+
+feature_cols = []
+for base in ['B_BarrelRate', 'B_EV', 'B_SLG', 'B_xSLG', 'B_xISO', 'B_xwoba', 'B_sweet_spot_pct', 'B_hardhit_pct',
+             'P_BarrelRateAllowed', 'P_EVAllowed', 'P_SLG', 'P_xSLG', 'P_xISO', 'P_xwoba', 'P_sweet_spot_pct', 'P_hardhit_pct']:
+    for w in windows:
+        feature_cols.append(f"{base}_{w}")
+
+feature_cols = [c for c in feature_cols if c in df.columns]
+
+st.subheader("Logistic Regression Weights (Predictor-Compatible)")
+X = df[feature_cols].fillna(0)
+y = df['hr_outcome']
+if X.shape[0] > 100 and y.nunique() == 2:
     model = LogisticRegression(max_iter=200)
     model.fit(X, y)
-    return pd.Series(model.coef_[0], index=feature_cols).sort_values(ascending=False)
-
-def evaluate_model(df, feature_cols):
-    X = df[feature_cols].fillna(0)
-    y = df['hr_outcome']
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
-    model = LogisticRegression(max_iter=200)
-    model.fit(X_train, y_train)
-    y_pred = model.predict_proba(X_test)[:, 1]
-    return roc_auc_score(y_test, y_pred)
-
-if csv:
-    df = pd.read_csv(csv)
-    df = engineer_features(df)
-
-    st.subheader("Sample Data (Tagged & In-Play Only)")
-    st.dataframe(df.head(10))
-
-    feature_cols = [
-        'exit_velocity', 'launch_angle', 'spin_rate', 'pitch_velocity',
-        'barrel', 'is_whiff', 'plate_x', 'plate_z', 'balls', 'strikes'
-    ]
-    feature_cols = [c for c in feature_cols if c in df.columns]
-
-    st.subheader("Mean Difference (HR vs Non-HR)")
-    mean_diff = mean_diff_weights(df, feature_cols)
-    st.bar_chart(mean_diff)
-    st.write(mean_diff)
-
-    st.subheader("Logistic Regression Feature Weights")
-    logit_weights = logistic_regression_weights(df, feature_cols)
-    st.bar_chart(logit_weights)
-    st.write(logit_weights)
-
-    auc = evaluate_model(df, feature_cols)
-    st.markdown(f"**Logistic Regression AUC:** `{auc:.3f}`")
-
-    st.subheader("Pitch Type HR Rate")
-    if 'pitch_type' in df.columns:
-        pitch_hr = df.groupby('pitch_type')['hr_outcome'].mean().sort_values(ascending=False)
-        st.bar_chart(pitch_hr)
-        st.write(pitch_hr)
-
-    st.subheader("HR Rate by Batter vs Pitcher Handedness")
-    if 'batter_hand' in df.columns and 'pitcher_hand' in df.columns:
-        hand_hr = df.groupby(['batter_hand', 'pitcher_hand'])['hr_outcome'].mean().unstack().fillna(0)
-        st.dataframe(hand_hr.style.format("{:.3f}").highlight_max(axis=1))
-
-    st.subheader("HR Rate by Ballpark (Home Team)")
-    if 'home_team' in df.columns:
-        park_hr = df.groupby('home_team')['hr_outcome'].mean().sort_values(ascending=False)
-        st.bar_chart(park_hr)
-        st.write(park_hr)
-
-    st.subheader("Feature Distributions (HR vs Non-HR)")
-    for c in feature_cols:
-        st.write(f"**{c}**")
-        fig, ax = plt.subplots()
-        ax.hist(df[df['hr_outcome'] == 1][c].dropna(), bins=20, alpha=0.5, label='HR')
-        ax.hist(df[df['hr_outcome'] == 0][c].dropna(), bins=20, alpha=0.5, label='No HR')
-        ax.set_title(f'{c} distribution')
-        ax.legend()
-        st.pyplot(fig)
-
-    # Export: Logistic Weights CSV (Predictor-compatible)
-    logit_weights_df = pd.DataFrame({
-        'feature': logit_weights.index,
-        'weight': logit_weights.values
-    })
+    weights = pd.Series(model.coef_[0], index=feature_cols).sort_values(ascending=False)
+    weights_df = pd.DataFrame({'feature': weights.index, 'weight': weights.values})
+    st.write(weights_df)
+    auc = roc_auc_score(y, model.predict_proba(X)[:, 1])
+    st.markdown(f"**In-sample AUC:** `{auc:.3f}`")
     st.download_button(
-        label="Download Logistic Feature Weights",
-        data=logit_weights_df.to_csv(index=False).encode(),
+        "Download Predictor-Compatible Logit Weights CSV",
+        data=weights_df.to_csv(index=False).encode(),
         file_name="logit_feature_weights.csv"
     )
-    # Export: HR Rate by Handedness
-    if 'batter_hand' in df.columns and 'pitcher_hand' in df.columns:
-        hand_hr_df = df.groupby(['batter_hand', 'pitcher_hand'])['hr_outcome'].mean().reset_index()
-        hand_hr_csv = hand_hr_df.to_csv(index=False).encode()
-        st.download_button(
-            label="📤 Download HR Rate by Batter vs Pitcher Handedness",
-            data=hand_hr_csv,
-            file_name="hr_rate_by_hand.csv"
-        )
-
-    # Export: HR Rate by Pitch Type
-    if 'pitch_type' in df.columns:
-        pitch_hr_df = df.groupby('pitch_type')['hr_outcome'].mean().reset_index()
-        pitch_hr_csv = pitch_hr_df.to_csv(index=False).encode()
-        st.download_button(
-            label="📤 Download HR Rate by Pitch Type",
-            data=pitch_hr_csv,
-            file_name="hr_rate_by_pitch_type.csv"
-        )
-
-    # Export: HR Rate by Ballpark
-    if 'home_team' in df.columns:
-        park_hr_df = df.groupby('home_team')['hr_outcome'].mean().reset_index()
-        park_hr_csv = park_hr_df.to_csv(index=False).encode()
-        st.download_button(
-            label="📤 Download HR Rate by Ballpark (Home Team)",
-            data=park_hr_csv,
-            file_name="hr_rate_by_park.csv"
-        )
-
 else:
-    st.info("Upload a CSV to begin analysis.")
+    st.warning("Not enough data for regression.")
+
+st.subheader("Sample Data with Features")
+st.dataframe(df[feature_cols + ['hr_outcome']].head(20))
+
+#### -------------- CONTEXTUAL HR CSV EXPORTS --------------
+
+st.subheader("Download Contextual HR Rate CSVs")
+
+# HR by Handedness
+if 'stand' in df.columns and 'p_throws' in df.columns:
+    hand_hr_df = df.groupby(['stand', 'p_throws'])['hr_outcome'].mean().reset_index()
+    st.write("HR Rate by Batter vs Pitcher Handedness")
+    st.dataframe(hand_hr_df)
+    st.download_button(
+        "Download HR Rate by Handedness",
+        data=hand_hr_df.to_csv(index=False).encode(),
+        file_name="hr_rate_by_hand.csv"
+    )
+
+# HR by Pitch Type
+if 'pitch_type' in df.columns:
+    pitch_hr_df = df.groupby('pitch_type')['hr_outcome'].mean().reset_index()
+    st.write("HR Rate by Pitch Type")
+    st.dataframe(pitch_hr_df)
+    st.download_button(
+        "Download HR Rate by Pitch Type",
+        data=pitch_hr_df.to_csv(index=False).encode(),
+        file_name="hr_rate_by_pitch_type.csv"
+    )
+
+# HR by Ballpark (home_team)
+if 'home_team' in df.columns:
+    park_hr_df = df.groupby('home_team')['hr_outcome'].mean().reset_index()
+    st.write("HR Rate by Ballpark")
+    st.dataframe(park_hr_df)
+    st.download_button(
+        "Download HR Rate by Ballpark",
+        data=park_hr_df.to_csv(index=False).encode(),
+        file_name="hr_rate_by_park.csv"
+        )
