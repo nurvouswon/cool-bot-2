@@ -163,14 +163,16 @@ if csv:
         ax.legend()
         st.pyplot(fig)
 
-    # Export: Logistic Weights
-    st.subheader("📤 Export Logistic Regression Weights")
+    # Export: Logistic Weights CSV (Predictor-compatible)
+    logit_weights_df = pd.DataFrame({
+        'feature': logit_weights.index,
+        'weight': logit_weights.values
+    })
     st.download_button(
         label="Download Logistic Feature Weights",
-        data=logit_weights.to_csv().encode(),
+        data=logit_weights_df.to_csv(index=False).encode(),
         file_name="logit_feature_weights.csv"
     )
-
     # Export: HR Rate by Handedness
     if 'batter_hand' in df.columns and 'pitcher_hand' in df.columns:
         hand_hr_df = df.groupby(['batter_hand', 'pitcher_hand'])['hr_outcome'].mean().reset_index()
