@@ -186,8 +186,7 @@ st.subheader("Download Contextual HR Rate CSVs")
 # Handedness HR Rate (Predictor-compatible)
 if 'stand' in df.columns and 'p_throws' in df.columns:
     hand_hr_df = (
-        df.groupby(['stand', 'p_throws'])['hr_outcome'].mean()
-        .reset_index()
+        df.groupby(['stand', 'p_throws'])['hr_outcome'].mean().reset_index()
         .rename(columns={
             'stand': 'BatterHandedness',
             'p_throws': 'PitcherHandedness',
