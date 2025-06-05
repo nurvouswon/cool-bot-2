@@ -186,6 +186,13 @@ if X.shape[0] > 100 and y.nunique() == 2:
     model = LogisticRegression(max_iter=200)
     model.fit(X, y)
     weights = pd.Series(model.coef_[0], index=feature_cols).sort_values(ascending=False)
+    
+    # --- Filter for only 3/5/7/14 day windows (NO 30-day!) ---
+    allowed_suffixes = ['_3', '_5', '_7', '_14']
+    def is_allowed_feature(f):
+        return any(f.endswith(s) for s in allowed_suffixes)
+    weights = weights[weights.index.map(is_allowed_feature)]
+
     weights_df = pd.DataFrame({'feature': weights.index, 'weight': weights.values})
     st.write(weights_df)
     auc = roc_auc_score(y, model.predict_proba(X)[:, 1])
