@@ -60,7 +60,7 @@ df['xwoba'] = (
 df['xba'] = df['estimated_ba_using_speedangle'] if 'estimated_ba_using_speedangle' in df.columns else np.nan
 
 # --------------- Rolling Feature Generation ---------------
-windows = [3, 5, 7, 14, 30]
+windows = [3, 5, 7, 14]
 
 def rolling_batter_features(group):
     group = group.sort_values('game_date')
