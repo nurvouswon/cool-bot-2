@@ -19,6 +19,18 @@ st.markdown("""
 - Download all outputs for your model building
 """)
 
+# === Rolling window selection (AT THE VERY TOP, only once) ===
+min_win, max_win = 1, 60
+st.subheader("Choose Rolling Window(s) for Feature Engineering")
+window_range = st.slider(
+    "Rolling window size(s) (games)",
+    min_value=min_win,
+    max_value=max_win,
+    value=(3, 14),
+    step=1
+)
+windows = list(range(window_range[0], window_range[1] + 1))
+
 # === Data source selection ===
 data_source = st.radio(
     "Select data source:",
@@ -130,6 +142,7 @@ if df is not None and not df.empty:
 
     st.subheader("Engineering Rolling Features")
     batter_feats = df.groupby('batter_id').apply(lambda x: rolling_features(x, 'B', 'batter_id', windows)).reset_index()
+    df = df.merge(batter_feats, on='batter_id', how='left')
     pitcher_feats = df.groupby('pitcher_id').apply(lambda x: rolling_features(x, 'P', 'pitcher_id', windows)).reset_index()
     df = df.merge(pitcher_feats, on='pitcher_id', how='left')
 
