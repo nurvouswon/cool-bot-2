@@ -2,6 +2,8 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import roc_auc_score
 from pybaseball import statcast
 
 st.set_page_config(layout="wide")
@@ -51,20 +53,19 @@ elif data_source == "Fetch new data from MLB Statcast (pybaseball)":
         with st.spinner("Fetching Statcast data from MLB..."):
             df = statcast(start_dt=start_date.strftime("%Y-%m-%d"), end_dt=end_date.strftime("%Y-%m-%d"))
             # --- Filter to only batted ball events in play ---
-if df is not None:
-    if 'type' in df.columns:
-        # Statcast convention: type=='X' means ball in play
-        df = df[df['type'] == 'X']
-    elif 'events' in df.columns:
-        batted_ball_events = [
-            'single', 'double', 'triple', 'home_run',
-            'field_out', 'force_out', 'grounded_into_double_play', 'fielders_choice_out',
-            'other_out', 'fielders_choice', 'double_play', 'triple_play'
-        ]
-        df = df[df['events'].str.lower().isin(batted_ball_events)]
-    else:
-        st.warning("Could not auto-detect batted ball event filter; review your data.")
-        st.success(f"Loaded {len(df)} events from {start_date} to {end_date}")
+            if 'type' in df.columns:
+                # Statcast convention: type=='X' means ball in play
+                df = df[df['type'] == 'X']
+            elif 'events' in df.columns:
+                batted_ball_events = [
+                    'single', 'double', 'triple', 'home_run',
+                    'field_out', 'force_out', 'grounded_into_double_play', 'fielders_choice_out',
+                    'other_out', 'fielders_choice', 'double_play', 'triple_play'
+                ]
+                df = df[df['events'].str.lower().isin(batted_ball_events)]
+            else:
+                st.warning("Could not auto-detect batted ball event filter; review your data.")
+                st.success(f"Loaded {len(df)} events from {start_date} to {end_date}")
 
 if df is not None and not df.empty:
     # --- Data cleaning/standardization ---
@@ -99,13 +100,7 @@ if df is not None and not df.empty:
     )
     df['xba'] = df['estimated_ba_using_speedangle'] if 'estimated_ba_using_speedangle' in df.columns else np.nan
 
-    # --- User selects rolling window(s) ---
-    min_win, max_win = 1, 60
-    st.subheader("Choose Rolling Window(s) for Feature Engineering")
-    window_range = st.slider("Rolling window size(s) (games)", min_value=min_win, max_value=max_win, value=(3, 14), step=1)
-    windows = list(range(window_range[0], window_range[1] + 1))
-
-    # --- Rolling feature functions
+    # --- Rolling feature functions ---
     def rolling_features(group, prefix, id_col):
         group = group.sort_values('game_date')
         feats = {}
@@ -151,7 +146,7 @@ if df is not None and not df.empty:
     pitcher_feats = df.groupby('pitcher_id').apply(lambda x: rolling_features(x, 'P', 'pitcher_id')).reset_index()
     df = df.merge(pitcher_feats, on='pitcher_id', how='left')
 
-    # --- Contextual HR rates
+    # --- Contextual HR rates ---
     st.subheader("Context HR Rates")
     context_dfs = {}
 
@@ -194,19 +189,9 @@ if df is not None and not df.empty:
         st.dataframe(park_hr_df)
         context_dfs['park_hr'] = park_hr_df
 
-    # --- Feature list (insert your logit_features/context_features here) ---
-    logit_features = [ ... ]  # insert your features
-    context_features = [ ... ]  # insert your context features
-
-    all_features = []
-    for base in logit_features:
-        all_features.append(base)
-    for base in context_features:
-        all_features.append(base)
-    feature_cols = [f for f in all_features if f in df.columns]
-
-    # --- Logistic Regression
+    # --- Logistic Regression ---
     st.subheader("Logistic Regression Weights (All Features)")
+    feature_cols = [col for col in df.columns if col not in ['game_date', 'hr_outcome', 'batter', 'pitcher', 'events', 'result']]
     X = df[feature_cols].fillna(0)
     y = df['hr_outcome']
     if X.shape[0] > 100 and y.nunique() == 2:
@@ -228,7 +213,7 @@ if df is not None and not df.empty:
     st.subheader("Sample Data with Features")
     st.dataframe(df[feature_cols + ['hr_outcome']].head(20))
 
-    # --- Export all engineered features as CSV
+    # --- Export all engineered features as CSV ---
     st.download_button(
         "Download Feature Data CSV (for model validation)",
         data=df[feature_cols + ['hr_outcome']].to_csv(index=False).encode(),
