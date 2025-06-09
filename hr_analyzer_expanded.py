@@ -2,12 +2,9 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import roc_auc_score
 from pybaseball import statcast
 
 st.set_page_config(layout="wide")
-st.title("MLB Statcast HR Analyzer – Data Generator, Feature Engineer & Logit Weight Builder")
 
 st.markdown("""
 **1. Choose data source:**
@@ -20,6 +17,19 @@ st.markdown("""
 - Download all outputs for your model building
 """)
 
+# === Rolling window selection (at the top, only ONCE) ===
+min_win, max_win = 1, 60
+st.subheader("Choose Rolling Window(s) for Feature Engineering")
+window_range = st.slider(
+    "Rolling window size(s) (games)",
+    min_value=min_win,
+    max_value=max_win,
+    value=(3, 14),
+    step=1
+)
+windows = list(range(window_range[0], window_range[1] + 1))
+
+# === Data source selection ===
 data_source = st.radio(
     "Select data source:",
     ["Upload CSV", "Fetch new data from MLB Statcast (pybaseball)"]
