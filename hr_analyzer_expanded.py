@@ -89,7 +89,7 @@ if df is not None and not df.empty:
     df['xba'] = df['estimated_ba_using_speedangle'] if 'estimated_ba_using_speedangle' in df.columns else np.nan
 
     # --- Rolling feature functions ---
-    def rolling_features(group, prefix, id_col):
+    def rolling_features(group, prefix, id_col, windows):
         group = group.sort_values('game_date')
         feats = {}
         for w in windows:
