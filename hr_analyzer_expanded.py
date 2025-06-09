@@ -40,6 +40,20 @@ elif data_source == "Fetch new data from MLB Statcast (pybaseball)":
     if st.button("Fetch Statcast Data"):
         with st.spinner("Fetching Statcast data from MLB..."):
             df = statcast(start_dt=start_date.strftime("%Y-%m-%d"), end_dt=end_date.strftime("%Y-%m-%d"))
+            # --- Filter to only batted ball events in play ---
+if df is not None:
+    if 'type' in df.columns:
+        # Statcast convention: type=='X' means ball in play
+        df = df[df['type'] == 'X']
+    elif 'events' in df.columns:
+        batted_ball_events = [
+            'single', 'double', 'triple', 'home_run',
+            'field_out', 'force_out', 'grounded_into_double_play', 'fielders_choice_out',
+            'other_out', 'fielders_choice', 'double_play', 'triple_play'
+        ]
+        df = df[df['events'].str.lower().isin(batted_ball_events)]
+    else:
+        st.warning("Could not auto-detect batted ball event filter; review your data.")
         st.success(f"Loaded {len(df)} events from {start_date} to {end_date}")
 
 if df is not None and not df.empty:
