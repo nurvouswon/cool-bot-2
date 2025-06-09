@@ -149,8 +149,8 @@ if df is not None and not df.empty:
         results = []
         # Process batters
         for idx, batter_id in enumerate(batter_ids):
-        group = df[df['batter_id'] == batter_id]
-        feats = rolling_features(group, 'B', 'batter_id', windows)
+            group = df[df['batter_id'] == batter_id]
+            feats = rolling_features(group, 'B', 'batter_id', windows)
             row = {'batter_id': batter_id}
             row.update(feats)
             results.append(row)
