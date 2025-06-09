@@ -129,9 +129,8 @@ if df is not None and not df.empty:
         return pd.Series(feats)
 
     st.subheader("Engineering Rolling Features")
-    batter_feats = df.groupby('batter_id').apply(lambda x: rolling_features(x, 'B', 'batter_id')).reset_index()
-    df = df.merge(batter_feats, on='batter_id', how='left')
-    pitcher_feats = df.groupby('pitcher_id').apply(lambda x: rolling_features(x, 'P', 'pitcher_id')).reset_index()
+    batter_feats = df.groupby('batter_id').apply(lambda x: rolling_features(x, 'B', 'batter_id', windows)).reset_index()
+    pitcher_feats = df.groupby('pitcher_id').apply(lambda x: rolling_features(x, 'P', 'pitcher_id', windows)).reset_index()
     df = df.merge(pitcher_feats, on='pitcher_id', how='left')
 
     # --- Contextual HR rates ---
