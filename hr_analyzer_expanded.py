@@ -51,8 +51,7 @@ elif data_source == "Fetch new data from MLB Statcast (pybaseball)":
         end_date = st.date_input("End date", value=datetime.today())
     if st.button("Fetch Statcast Data"):
         with st.spinner("Fetching Statcast data from MLB..."):
-            df = statcast(start_dt=start_date.strftime("%Y-%m-%d"), end_dt=end_date.strftime("%Y-%m-%d"))
-            # --- Filter to only batted ball events in play ---
+             # --- Filter to only batted ball events in play ---
             if 'type' in df.columns:
                 # Statcast convention: type=='X' means ball in play
                 df = df[df['type'] == 'X']
@@ -140,11 +139,42 @@ if df is not None and not df.empty:
             feats[f'{prefix}_hardhit_pct_{w}'] = hard / pa if pa else np.nan
         return pd.Series(feats)
 
-    st.subheader("Engineering Rolling Features")
-    batter_feats = df.groupby('batter_id').apply(lambda x: rolling_features(x, 'B', 'batter_id', windows)).reset_index()
-    df = df.merge(batter_feats, on='batter_id', how='left')
-    pitcher_feats = df.groupby('pitcher_id').apply(lambda x: rolling_features(x, 'P', 'pitcher_id', windows)).reset_index()
-    df = df.merge(pitcher_feats, on='pitcher_id', how='left')
+        st.subheader("Engineering Rolling Features")
+
+        batter_ids = df['batter_id'].unique()
+        pitcher_ids = df['pitcher_id'].unique()
+        total_steps = len(batter_ids) + len(pitcher_ids)
+        progress = st.progress(0, text="Processing rolling features...")
+
+        results = []
+        # Process batters
+        for idx, batter_id in enumerate(batter_ids):
+        group = df[df['batter_id'] == batter_id]
+        feats = rolling_features(group, 'B', 'batter_id', windows)
+            row = {'batter_id': batter_id}
+            row.update(feats)
+            results.append(row)
+            progress.progress((idx + 1) / total_steps, text=f"Processing batters: {idx + 1}/{len(batter_ids)}")
+
+        batter_feats = pd.DataFrame(results)
+        df = df.merge(batter_feats, on='batter_id', how='left')
+
+        # Process pitchers
+        results = []
+        for idx, pitcher_id in enumerate(pitcher_ids):
+            group = df[df['pitcher_id'] == pitcher_id]
+            feats = rolling_features(group, 'P', 'pitcher_id', windows)
+            row = {'pitcher_id': pitcher_id}
+            row.update(feats)
+            results.append(row)
+            # Update overall progress
+            progress.progress((len(batter_ids) + idx + 1) / total_steps, text=f"Processing pitchers: {idx + 1}/{len(pitcher_ids)}")
+
+        pitcher_feats = pd.DataFrame(results)
+        df = df.merge(pitcher_feats, on='pitcher_id', how='left')
+
+        # Final progress
+        progress.progress(1.0, text="Rolling features complete!")
 
     # --- Contextual HR rates ---
     st.subheader("Context HR Rates")
