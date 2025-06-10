@@ -11,6 +11,10 @@ import pybaseball
 pybaseball.cache.enable()  # Enable disk caching for all pybaseball requests!
 # -------------------------------- CONFIG -------------------------------- #
 # MLB park HR rates (FanGraphs/Statcast long-term rates; adjust as needed)
+@st.cache_data(show_spinner=True)
+def cached_statcast(start_date, end_date):
+    return pybaseball.statcast(start_date, end_date)
+    
 park_hr_rate_map = {
     'angels_stadium': 1.05, 'angel_stadium': 1.05, 'minute_maid_park': 1.06, 'coors_field': 1.30,
     'yankee_stadium': 1.19, 'fenway_park': 0.97, 'rogers_centre': 1.10, 'tropicana_field': 0.85,
