@@ -6,6 +6,8 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 from sklearn.preprocessing import StandardScaler
 from pybaseball import statcast
+from pybaseball import cache
+cache.enable()
 
 st.set_page_config(layout="wide")
 
