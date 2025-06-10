@@ -106,7 +106,7 @@ if df is not None and not df.empty:
                 3 * (lastN['events'] == 'triple').sum(),
                 4 * (lastN['events'] == 'home_run').sum()
             ])
-            ab = sum((lastN['events'] == x).sum() for x in ['single', 'double', 'triple', 'home_run', 'field_out', 'force_out', 'other_out'])
+            ab = sum((lastN['events'] == x).sum() for x in ['single', 'double', 'triple', 'home_run', 'field_out'])
             single = (lastN['xba'] >= 0.5) & (lastN['launch_angle'] < 15)
             double = (lastN['xba'] >= 0.5) & (lastN['launch_angle'].between(15, 30))
             triple = (lastN['xba'] >= 0.5) & (lastN['launch_angle'].between(30, 40))
@@ -144,7 +144,7 @@ if df is not None and not df.empty:
                 3 * (lastN['events'] == 'triple').sum(),
                 4 * (lastN['events'] == 'home_run').sum()
             ])
-            ab = sum((lastN['events'] == x).sum() for x in ['single', 'double', 'triple', 'home_run', 'field_out', 'force_out', 'other_out'])
+            ab = sum((lastN['events'] == x).sum() for x in ['single', 'double', 'triple', 'home_run', 'field_out'])
             single = (lastN['xba'] >= 0.5) & (lastN['launch_angle'] < 15)
             double = (lastN['xba'] >= 0.5) & (lastN['launch_angle'].between(15, 30))
             triple = (lastN['xba'] >= 0.5) & (lastN['launch_angle'].between(30, 40))
