@@ -6,8 +6,6 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 from sklearn.preprocessing import StandardScaler
 from pybaseball import statcast
-from pybaseball import cache
-cache.enable()
 
 st.set_page_config(layout="wide")
 
@@ -24,11 +22,27 @@ st.markdown("""
 - Fit logistic regression (with scaling) and output feature weights
 """)
 
-# ---- Data source selection ----
-data_source = st.radio("Select data source:",
+# ========== Utility: Deduplicate columns ==============
+def dedup_columns(df):
+    df = df.copy()
+    seen = {}
+    new_cols = []
+    for col in df.columns:
+        base = col
+        count = seen.get(base, 0)
+        if count == 0:
+            new_cols.append(base)
+        else:
+            new_cols.append(f"{base}_{count}")
+        seen[base] = count + 1
+    df.columns = new_cols
+    return df
+
+# ========== Data Source Selection ===========
+data_source = st.radio(
+    "Select data source:",
     ["Upload CSV", "Fetch new data from MLB Statcast (pybaseball)"]
 )
-
 df = None
 
 if data_source == "Upload CSV":
@@ -38,48 +52,42 @@ if data_source == "Upload CSV":
 elif data_source == "Fetch new data from MLB Statcast (pybaseball)":
     col1, col2 = st.columns(2)
     with col1:
-        start_date = st.date_input("Start date", value=datetime.today() - timedelta(days=7))
+        start_date = st.date_input("Start date", value=datetime.today() - timedelta(days=30))
     with col2:
         end_date = st.date_input("End date", value=datetime.today())
     if st.button("Fetch Statcast Data"):
-        with st.spinner("Fetching Statcast data from MLB..."):
+        with st.spinner("Fetching Statcast data from MLB... This may take several minutes."):
             df = statcast(start_dt=start_date.strftime("%Y-%m-%d"), end_dt=end_date.strftime("%Y-%m-%d"))
-if df is not None:
-    # --- Filter to only relevant batted ball events ---
+        st.success(f"Loaded {len(df)} events from {start_date} to {end_date}")
+
+# ========== Main Feature Engineering & Analysis ==========
+if df is not None and not df.empty:
+    # Standardize columns
     df.columns = [c.lower().replace(" ", "_") for c in df.columns]
+    # Filter batted ball events in play
     allowed_events = ['single', 'double', 'triple', 'home_run', 'field_out']
-    if 'events' in df.columns:
+    if 'type' in df.columns and 'events' in df.columns:
+        df = df[(df['type'] == 'X') & (df['events'].str.lower().isin(allowed_events))]
+    elif 'events' in df.columns:
         df = df[df['events'].str.lower().isin(allowed_events)]
-    elif 'type' in df.columns:
-        df = df[df['type'] == 'X']
+    else:
+        st.error("No 'events' column detected. Cannot filter to batted ball events.")
+        st.stop()
 
-    st.success(f"Loaded {len(df)} batted ball events.")
-
-    # --- Data cleaning/standardization ---
     if 'game_date' in df.columns:
         df['game_date'] = pd.to_datetime(df['game_date'])
     else:
         st.error("Missing 'game_date' column in dataset.")
         st.stop()
 
-    # --- HR tagging ---
+    # Tag HR outcomes
     hr_events = ['home_run', 'home run', 'hr']
-    if 'events' in df.columns:
-        df['hr_outcome'] = df['events'].str.lower().isin(hr_events).astype(int)
-    elif 'result' in df.columns:
-        df['hr_outcome'] = df['result'].str.lower().isin(hr_events).astype(int)
-    else:
-        df['hr_outcome'] = 0
+    df['hr_outcome'] = df['events'].str.lower().isin(hr_events).astype(int)
 
-    # --- Batter/Pitcher/Stat columns (with fallback handling) ---
     df['batter_id'] = df.get('batter', df.get('batter_id', np.nan))
     df['pitcher_id'] = df.get('pitcher', df.get('pitcher_id', np.nan))
     df['exit_velocity'] = df.get('launch_speed', df.get('exit_velocity', np.nan))
     df['launch_angle'] = df.get('launch_angle', np.nan)
-    df['release_spin_rate'] = df.get('release_spin_rate', np.nan)
-    df['release_speed'] = df.get('release_speed', np.nan)
-    df['p_throws'] = df.get('p_throws', df.get('pitcher_hand', 'NA')).fillna('NA')
-    df['stand'] = df.get('stand', df.get('batter_hand', 'NA')).fillna('NA')
     df['xwoba'] = (
         df['estimated_woba_using_speedangle']
         if 'estimated_woba_using_speedangle' in df.columns else
@@ -87,13 +95,19 @@ if df is not None:
     )
     df['xba'] = df['estimated_ba_using_speedangle'] if 'estimated_ba_using_speedangle' in df.columns else np.nan
 
-    # --- Rolling feature functions ---
-    ROLLING_WINDOWS = [3, 5, 7, 14]
+    windows = [3, 5, 7, 14]
 
-    def rolling_features(group, prefix):
+    # ========== Rolling Feature Engineering ==========
+    st.markdown("### Engineering Rolling Features (with progress bar)")
+    feature_progress = st.progress(0)
+    batter_ids = df['batter_id'].unique()
+    pitcher_ids = df['pitcher_id'].unique()
+    total_ids = len(batter_ids) + len(pitcher_ids)
+
+    def compute_rolling(group, prefix):
         group = group.sort_values('game_date')
         feats = {}
-        for w in ROLLING_WINDOWS:
+        for w in windows:
             lastN = group.tail(w)
             pa = len(lastN)
             barrels = lastN[(lastN['exit_velocity'] > 95) & (lastN['launch_angle'].between(20, 35))].shape[0]
@@ -105,7 +119,7 @@ if df is not None:
                 3 * (lastN['events'] == 'triple').sum(),
                 4 * (lastN['events'] == 'home_run').sum()
             ])
-            ab = sum((lastN['events'] == x).sum() for x in allowed_events)
+            ab = sum((lastN['events'] == x).sum() for x in ['single', 'double', 'triple', 'home_run', 'field_out'])
             single = (lastN['xba'] >= 0.5) & (lastN['launch_angle'] < 15)
             double = (lastN['xba'] >= 0.5) & (lastN['launch_angle'].between(15, 30))
             triple = (lastN['xba'] >= 0.5) & (lastN['launch_angle'].between(30, 40))
@@ -129,62 +143,31 @@ if df is not None:
             feats[f'{prefix}_hardhit_pct_{w}'] = hard / pa if pa else np.nan
         return pd.Series(feats)
 
-    # ---- Feature engineering progress bar ----
-    st.markdown("### Engineering Rolling Features (with progress bar)")
-    progress = st.progress(0, text="Rolling features for batters...")
-    batter_feats = []
-    batter_ids = df['batter_id'].unique()
+    # Progress bar for batters
+    batter_results = []
     for idx, b_id in enumerate(batter_ids):
         group = df[df['batter_id'] == b_id]
-        feats = rolling_features(group, 'B')
-        feats['batter_id'] = b_id
-        batter_feats.append(feats)
-        progress.progress(idx / (len(batter_ids) + 1), text=f"Batter: {idx + 1}/{len(batter_ids)}")
-
-    batter_feats = pd.DataFrame(batter_feats)
+        feats = compute_rolling(group, 'B')
+        row = {'batter_id': b_id}
+        row.update(feats)
+        batter_results.append(row)
+        feature_progress.progress((idx + 1) / total_ids, text=f"Batter {idx + 1}/{len(batter_ids)}")
+    batter_feats = pd.DataFrame(batter_results)
     df = df.merge(batter_feats, on='batter_id', how='left')
 
-    progress.progress(0.6, text="Rolling features for pitchers...")
-    pitcher_feats = []
-    pitcher_ids = df['pitcher_id'].unique()
+    # Progress bar for pitchers
     for idx, p_id in enumerate(pitcher_ids):
         group = df[df['pitcher_id'] == p_id]
-        feats = rolling_features(group, 'P')
-        feats['pitcher_id'] = p_id
-        pitcher_feats.append(feats)
-        progress.progress(0.6 + 0.4 * idx / (len(pitcher_ids) + 1), text=f"Pitcher: {idx + 1}/{len(pitcher_ids)}")
-    pitcher_feats = pd.DataFrame(pitcher_feats)
+        feats = compute_rolling(group, 'P')
+        row = {'pitcher_id': p_id}
+        row.update(feats)
+        batter_results.append(row)  # just to update the bar
+        feature_progress.progress((len(batter_ids) + idx + 1) / total_ids, text=f"Pitcher {idx + 1}/{len(pitcher_ids)}")
+    pitcher_feats = pd.DataFrame([r for r in batter_results if 'pitcher_id' in r])
     df = df.merge(pitcher_feats, on='pitcher_id', how='left')
 
-    progress.progress(1.0, text="Rolling features done.")
-
-    # ========== Merge Context Data: ParkHR, HandedHR, PitchTypeHR ==========
-    # For demo, create some dummy context rates. Replace with real CSV merges as needed!
-    park_list = df['home_team'].unique() if 'home_team' in df.columns else ['demo_park']
-    park_hr = pd.DataFrame({'park': park_list, 'ParkHRRate': np.random.uniform(0.9, 1.2, size=len(park_list))})
-    handed_hr = pd.DataFrame({'BatterHandedness': df['stand'].unique(), 'PitcherHandedness': df['p_throws'].unique()})
-    handed_hr['HandedHRRate'] = np.random.uniform(0.02, 0.06, size=handed_hr.shape[0])
-    pitchtype_hr = pd.DataFrame({'pitch_type': df['pitch_type'].unique() if 'pitch_type' in df.columns else ['FF'],
-                                 'PitchTypeHRRate': np.random.uniform(0.01, 0.04, size=df['pitch_type'].nunique() if 'pitch_type' in df.columns else 1)})
-
-    # Normalize key columns before merging
-    if 'home_team' in df.columns:
-        df['park'] = df['home_team']
-    else:
-        df['park'] = 'demo_park'
-
-    df = df.merge(park_hr, on='park', how='left')
-    df = df.merge(handed_hr, left_on=['stand','p_throws'], right_on=['BatterHandedness','PitcherHandedness'], how='left')
-    if 'pitch_type' in df.columns:
-        df = df.merge(pitchtype_hr, on='pitch_type', how='left')
-    else:
-        df['PitchTypeHRRate'] = 0.02
-
-    # --------- Deduplicate columns utility ---------
-    def dedup_columns(df):
-        df = df.copy()
-        df.columns = pd.io.parsers.ParserBase({'names':df.columns})._maybe_dedup_names(df.columns)
-        return df
+    feature_progress.progress(1.0, text="Feature engineering complete.")
+    st.success("Rolling features done.")
 
     # ========== EVENT-LEVEL FEATURE EXPORT ==========
     st.markdown("#### Download Event-Level CSV (all features, 1 row per batted ball event):")
@@ -197,39 +180,46 @@ if df is not None:
         file_name="event_level_features.csv"
     )
 
-    # ========== PLAYER-LEVEL FEATURE EXPORT ==========
-    st.markdown("#### Download Player-Level Rolling Feature CSV (1 row per batter, as of last date):")
-    player_level = dedup_columns(batter_feats)
-    st.dataframe(player_level.head(20))
+    # ========== PLAYER-LEVEL (LATEST-ROLLING) FEATURE EXPORT ==========
+    st.markdown("#### Download Player-Level CSV (1 row per batter):")
+    # Use last game_date for each batter_id
+    player_level = (
+        df.sort_values('game_date')
+        .groupby('batter_id')
+        .last()
+        .reset_index()
+    )
+    player_cols = [c for c in player_level.columns if c not in ['game_date', 'batter', 'pitcher', 'events', 'result']]
+    player_df = dedup_columns(player_level[player_cols + ['hr_outcome']])
+    st.dataframe(player_df.head(20))
     st.download_button(
-        "⬇️ Download Player-Level Rolling Feature CSV",
-        data=player_level.to_csv(index=False).encode(),
+        "⬇️ Download Player-Level Feature CSV",
+        data=player_df.to_csv(index=False).encode(),
         file_name="player_level_features.csv"
     )
 
-    # ========== LOGISTIC REGRESSION ANALYSIS ==========
-    st.markdown("#### Logistic Regression: All Features for HR Outcome")
-    # --- Select features for regression ---
-    regress_features = [c for c in event_df.columns if event_df[c].dtype in [np.float64, np.float32, np.int64, np.int32] and c not in ['hr_outcome']]
-    st.write(f"**Features used ({len(regress_features)}):**", regress_features[:20], "...")
-    scaler = StandardScaler()
-    X = scaler.fit_transform(event_df[regress_features].fillna(0))
+    # ========== LOGISTIC REGRESSION (WITH SCALING) ==========
+    st.markdown("#### Logistic Regression Weights (Standardized Features)")
+    logit_features = [c for c in event_df.columns if c not in ['batter_id', 'pitcher_id', 'game_date', 'hr_outcome']]
+    X = event_df[logit_features].fillna(0)
     y = event_df['hr_outcome']
-    with st.spinner("Fitting logistic regression..."):
-        progress_bar = st.progress(0.0, text="Fitting logistic regression...")
-        model = LogisticRegression(max_iter=1000, solver='lbfgs', n_jobs=-1)
-        model.fit(X, y)
-        progress_bar.progress(1.0, text="Regression complete.")
-        weights = pd.Series(model.coef_[0], index=regress_features).sort_values(ascending=False)
-        weights_df = pd.DataFrame({'feature': weights.index, 'weight': weights.values})
-        auc = roc_auc_score(y, model.predict_proba(X)[:, 1])
-    st.write(weights_df)
-    st.markdown(f"**In-sample AUC:** `{auc:.3f}`")
-    st.download_button(
-        "⬇️ Download Logistic Regression Feature Weights CSV",
-        data=weights_df.to_csv(index=False).encode(),
-        file_name="logit_feature_weights.csv"
-    )
 
+    if X.shape[0] > 100 and y.nunique() == 2:
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+        model = LogisticRegression(max_iter=500)
+        model.fit(X_scaled, y)
+        weights = pd.Series(model.coef_[0], index=logit_features).sort_values(ascending=False)
+        weights_df = pd.DataFrame({'feature': weights.index, 'weight': weights.values})
+        st.dataframe(weights_df.head(30))
+        auc = roc_auc_score(y, model.predict_proba(X_scaled)[:, 1])
+        st.markdown(f"**In-sample AUC:** `{auc:.3f}`")
+        st.download_button(
+            "⬇️ Download Logistic Weights CSV",
+            data=weights_df.to_csv(index=False).encode(),
+            file_name="logit_feature_weights.csv"
+        )
+    else:
+        st.warning("Not enough data for regression.")
 else:
-    st.info("Upload or fetch data to start analysis.")
+    st.info("Upload or generate data to start analysis.")
