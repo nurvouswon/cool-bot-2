@@ -7,7 +7,8 @@ import requests
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import roc_auc_score
-
+import pybaseball
+pybaseball.cache.enable()  # Enable disk caching for all pybaseball requests!
 # -------------------------------- CONFIG -------------------------------- #
 # MLB park HR rates (FanGraphs/Statcast long-term rates; adjust as needed)
 park_hr_rate_map = {
