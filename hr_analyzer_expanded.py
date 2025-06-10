@@ -199,9 +199,11 @@ if df is not None and not df.empty:
     )
 
     # ========== LOGISTIC REGRESSION (WITH SCALING) ==========
-    st.markdown("#### Logistic Regression Weights (Standardized Features)")
     logit_features = [c for c in event_df.columns if c not in ['batter_id', 'pitcher_id', 'game_date', 'hr_outcome']]
-    X = event_df[logit_features].fillna(0)
+
+    # Select only numeric columns
+    numeric_features = event_df[logit_features].select_dtypes(include=[np.number]).columns.tolist()
+    X = event_df[numeric_features].fillna(0)
     y = event_df['hr_outcome']
 
     if X.shape[0] > 100 and y.nunique() == 2:
