@@ -55,8 +55,7 @@ if df is not None and not df.empty:
     elif 'events' in df.columns:
         batted_ball_events = [
             'single', 'double', 'triple', 'home_run',
-            'field_out', 'force_out', 'grounded_into_double_play', 'fielders_choice_out',
-            'other_out', 'fielders_choice', 'double_play', 'triple_play'
+            'field_out'
         ]
         df = df[df['events'].str.lower().isin(batted_ball_events)]
     # Always create a 'park' column from 'home_team' if needed
