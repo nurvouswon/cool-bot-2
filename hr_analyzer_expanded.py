@@ -8,13 +8,11 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import roc_auc_score
 import pybaseball
-pybaseball.cache.enable()  # Enable disk caching for all pybaseball requests!
-# -------------------------------- CONFIG -------------------------------- #
-# MLB park HR rates (FanGraphs/Statcast long-term rates; adjust as needed)
-@st.cache_data(show_spinner=True)
-def cached_statcast(start_date, end_date):
-    return pybaseball.statcast(start_date, end_date)
-    
+
+# Enable pybaseball caching
+pybaseball.cache.enable()
+
+# ----------------- PARK/WEATHER CONTEXT ----------------- #
 park_hr_rate_map = {
     'angels_stadium': 1.05, 'angel_stadium': 1.05, 'minute_maid_park': 1.06, 'coors_field': 1.30,
     'yankee_stadium': 1.19, 'fenway_park': 0.97, 'rogers_centre': 1.10, 'tropicana_field': 0.85,
@@ -26,7 +24,6 @@ park_hr_rate_map = {
     'petco_park': 0.85, 'chase_field': 1.06, 'citizens_bank_park': 1.19, 'sutter_health_park': 1.12
 }
 
-# MLB park altitudes in feet (approximate; not all are material for HR, but useful for context)
 park_altitude_map = {
     'coors_field': 5280, 'chase_field': 1100, 'dodger_stadium': 338, 'minute_maid_park': 50,
     'fenway_park': 19, 'wrigley_field': 594, 'great_american_ball_park': 489, 'oracle_park': 10,
@@ -37,14 +34,12 @@ park_altitude_map = {
     'nationals_park': 25, 'american_family_field': 633, 'sutter_health_park': 20
 }
 
-# Roof status (static or default, not all parks have roofs)
 roof_status_map = {
     'rogers_centre': 'closed', 'chase_field': 'open', 'minute_maid_park': 'open',
     'loan_depot_park': 'closed', 'globe_life_field': 'open', 'tropicana_field': 'closed',
     'american_family_field': 'open'
 }
 
-# City mapping for weather lookups (Statcast home_team -> City)
 mlb_team_city_map = {
     'ANA': 'Anaheim', 'ARI': 'Phoenix', 'ATL': 'Atlanta', 'BAL': 'Baltimore', 'BOS': 'Boston',
     'CHC': 'Chicago', 'CIN': 'Cincinnati', 'CLE': 'Cleveland', 'COL': 'Denver', 'CWS': 'Chicago',
@@ -54,8 +49,8 @@ mlb_team_city_map = {
     'SF': 'San Francisco', 'STL': 'St. Louis', 'TB': 'St. Petersburg', 'TEX': 'Arlington', 'TOR': 'Toronto',
     'WSH': 'Washington'
 }
-# ------------------------------------------------------------------------ #
 
+# --------------------- STREAMLIT UI --------------------- #
 st.title("⚾ Statcast MLB HR Analyzer — All Context Features (No CSV Upload)")
 st.markdown("""
 Fetches MLB Statcast batted ball events and automatically engineers **advanced rolling, park, weather, matchup, and context features for HR prediction**.
@@ -75,25 +70,25 @@ if run_query:
     df = statcast(start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
     st.success(f"Loaded {len(df)} events from {start_date} to {end_date}")
 
-    # Target events only
+    # Target batted ball events only
     target_events = ['single', 'double', 'triple', 'home_run', 'field_out']
     df = df[df['events'].isin(target_events)].reset_index(drop=True)
 
     df['game_date'] = pd.to_datetime(df['game_date'])
-    df['park'] = df['home_team'].str.lower().str.replace(' ', '_')
+    df['park'] = df['home_team'].astype(str).str.lower().str.replace(' ', '_')
     df['batter_id'] = df['batter']
     df['pitcher_id'] = df['pitcher']
     df['home_team_code'] = df['home_team']
 
-    # Park HR, altitude, roof
+    # Context: park, altitude, roof
     df['park_hr_rate'] = df['park'].map(park_hr_rate_map).fillna(1.00)
     df['park_altitude'] = df['park'].map(park_altitude_map).fillna(0)
     df['roof_status'] = df['park'].map(roof_status_map).fillna("open")
 
-    # Weather cache (by city/date)
-    st.write("Merging weather data (may take a while for large date ranges)...")
+    # --- WEATHER (city+date caching) ---
+    st.write("Merging weather data (can be slow for big ranges)...")
     weather_features = ['temp', 'wind_mph', 'wind_dir', 'humidity', 'condition']
-    df['weather_key'] = df['home_team_code'] + "_" + df['game_date'].dt.strftime("%Y%m%d")
+    df['weather_key'] = df['home_team_code'].astype(str) + "_" + df['game_date'].dt.strftime("%Y%m%d")
 
     @st.cache_data(show_spinner=False)
     def get_weather(city, date):
@@ -103,7 +98,6 @@ if run_query:
             resp = requests.get(url, timeout=10)
             if resp.status_code == 200 and resp.text.strip():
                 data = resp.json()
-                # Get the most common MLB game hour (19:00 local)
                 best_hr = 19
                 hours = data['forecast']['forecastday'][0]['hour']
                 hour_data = min(hours, key=lambda h: abs(int(h['time'].split(' ')[1].split(':')[0]) - best_hr))
@@ -115,7 +109,7 @@ if run_query:
                     'condition': hour_data['condition']['text']
                 }
         except Exception as e:
-            st.warning(f"Weather API error for {city} {date}: {e}")
+            return {k: None for k in weather_features}
         return {k: None for k in weather_features}
 
     progress = st.progress(0, text="Fetching weather...")
@@ -130,7 +124,7 @@ if run_query:
         progress.progress((i + 1) / len(unique_keys), text=f"Weather {i+1}/{len(unique_keys)}")
     progress.empty()
 
-    # Rolling Features (Batter/Pitcher, all windows)
+    # --------------- ADVANCED ROLLING STATS ---------------
     st.write("Engineering rolling stat features (batter/pitcher, 3/5/7/14)...")
     ROLL_WINDOWS = [3, 5, 7, 14]
     batter_stats = ['launch_speed', 'launch_angle', 'hit_distance_sc', 'woba_value', 'iso_value']
@@ -143,23 +137,24 @@ if run_query:
                 df[feat] = (
                     df.groupby(id_col)[stat]
                     .transform(lambda x: x.shift(1).rolling(w, min_periods=1).mean())
+                    .fillna(0)
                 )
         return df
 
     df = add_rolling_features(df, 'batter_id', batter_stats, ROLL_WINDOWS, 'B')
     df = add_rolling_features(df, 'pitcher_id', pitcher_stats, ROLL_WINDOWS, 'P')
 
-    # Context features: handedness, pitch, platoon, day/night, flyball, pull
+    # -------------- Contextual/stat features --------------
     df['handed_matchup'] = df['stand'].astype(str) + df['p_throws'].astype(str)
-    df['primary_pitch'] = df['pitch_type']
+    df['primary_pitch'] = df['pitch_type'].astype(str).fillna('')
     df['platoon'] = (df['stand'] != df['p_throws']).astype(int)
     df['game_hour'] = df['game_date'].dt.hour
     df['is_day'] = (df['game_hour'] < 18).astype(int)
-    df['pull_air'] = ((df['bb_type'] == 'fly_ball') & (df['hc_x'] < 125)).astype(int)
+    df['pull_air'] = ((df['bb_type'] == 'fly_ball') & (df['hc_x'].fillna(128) < 125)).astype(int)
     df['flyball'] = (df['bb_type'] == 'fly_ball').astype(int)
     df['line_drive'] = (df['bb_type'] == 'line_drive').astype(int)
     df['groundball'] = (df['bb_type'] == 'ground_ball').astype(int)
-    df['pull_side'] = (df['hc_x'] < 125).astype(int)
+    df['pull_side'] = (df['hc_x'].fillna(128) < 125).astype(int)
     df['hr_outcome'] = (df['events'] == 'home_run').astype(int)
 
     st.success("Feature engineering complete.")
