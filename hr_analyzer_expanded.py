@@ -237,7 +237,21 @@ if run_query:
         df[flag_col] = expr(df)
 
     # ========== ADVANCED: Handed park HR rate ==========
-    # For demo: just use park_hr_rate, but this is where you can insert your own lookup if you build a handedness-specific rate
+def compute_park_handed_hr_rate(df):
+    """
+    Compute park-level HR rate for each batter handedness and pitcher handedness combo.
+    Returns a DataFrame with ['park', 'handed_matchup', 'park_handed_hr_rate'],
+    and adds 'park_handed_hr_rate' column to input df.
+    """
+    # We want to group by park and handed matchup (e.g., RHP vs LHB)
+    grp = df.groupby(['park', 'handed_matchup'])
+    hr_counts = grp['hr_outcome'].sum()
+    total_counts = grp['hr_outcome'].count()
+    park_handed_hr_rate = (hr_counts / total_counts).reset_index().rename(
+        columns={0: 'park_handed_hr_rate', 'hr_outcome': 'park_handed_hr_rate'}
+    )
+    df = df.merge(park_handed_hr_rate, on=['park', 'handed_matchup'], how='left')
+    return df
 
     # ========== EXPORTS ==========
     # (all columns, robust to missing)
