@@ -140,7 +140,7 @@ if run_query:
         if col not in df.columns:
             st.warning(f"Missing advanced stat: {col}")
             df[col] = np.nan
-
+    ROLL = [3, 5, 7, 14]
     # --- Custom batted ball flags: robust to missing (use .fillna) ---
     df['is_barrel'] = (
         (df['launch_speed'].fillna(-999) >= 98) &
