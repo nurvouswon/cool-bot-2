@@ -197,8 +197,6 @@ if run_query:
     }.items():
         df[flag_col] = expr(df)
 
-    # --- Rolling stats for both batters and pitchers --- #
-    ROLL = [3, 5, 7, 14]
     # Key advanced stats
     batter_stats = ['launch_speed', 'launch_angle', 'hit_distance_sc', 'woba_value', 'iso_value', 'xwoba', 'xslg', 'xba']
     pitcher_stats = ['launch_speed', 'launch_angle', 'hit_distance_sc', 'woba_value', 'iso_value', 'xwoba', 'xslg', 'xba']
