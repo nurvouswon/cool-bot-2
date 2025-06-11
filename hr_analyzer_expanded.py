@@ -238,12 +238,12 @@ if run_query:
 
     # ========== ADVANCED: Handed park HR rate ==========
     def compute_park_handed_hr_rate(df):
-    """
-    Compute park-level HR rate for each batter handedness and pitcher handedness combo.
-    Returns a DataFrame with ['park', 'handed_matchup', 'park_handed_hr_rate'],
-    and adds 'park_handed_hr_rate' column to input df.
-    """
-    # We want to group by park and handed matchup (e.g., RHP vs LHB)
+        """
+        Compute park-level HR rate for each batter handedness and pitcher handedness combo.
+        Returns a DataFrame with ['park', 'handed_matchup', 'park_handed_hr_rate'],
+        and adds 'park_handed_hr_rate' column to input df.
+        """
+        # We want to group by park and handed matchup (e.g., RHP vs LHB)
         grp = df.groupby(['park', 'handed_matchup'])
         hr_counts = grp['hr_outcome'].sum()
         total_counts = grp['hr_outcome'].count()
