@@ -64,6 +64,49 @@ st.markdown("""
 Fetches MLB Statcast batted ball events and auto-engineers **advanced rolling, park, weather, pitch-mix, and matchup features for HR prediction**.  
 No extra uploads needed. Handles missing advanced Statcast columns.
 """)
+progress = st.progress(0)
+progress_label = st.empty()
+step = 0
+total_steps = 5  # Update as needed
+
+# Step 1: Statcast fetch
+step += 1
+pct = int((step / total_steps) * 100)
+progress.progress(step / total_steps)
+progress_label.markdown(f"**Progress: {pct}% — Fetching Statcast data...**")
+# [your statcast code]
+
+# Step 2: Weather
+step += 1
+pct = int((step / total_steps) * 100)
+progress.progress(step / total_steps)
+progress_label.markdown(f"**Progress: {pct}% — Fetching weather data...**")
+# [your weather code]
+
+# Step 3: Feature engineering
+step += 1
+pct = int((step / total_steps) * 100)
+progress.progress(step / total_steps)
+progress_label.markdown(f"**Progress: {pct}% — Engineering features...**")
+# [feature engineering]
+
+# Step 4: Export tables
+step += 1
+pct = int((step / total_steps) * 100)
+progress.progress(step / total_steps)
+progress_label.markdown(f"**Progress: {pct}% — Preparing output tables...**")
+# [export code]
+
+# Step 5: Logistic regression
+step += 1
+pct = int((step / total_steps) * 100)
+progress.progress(step / total_steps)
+progress_label.markdown(f"**Progress: {pct}% — Running logistic regression...**")
+# [regression code]
+
+# Done!
+progress_label.markdown("**Analysis complete!**")
+progress.empty()
 
 col1, col2 = st.columns(2)
 with col1:
