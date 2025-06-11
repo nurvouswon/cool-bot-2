@@ -18,7 +18,7 @@ park_hr_rate_map = {
     'yankee_stadium': 1.19, 'fenway_park': 0.97, 'rogers_centre': 1.10, 'tropicana_field': 0.85,
     'camden_yards': 1.13, 'guaranteed_rate_field': 1.18, 'progressive_field': 1.01,
     'comerica_park': 0.96, 'kauffman_stadium': 0.98, 'globe_life_field': 1.00, 'dodger_stadium': 1.10,
-    'oakland_coliseum': 0.82, 't-mobile_park': 0.86, 'oracle_park': 0.82, 'wrigley_field': 1.12,
+    'oakland_coliseum': 0.82, 't-mobile_park': 0.86, 'tmobile_park': 0.86, 'oracle_park': 0.82, 'wrigley_field': 1.12,
     'great_american_ball_park': 1.26, 'american_family_field': 1.17, 'pnc_park': 0.87, 'busch_stadium': 0.87,
     'truist_park': 1.06, 'loan_depot_park': 0.86, 'citi_field': 1.05, 'nationals_park': 1.05,
     'petco_park': 0.85, 'chase_field': 1.06, 'citizens_bank_park': 1.19, 'sutter_health_park': 1.12
@@ -31,13 +31,15 @@ park_altitude_map = {
     'guaranteed_rate_field': 600, 'progressive_field': 650, 'busch_stadium': 466, 'camden_yards': 40,
     'rogers_centre': 250, 'angel_stadium': 160, 'tropicana_field': 3, 'citi_field': 3,
     'oakland_coliseum': 50, 'globe_life_field': 560, 'pnc_park': 725, 'loan_depot_park': 7,
-    'nationals_park': 25, 'american_family_field': 633, 'sutter_health_park': 20
+    'nationals_park': 25, 'american_family_field': 633, 'sutter_health_park': 20, 't-mobile_park': 0,
+    'tmobile_park': 0
 }
 
 roof_status_map = {
     'rogers_centre': 'closed', 'chase_field': 'open', 'minute_maid_park': 'open',
     'loan_depot_park': 'closed', 'globe_life_field': 'open', 'tropicana_field': 'closed',
-    'american_family_field': 'open'
+    'american_family_field': 'open', 't-mobile_park': 'open',
+    'tmobile_park': 'open'
 }
 
 mlb_team_city_map = {
@@ -75,7 +77,41 @@ if run_query:
     df = df[df['events'].isin(target_events)].reset_index(drop=True)
 
     df['game_date'] = pd.to_datetime(df['game_date'])
-    df['park'] = df['home_team'].astype(str).str.lower().str.replace(' ', '_')
+    team_code_to_park = {
+        'PHI': 'citizens_bank_park',
+        'ATL': 'truist_park',
+        'NYM': 'citi_field',
+        'BOS': 'fenway_park',
+        'NYY': 'yankee_stadium',
+        'CHC': 'wrigley_field',
+        'LAD': 'dodger_stadium',
+        'OAK': 'sutter_health_park',
+        'CIN': 'great_american_ball_park',
+        'DET': 'comerica_park',
+        'HOU': 'minute_maid_park',
+        'MIA': 'loan_depot_park',  # Fixed spelling
+        'TB': 'tropicana_field',
+        'MIL': 'american_family_field',
+        'SD': 'petco_park',
+        'SF': 'oracle_park',
+        'TOR': 'rogers_centre',
+        'CLE': 'progressive_field',
+        'MIN': 'target_field',
+        'KC': 'kauffman_stadium',
+        'CWS': 'guaranteed_rate_field',
+        'LAA': 'angel_stadium',
+        'SEA': 't-mobile_park',  # Only use once; Statcast uses 'SEA'
+        'TEX': 'globe_life_field',
+        'ARI': 'chase_field',
+        'COL': 'coors_field',
+        'PIT': 'pnc_park',
+        'STL': 'busch_stadium',
+        'BAL': 'camden_yards',
+        'WSH': 'nationals_park',
+        'ATH': 'sutter_health_park' # For Las Vegas/Oakland alternate
+    }
+    df['park'] = df['home_team'].map(team_code_to_park)
+    df['park'] = df['park'].replace({'tmobile_park': 't-mobile_park', 't mobile park': 't-mobile_park'})
     df['batter_id'] = df['batter']
     df['pitcher_id'] = df['pitcher']
     df['home_team_code'] = df['home_team']
