@@ -141,13 +141,45 @@ if run_query:
             st.warning(f"Missing advanced stat: {col}")
             df[col] = np.nan
 
-    # --- Custom batted ball flags --- #
+    # --- Custom batted ball flags: robust to missing (use .fillna) ---
     df['is_barrel'] = (
         (df['launch_speed'].fillna(-999) >= 98) &
         (df['launch_angle'].fillna(-999).between(26, 30))
-        ).astype('Int64')
+    ).astype('Int64')
     df['is_sweet_spot'] = df['launch_angle'].fillna(-999).between(8, 32).astype('Int64')
     df['is_hard_hit'] = (df['launch_speed'].fillna(-999) >= 95).astype('Int64')
+
+    # Rolling max/median EV for batters/pitchers
+    for w in ROLL:
+        df[f'B_max_ev_{w}'] = (
+            df.groupby('batter_id')['launch_speed']
+            .transform(lambda x: x.shift(1).rolling(w, min_periods=1).max())
+        )
+        df[f'B_median_ev_{w}'] = (
+            df.groupby('batter_id')['launch_speed']
+            .transform(lambda x: x.shift(1).rolling(w, min_periods=1).median())
+        )
+        df[f'P_max_ev_{w}'] = (
+            df.groupby('pitcher_id')['launch_speed']
+            .transform(lambda x: x.shift(1).rolling(w, min_periods=1).max())
+        )
+        df[f'P_median_ev_{w}'] = (
+            df.groupby('pitcher_id')['launch_speed']
+            .transform(lambda x: x.shift(1).rolling(w, min_periods=1).median())
+        )
+        # Rolling flyball distance, only for flyball events
+        df[f'B_flyball_dist_{w}'] = (
+            df.assign(is_fb=(df['bb_type'] == 'fly_ball'))
+            .groupby('batter_id')
+            .apply(lambda g: g['hit_distance_sc'].where(g['is_fb']).shift(1).rolling(w, min_periods=1).mean())
+            .reset_index(level=0, drop=True)
+        )
+        df[f'P_flyball_dist_{w}'] = (
+            df.assign(is_fb=(df['bb_type'] == 'fly_ball'))
+            .groupby('pitcher_id')
+            .apply(lambda g: g['hit_distance_sc'].where(g['is_fb']).shift(1).rolling(w, min_periods=1).mean())
+            .reset_index(level=0, drop=True)
+        )
 
     # --- Robust context/batted ball flags ---
     for flag_col, expr in {
