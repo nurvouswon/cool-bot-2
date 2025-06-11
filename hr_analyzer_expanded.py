@@ -130,7 +130,14 @@ if run_query:
             df.loc[df['weather_key'] == key, feat] = weather[feat]
         progress.progress((i + 1) / len(unique_keys), text=f"Weather {i+1}/{len(unique_keys)}")
     progress.empty()
+    # --- Weather interaction terms (robust to NaN) ---
+    for feat in ['temp', 'wind_mph', 'humidity']:
+        df[feat] = pd.to_numeric(df[feat], errors='coerce')
 
+    df['temp_x_wind'] = df['temp'] * df['wind_mph']
+    df['temp_x_humidity'] = df['temp'] * df['humidity']
+    df['wind_x_humidity'] = df['wind_mph'] * df['humidity']
+    df['wind_mph_squared'] = df['wind_mph'] ** 2
     # Robust advanced Statcast feature handling
     for col in ['xwoba', 'xslg', 'xba']:
         if col not in df.columns:
@@ -297,19 +304,17 @@ if run_query:
 
     # Features: All rolling, context, pitch mix, batted ball flags, park rates, and advanced statcast
     logit_features = [
-        c for c in event_df.columns if (
-            any(
-                s in c for s in [
-                    'launch_speed', 'launch_angle', 'hit_distance', 'woba_value', 'iso_value', 'xwoba', 'xslg', 'xba',
-                    'pitch_pct', 'rolling_hr_rate', 'max_ev', 'median_ev'
-                ]
-            ) or
-            c in [
-                'park_hr_rate', 'park_altitude', 'park_handed_hr_rate', 'platoon', 'temp', 'wind_mph', 'humidity',
-                'pull_air', 'flyball', 'line_drive', 'groundball', 'pull_side', 'is_barrel', 'is_sweet_spot', 'is_hard_hit'
-            ]
-        )
-    ]
+    c for c in event_df.columns if (
+        any(s in c for s in [
+            'launch_speed', 'launch_angle', 'hit_distance', 'woba_value', 'iso_value',
+            'xwoba', 'xslg', 'xba', 'pitch_', 'is_hard_hit', 'is_sweet_spot', 'is_barrel'
+        ]) or c in [
+            'park_hr_rate', 'park_handed_hr_rate', 'platoon', 'temp', 'wind_mph', 'humidity',
+            'pull_air', 'flyball', 'line_drive', 'groundball', 'pull_side',
+            'temp_x_wind', 'temp_x_humidity', 'wind_x_humidity', 'wind_mph_squared'
+        ]
+    )
+]
 
     # Only use features with at least 90% non-null coverage
     nonnull_thresh = 0.9
