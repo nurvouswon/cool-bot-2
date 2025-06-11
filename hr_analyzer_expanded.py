@@ -291,9 +291,10 @@ if run_query:
 
     # ===== LOGISTIC REGRESSION (with scaling/weights, robust) ===== #
     st.markdown("#### Logistic Regression Weights (Standardized Features)")
-    # Features: all rolling, context, pitch mix, flags
+    # Only include features that have at least some non-null values!
     logit_features = [
-        c for c in event_df.columns if (
+        c for c in event_df.columns
+        if (
             any(s in c for s in [
                 'launch_speed', 'launch_angle', 'hit_distance', 'woba_value', 'iso_value',
                 'xwoba', 'xslg', 'xba', 'pitch_pct_', 'max_ev', 'median_ev'
@@ -303,7 +304,7 @@ if run_query:
                 'pull_air', 'flyball', 'line_drive', 'groundball', 'pull_side',
                 'is_barrel', 'is_sweet_spot', 'is_hard_hit'
             ]
-        )
+        ) and (event_df[c].notnull().sum() > 0)  # Only features with at least some data
     ]
     model_df = event_df.dropna(subset=logit_features + ['hr_outcome'], how='any')
     if len(model_df) > 10:
