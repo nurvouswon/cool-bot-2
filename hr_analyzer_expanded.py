@@ -337,6 +337,14 @@ if run_query:
     else:
         st.warning("Not enough data with complete features to fit logistic regression for HR prediction.")
 
+    st.markdown("#### Download Logistic Regression Weights")
+    st.dataframe(weights_df.head(40))
+    st.download_button(
+        "⬇️ Download Weights CSV",
+        data=weights_df.to_csv(index=False),
+        file_name="logit_feature_weights.csv"
+    )
+
     st.success("Full analysis done! All context, advanced rolling, park (including park-handed HR rate), weather, batted ball, and robust weighting included.")
 
 else:
