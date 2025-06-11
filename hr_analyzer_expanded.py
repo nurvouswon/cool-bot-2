@@ -144,10 +144,9 @@ if run_query:
 
     # Rolling features, robust to missing columns
     ROLL = [3, 5, 7, 14]
-    # --- Key batter/pitcher stats for rolling ---
     batter_stats = ['launch_speed', 'launch_angle', 'hit_distance_sc', 'woba_value', 'iso_value', 'xwoba', 'xslg', 'xba']
     pitcher_stats = ['launch_speed', 'launch_angle', 'hit_distance_sc', 'woba_value', 'iso_value', 'xwoba', 'xslg', 'xba']
-    # Keep only columns that exist in this dataset!
+    # Only keep columns that exist
     batter_stats = [s for s in batter_stats if s in df.columns]
     pitcher_stats = [s for s in pitcher_stats if s in df.columns]
 
@@ -202,7 +201,6 @@ if run_query:
     st.success("Feature engineering complete.")
 
     # ===== EVENT-LEVEL EXPORT ===== #
-    # All new and original features, robust to missing cols
     export_cols = [
         'game_date', 'batter', 'batter_id', 'pitcher', 'pitcher_id', 'events', 'description',
         'stand', 'p_throws', 'park', 'park_hr_rate', 'park_altitude', 'roof_status',
@@ -217,17 +215,14 @@ if run_query:
     for stat in pitcher_stats:
         for w in ROLL:
             extra_cols.append(f"P_{stat}_{w}")
-    # All pitch type %s
     if 'pitch_type' in df.columns:
         pitch_types = df['pitch_type'].dropna().unique()
         for pt in pitch_types:
             for w in ROLL:
                 extra_cols.append(f"B_pitch_{pt}_{w}")
                 extra_cols.append(f"P_pitch_{pt}_{w}")
-    # Ball-in-play flags and HR outcome
     extra_cols += ['pull_air', 'flyball', 'line_drive', 'groundball', 'pull_side', 'hr_outcome']
     event_cols = export_cols + extra_cols
-    # Only keep columns that exist
     event_cols = [c for c in event_cols if c in df.columns]
     event_df = df[event_cols].copy()
     st.markdown("#### Download Event-Level CSV (all features, 1 row per batted ball event):")
@@ -247,7 +242,6 @@ if run_query:
 
     # ===== LOGISTIC REGRESSION (with scaling/weights, robust) ===== #
     st.markdown("#### Logistic Regression Weights (Standardized Features)")
-    # Features: all rolling, context, pitch mix, flags
     logit_features = [
         c for c in event_df.columns if (
             any(s in c for s in ['launch_speed', 'launch_angle', 'hit_distance', 'woba_value', 'iso_value', 'xwoba', 'xslg', 'xba', 'pitch_']) or
@@ -260,7 +254,8 @@ if run_query:
         y = model_df['hr_outcome'].astype(int)
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X)
-        model = LogisticRegression(max_iter=500with st.spinner("Training logistic regression..."):
+        with st.spinner("Training logistic regression..."):
+            model = LogisticRegression(max_iter=500)
             model.fit(X_scaled, y)
         weights = pd.Series(model.coef_[0], index=logit_features).sort_values(ascending=False)
         weights_df = pd.DataFrame({'feature': weights.index, 'weight': weights.values})
