@@ -304,7 +304,16 @@ if run_query:
 
     # ===== LOGISTIC REGRESSION (with scaling/weights, robust) ===== #
     st.markdown("#### Logistic Regression Weights (Standardized Features)")
-
+    # Features: all rolling, context, pitch mix, flags
+    logit_features = [
+        c for c in event_df.columns if (
+            any(s in c for s in [
+                'launch_speed', 'launch_angle', 'hit_distance', 'woba_value', 'iso_value',
+                'xwoba', 'xslg', 'xba', 'pitch_', 'is_', 'park_hr_rate', 'park_altitude'
+            ]) or
+            c in ['platoon', 'temp', 'wind_mph', 'humidity', 'pull_air', 'flyball', 'line_drive', 'groundball', 'pull_side']
+        )
+    ]
     # Identify features that have at least 90% non-null coverage
     nonnull_thresh = 0.9
     coverage = event_df[logit_features].notnull().mean()
