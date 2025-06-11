@@ -206,18 +206,10 @@ if run_query:
         'pull_air', 'flyball', 'line_drive', 'groundball', 'pull_side',
         'hr_outcome'
     ]
+    # ========== EVENT-LEVEL EXPORT ========== #
     event_df = df[export_cols].copy()
     st.markdown("#### Download Event-Level CSV (all features, 1 row per batted ball event):")
     st.dataframe(event_df.head(20))
-
-    # --- CACHED CSV EXPORT FUNCTIONS ---
-    @st.cache_data
-    def get_event_csv_cached(event_df):
-        return event_df.to_csv(index=False).encode()
-
-    @st.cache_data
-    def get_player_csv_cached(player_df):
-        return player_df.to_csv(index=False).encode()
 
     # --- PLAYER-LEVEL DATAFRAME ---
     player_cols = ['batter_id', 'batter'] + [f"B_{stat}_{w}" for stat in batter_stats for w in ROLL_WINDOWS]
@@ -228,16 +220,20 @@ if run_query:
     )
     st.dataframe(player_df.head(20))
 
-    # --- DOWNLOAD BUTTONS (USE CACHED DATA) ---
-    st.download_button(
-        "⬇️ Download Event-Level CSV",
-        data=get_event_csv_cached(event_df),
-        file_name="event_level_hr_features.csv"
-    )
+    # --- SAVE CSVs IN SESSION STATE --- #
+    if 'event_csv' not in st.session_state:
+        st.session_state['event_csv'] = event_df.to_csv(index=False).encode()
+    if 'player_csv' not in st.session_state:
+        st.session_state['player_csv'] = player_df.to_csv(index=False).encode()
 
     st.download_button(
+        "⬇️ Download Event-Level CSV",
+        data=st.session_state['event_csv'],
+        file_name="event_level_hr_features.csv"
+    )
+    st.download_button(
         "⬇️ Download Player-Level CSV",
-        data=get_player_csv_cached(player_df),
+        data=st.session_state['player_csv'],
         file_name="player_level_hr_features.csv"
     )
 
