@@ -142,9 +142,12 @@ if run_query:
             df[col] = np.nan
 
     # --- Custom batted ball flags --- #
-    df['is_barrel'] = ((df['launch_speed'] >= 98) & (df['launch_angle'].between(26, 30))).astype(int)
-    df['is_sweet_spot'] = (df['launch_angle'].between(8, 32)).astype(int)
-    df['is_hard_hit'] = (df['launch_speed'] >= 95).astype(int)
+    df['is_barrel'] = (
+        (df['launch_speed'].fillna(-999) >= 98) &
+        (df['launch_angle'].fillna(-999).between(26, 30))
+        ).astype('Int64')
+    df['is_sweet_spot'] = df['launch_angle'].fillna(-999).between(8, 32).astype('Int64')
+    df['is_hard_hit'] = (df['launch_speed'].fillna(-999) >= 95).astype('Int64')
 
     # --- Robust context/batted ball flags ---
     for flag_col, expr in {
