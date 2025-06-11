@@ -304,37 +304,28 @@ if run_query:
 
     # ===== LOGISTIC REGRESSION (with scaling/weights, robust) ===== #
     st.markdown("#### Logistic Regression Weights (Standardized Features)")
-    # Use all rolling, context, pitch mix, flags
-    logit_features = [
-        c for c in event_df.columns if (
-            any(x in c for x in [
-                'launch_speed', 'launch_angle', 'hit_distance', 'woba_value', 'iso_value',
-                'xwoba', 'xslg', 'xba', 'pitch_pct', 'max_ev', 'median_ev', 'hr_rate',
-                'pull_rate', 'oppo_rate', 'center_rate'
-            ]) or c in [
-                'park_hr_rate', 'park_altitude', 'platoon', 'temp', 'wind_mph', 'humidity',
-                'pull_air', 'flyball', 'line_drive', 'groundball', 'pull_side',
-                'is_barrel', 'is_sweet_spot', 'is_hard_hit'
-            ]
-        )
-    ]
-    model_df = event_df.dropna(subset=logit_features + ['hr_outcome'], how='any')
-    if len(model_df) > 10:
-        X = model_df[logit_features].astype(float)
+
+    # Identify features that have at least 90% non-null coverage
+    nonnull_thresh = 0.9
+    coverage = event_df[logit_features].notnull().mean()
+    use_feats = coverage[coverage > nonnull_thresh].index.tolist()
+
+    model_df = event_df.dropna(subset=use_feats + ['hr_outcome'], how='any')
+    if len(model_df) > 10 and len(use_feats) > 0:
+        X = model_df[use_feats].astype(float)
         y = model_df['hr_outcome'].astype(int)
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X)
         model = LogisticRegression(max_iter=500)
         with st.spinner("Training logistic regression..."):
             model.fit(X_scaled, y)
-        weights = pd.Series(model.coef_[0], index=logit_features).sort_values(ascending=False)
+        weights = pd.Series(model.coef_[0], index=use_feats).sort_values(ascending=False)
         weights_df = pd.DataFrame({'feature': weights.index, 'weight': weights.values})
         st.dataframe(weights_df.head(40))
         auc = roc_auc_score(y, model.predict_proba(X_scaled)[:, 1])
         st.write(f"Model ROC-AUC: **{auc:.3f}**")
     else:
-        st.warning("Not enough data with complete features to fit logistic regression for HR prediction.")
-
+        st.warning("Not enough data with high-coverage features to fit logistic regression for HR prediction.")
     st.success("Full analysis done! All context, rolling, park, weather, pitch mix, and spray direction features included.")
 
 else:
