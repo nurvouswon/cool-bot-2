@@ -209,10 +209,17 @@ if run_query:
     event_df = df[export_cols].copy()
     st.markdown("#### Download Event-Level CSV (all features, 1 row per batted ball event):")
     st.dataframe(event_df.head(20))
-    st.download_button("⬇️ Download Event-Level CSV", data=event_df.to_csv(index=False), file_name="event_level_hr_features.csv")
 
-    # ========== PLAYER-LEVEL EXPORT ========== #
-    st.markdown("#### Download Player-Level Rolling Feature CSV (1 row per batter):")
+    # --- CACHED CSV EXPORT FUNCTIONS ---
+    @st.cache_data
+    def get_event_csv_cached(event_df):
+        return event_df.to_csv(index=False).encode()
+
+    @st.cache_data
+    def get_player_csv_cached(player_df):
+        return player_df.to_csv(index=False).encode()
+
+    # --- PLAYER-LEVEL DATAFRAME ---
     player_cols = ['batter_id', 'batter'] + [f"B_{stat}_{w}" for stat in batter_stats for w in ROLL_WINDOWS]
     player_df = (
         event_df.groupby(['batter_id', 'batter'])
@@ -220,7 +227,19 @@ if run_query:
         .reset_index(drop=True)
     )
     st.dataframe(player_df.head(20))
-    st.download_button("⬇️ Download Player-Level CSV", data=player_df.to_csv(index=False), file_name="player_level_hr_features.csv")
+
+    # --- DOWNLOAD BUTTONS (USE CACHED DATA) ---
+    st.download_button(
+        "⬇️ Download Event-Level CSV",
+        data=get_event_csv_cached(event_df),
+        file_name="event_level_hr_features.csv"
+    )
+
+    st.download_button(
+        "⬇️ Download Player-Level CSV",
+        data=get_player_csv_cached(player_df),
+        file_name="player_level_hr_features.csv"
+    )
 
     # ========== LOGISTIC REGRESSION (with progress) ========== #
     st.markdown("#### Logistic Regression Weights (Standardized Features)")
