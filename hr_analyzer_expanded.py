@@ -4,6 +4,9 @@ import numpy as np
 from datetime import datetime, timedelta
 from pybaseball import statcast
 import requests
+from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import roc_auc_score
 
 # --- Static mappings (parks, teams, cities, altitudes) ---
 park_hr_rate_map = {
@@ -129,8 +132,8 @@ if run_query:
 
     # Rolling stat features (batters & pitchers)
     ROLL = [3, 5, 7, 14]
-    batter_stats = ['launch_speed', 'launch_angle', 'hit_distance_sc', 'woba_value', 'iso_value', 'xwoba', 'xslg', 'xba']
-    pitcher_stats = ['launch_speed', 'launch_angle', 'hit_distance_sc', 'woba_value', 'iso_value', 'xwoba', 'xslg', 'xba']
+    batter_stats = ['launch_speed', 'launch_angle', 'hit_distance_sc', 'woba_value', 'xwoba', 'xslg', 'xba']
+    pitcher_stats = ['launch_speed', 'launch_angle', 'hit_distance_sc', 'woba_value', 'xwoba', 'xslg', 'xba']
     batter_stats = [s for s in batter_stats if s in df.columns]
     pitcher_stats = [s for s in pitcher_stats if s in df.columns]
 
@@ -154,7 +157,10 @@ if run_query:
         df[f'B_median_ev_{w}'] = df.groupby('batter_id')['launch_speed'].transform(lambda x: x.shift(1).rolling(w, min_periods=1).median())
         df[f'P_median_ev_{w}'] = df.groupby('pitcher_id')['launch_speed'].transform(lambda x: x.shift(1).rolling(w, min_periods=1).median())
 
-    # --- Park-handed HR rate (Statcast-based, NOT static) ---
+    # ---------- FIX: Must define hr_outcome BEFORE using in park_handed_hr_rate ----------
+    df['hr_outcome'] = (df['events'] == 'home_run').astype('Int64')
+
+    # Park-handed HR rate (Statcast-based, NOT static)
     def compute_park_handed_hr_rate(df):
         df['handed_matchup'] = df['stand'].astype(str) + df['p_throws'].astype(str)
         grp = df.groupby(['park', 'handed_matchup'])
@@ -175,7 +181,7 @@ if run_query:
     # --- Logistic regression modeling (with robust null handling) ---
     st.markdown("#### Logistic Regression Weights (Standardized Features)")
 
-    # Features to include: rolling/statcast/park/advanced, no non-rolling iso_value or single-event stat
+    # Features to include: rolling/statcast/park/advanced, no single-event iso_value
     logit_features = [
         c for c in df.columns
         if (
@@ -190,7 +196,6 @@ if run_query:
             ]
             or '_x_' in c
         )
-        # Drop any non-rolling iso_value
         and not c.endswith('iso_value')
         and not c == 'iso_value'
     ]
@@ -202,10 +207,6 @@ if run_query:
     model_df = df.dropna(subset=use_feats + ['hr_outcome'], how='any')
 
     if len(model_df) > 10 and len(use_feats) > 0:
-        from sklearn.linear_model import LogisticRegression
-        from sklearn.preprocessing import StandardScaler
-        from sklearn.metrics import roc_auc_score
-
         X = model_df[use_feats].astype(float)
         y = model_df['hr_outcome'].astype(int)
         scaler = StandardScaler()
@@ -217,7 +218,6 @@ if run_query:
         st.dataframe(weights_df.head(60))
         auc = roc_auc_score(y, model.predict_proba(X_scaled)[:, 1])
         st.write(f"Model ROC-AUC: **{auc:.3f}**")
-        # Download button for weights CSV
         st.download_button(
             "⬇️ Download Logistic Regression Weights CSV",
             data=weights_df.to_csv(index=False),
@@ -233,7 +233,6 @@ if run_query:
         'temp', 'wind_mph', 'wind_dir', 'humidity', 'condition',
         'handed_matchup', 'primary_pitch', 'platoon', 'is_day', 'hr_outcome'
     ]
-    # Add all engineered features used in model
     export_cols += [c for c in df.columns if c not in export_cols]
     event_cols = [c for c in export_cols if c in df.columns]
     event_df = df[event_cols].copy()
@@ -253,3 +252,6 @@ if run_query:
     st.download_button("⬇️ Download Player-Level CSV", data=player_df.to_csv(index=False), file_name="player_level_hr_features.csv")
 
     st.success("Analysis complete. All features, upgrades, and outputs are available above.")
+
+else:
+    st.info("Set your date range and click 'Fetch Statcast Data and Run Analyzer' to begin.")
