@@ -1,7 +1,8 @@
 streamlit
 pandas
 numpy
-matplotlib
 scikit-learn
+xgboost
+requests
 pybaseball
-seaborn
+python-dateutil
