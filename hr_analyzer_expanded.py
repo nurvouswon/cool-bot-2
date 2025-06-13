@@ -170,16 +170,11 @@ if run_query:
             df.groupby('pitcher_id')['hr_outcome'].transform(lambda x: x.shift(1).rolling(w, min_periods=1).mean())
         )
 
-    # --- EVENT-LEVEL FEATURE ENGINEERING & CONTEXT ----
-    cat_cols = [
-        'pitch_type', 'pitch_name', 'bb_type', 'handed_matchup', 'platoon',
-        'roof_status', 'if_fielding_alignment', 'of_fielding_alignment',
-        'inning_topbot', 'game_type'
-    ]
-    for col in cat_cols:
-        if col in df.columns:
-            df[col] = df[col].astype(str).fillna('missing')
-    df = pd.get_dummies(df, columns=[c for c in cat_cols if c in df.columns], prefix=cat_cols, drop_first=False)
+    # Build the list of categorical columns actually present in df
+    cat_cols = ['handed_matchup', 'platoon', 'stand', 'p_throws', 'roof_status', 'pitch_type', 'pitch_name', 'bb_type', 'condition']
+    present_cat_cols = [c for c in cat_cols if c in df.columns]
+    if present_cat_cols:
+        df = pd.get_dummies(df, columns=present_cat_cols, prefix=present_cat_cols, drop_first=False)
 
     wind_dir_map = {
         'N': 0, 'NNE': 22.5, 'NE': 45, 'ENE': 67.5, 'E': 90, 'ESE': 112.5,
