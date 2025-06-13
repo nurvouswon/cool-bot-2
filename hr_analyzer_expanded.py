@@ -223,22 +223,35 @@ if run_query:
                 inter_col = f"{feat}_x_{wvar}"
                 df[inter_col] = df[feat].astype(float) * df[wvar].astype(float)
 
+    # ===== KEY UPDATE: Remove hit_distance_sc single event column =====
+    if "hit_distance_sc" in df.columns:
+        df = df.drop(columns=["hit_distance_sc"])
+
     # 12. Logistic regression modeling (with robust null handling)
     st.markdown("#### Logistic Regression Weights (Standardized Features)")
     logit_features = [c for c in df.columns if (
-        any(s in c for s in [
-            'launch_speed', 'launch_angle', 'hit_distance', 'woba_value', 'iso_value',
-            'xwoba', 'xslg', 'xba', 'pitch_pct_', 'park_hr_rate', 'park_handed_hr_rate',
-            'max_ev_', 'median_ev_', 'rolling_hr_rate_', 'altitude'
-        ]) or c in [
+        (
+            (c.startswith("B_") or c.startswith("P_")) and
+            any(s in c for s in [
+                'hit_distance_sc', 'launch_speed', 'launch_angle', 'woba_value', 'iso_value',
+                'xwoba', 'xslg', 'xba', 'pitch_pct_', 'park_hr_rate', 'park_handed_hr_rate',
+                'max_ev_', 'median_ev_', 'rolling_hr_rate_', 'altitude'
+            ])
+        )
+        or
+        c in [
             'platoon', 'temp', 'wind_mph', 'humidity', 'pull_air', 'flyball', 'line_drive', 'groundball', 'pull_side', 'is_barrel', 'is_hard_hit', 'is_sweet_spot'
         ] or '_x_' in c
     )]
 
-    # Require at least 90% coverage
+    # Require at least 90% coverage, and ensure single-event 'hit_distance_sc' is NOT included
     nonnull_thresh = 0.9
-    coverage = df[logit_features].notnull().mean()
+    coverage = pd.Series({f: df[f].notnull().mean() for f in logit_features if f in df.columns})
     use_feats = coverage[coverage > nonnull_thresh].index.tolist()
+
+    # Remove 'hit_distance_sc' if present (should only select rolling/engineered versions)
+    use_feats = [f for f in use_feats if f != 'hit_distance_sc']
+
     model_df = df.dropna(subset=use_feats + ['hr_outcome'], how='any')
     progress.progress(95, text="Fitting logistic regression model...")
 
