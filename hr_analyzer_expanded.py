@@ -191,14 +191,17 @@ if run_query:
                 'rolling_hr_rate_', 'altitude'
             ])
             or c in [
-                'platoon', 'temp', 'wind_mph', 'humidity', 'pull_air', 'flyball', 'line_drive',
-                'groundball', 'pull_side', 'is_barrel', 'is_hard_hit', 'is_sweet_spot'
+                'platoon', 'handed_matchup', 'primary_pitch', 'is_day',
+                'is_barrel', 'is_hard_hit', 'is_sweet_spot',
+                'flyball', 'line_drive', 'groundball', 'pull_air', 'pull_side',
+                'temp', 'wind_mph', 'humidity', 'condition'
             ]
+            or (c.startswith('pitch_pct_'))  # event/game pitch mix
             or '_x_' in c
         )
         and not c.endswith('iso_value')
         and not c == 'iso_value'
-    ]
+        ]
 
     # Require at least 90% coverage
     nonnull_thresh = 0.9
