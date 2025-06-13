@@ -5,8 +5,9 @@ from datetime import datetime, timedelta
 from pybaseball import statcast
 import requests
 import xgboost as xgb
-from sklearn.metrics import roc_auc_score
-from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import roc_auc_score, classification_report
+import pickle
 
 # ======= Static Context Maps =======
 park_hr_rate_map = {
@@ -57,11 +58,60 @@ mlb_team_city_map = {
     'WSH': 'Washington'
 }
 
-# ====== Streamlit UI ======
+# ======= Utility Functions =======
+def wind_dir_to_angle(wind_dir):
+    directions = {
+        'N': 0, 'NNE': 22.5, 'NE': 45, 'ENE': 67.5, 'E': 90, 'ESE': 112.5,
+        'SE': 135, 'SSE': 157.5, 'S': 180, 'SSW': 202.5, 'SW': 225, 'WSW': 247.5,
+        'W': 270, 'WNW': 292.5, 'NW': 315, 'NNW': 337.5
+    }
+    try:
+        for d in directions:
+            if d in str(wind_dir).upper():
+                return directions[d]
+    except:
+        pass
+    return np.nan
+
+@st.cache_data(show_spinner=False)
+def get_weather(city, date):
+    api_key = st.secrets["weather"]["api_key"]
+    url = f"http://api.weatherapi.com/v1/history.json?key={api_key}&q={city}&dt={date}"
+    try:
+        resp = requests.get(url, timeout=10)
+        if resp.status_code == 200 and resp.text.strip():
+            data = resp.json()
+            best_hr = 19
+            hours = data['forecast']['forecastday'][0]['hour']
+            hour_data = min(hours, key=lambda h: abs(int(h['time'].split(' ')[1].split(':')[0]) - best_hr))
+            return {
+                'temp': hour_data['temp_f'],
+                'wind_mph': hour_data['wind_mph'],
+                'wind_dir': hour_data['wind_dir'],
+                'humidity': hour_data['humidity'],
+                'condition': hour_data['condition']['text']
+            }
+    except Exception as e:
+        st.warning(f"Weather API error for {city} {date}: {e}")
+    return {'temp': None, 'wind_mph': None, 'wind_dir': None, 'humidity': None, 'condition': None}
+
+def compute_park_handed_hr_rate(df):
+    if all(col in df.columns for col in ['stand', 'p_throws', 'hr_outcome', 'park']):
+        df['handed_matchup'] = df['stand'].astype(str) + df['p_throws'].astype(str)
+        grp = df.groupby(['park', 'handed_matchup'])
+        rate = grp['hr_outcome'].mean().reset_index().rename(
+            columns={'hr_outcome': 'park_handed_hr_rate'}
+        )
+        df = df.merge(rate, on=['park', 'handed_matchup'], how='left')
+    else:
+        df['park_handed_hr_rate'] = np.nan
+    return df
+
+# ======= Streamlit UI =======
 st.title("⚾ All-in-One MLB HR Analyzer & XGBoost Modeler")
 st.markdown("""
 Uploads, fetches and builds full Statcast + Weather + Park + Pitch Mix + Categorical + Advanced interaction features,
-**and allows training and using XGBoost or Logistic Regression for HR event prediction with leaderboard!**
+**and allows training and using XGBoost for HR event prediction with leaderboard!**
 """)
 
 col1, col2 = st.columns(2)
@@ -79,11 +129,10 @@ else:
     uploaded_event_csv = st.file_uploader("Upload Event-Level CSV", type=["csv"])
 
 uploaded_matchups = st.file_uploader("Upload Daily Lineups / Matchups CSV (optional)", type=["csv"])
-uploaded_logit_weights = st.file_uploader("Upload Logistic Regression/XGBoost Weights CSV (optional)", type=["csv"])
-model_to_train = st.radio("Model Type", ["XGBoost", "Logistic Regression"], horizontal=True)
 
 # ======= Data Load/Prep Section =======
-if (load_source == "Fetch Statcast" and run_query) or (load_source == "Upload CSV" and uploaded_event_csv is not None):
+df = None
+if (load_source == "Fetch Statcast" and 'run_query' in locals() and run_query) or (load_source == "Upload CSV" and 'uploaded_event_csv' in locals() and uploaded_event_csv is not None):
     progress = st.progress(0, text="Starting...")
     if load_source == "Fetch Statcast":
         df = statcast(start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
@@ -93,321 +142,271 @@ if (load_source == "Fetch Statcast" and run_query) or (load_source == "Upload CS
         progress.progress(5, text="CSV loaded")
     st.success(f"Loaded {len(df)} events.")
 
-    # ========== Minimal cleaning for robust merge ==========
-    df['game_date'] = pd.to_datetime(df['game_date'])
-    df['batter_id'] = df['batter'] if 'batter_id' not in df.columns else df['batter_id']
-    df['pitcher_id'] = df['pitcher'] if 'pitcher_id' not in df.columns else df['pitcher_id']
-
+    # Minimal cleaning
+    if 'game_date' in df.columns:
+        df['game_date'] = pd.to_datetime(df['game_date'])
+    if 'batter_id' not in df.columns and 'batter' in df.columns:
+        df['batter_id'] = df['batter']
+    if 'pitcher_id' not in df.columns and 'pitcher' in df.columns:
+        df['pitcher_id'] = df['pitcher']
     if 'home_team_code' not in df.columns and 'home_team' in df.columns:
         df['home_team_code'] = df['home_team']
-    df['park'] = df.get('park', df['home_team_code'].map(team_code_to_park).fillna(df['home_team'].str.lower().str.replace(' ', '_')))
+    if 'home_team_code' in df.columns:
+        df['home_team_code'] = df['home_team_code'].astype(str).str.upper()
+    if 'park' not in df.columns and 'home_team_code' in df.columns:
+        df['park'] = df['home_team_code'].map(team_code_to_park).fillna(df['home_team'].str.lower().str.replace(' ', '_'))
     df['park_hr_rate'] = df['park'].map(park_hr_rate_map).fillna(1.0)
     df['park_altitude'] = df['park'].map(park_altitude_map).fillna(0)
     df['roof_status'] = df['park'].map(roof_status_map).fillna("open")
 
-    # ========== Weather API Integration (event-level) ==========
+    # Weather API Integration (event-level)
     weather_features = ['temp', 'wind_mph', 'wind_dir', 'humidity', 'condition']
-    df['weather_key'] = df['home_team_code'] + "_" + df['game_date'].dt.strftime("%Y%m%d")
-
-    @st.cache_data(show_spinner=False)
-    def get_weather(city, date):
-        api_key = st.secrets["weather"]["api_key"]
-        url = f"http://api.weatherapi.com/v1/history.json?key={api_key}&q={city}&dt={date}"
-        try:
-            resp = requests.get(url, timeout=10)
-            if resp.status_code == 200 and resp.text.strip():
-                data = resp.json()
-                best_hr = 19
-                hours = data['forecast']['forecastday'][0]['hour']
-                hour_data = min(hours, key=lambda h: abs(int(h['time'].split(' ')[1].split(':')[0]) - best_hr))
-                return {
-                    'temp': hour_data['temp_f'],
-                    'wind_mph': hour_data['wind_mph'],
-                    'wind_dir': hour_data['wind_dir'],
-                    'humidity': hour_data['humidity'],
-                    'condition': hour_data['condition']['text']
-                }
-        except Exception as e:
-            st.warning(f"Weather API error for {city} {date}: {e}")
-        return {k: None for k in weather_features}
-
-    unique_keys = df['weather_key'].unique()
-    for i, key in enumerate(unique_keys):
-        team = key.split('_')[0]
-        city = mlb_team_city_map.get(team, "New York")
-        date = df[df['weather_key'] == key].iloc[0]['game_date'].strftime("%Y-%m-%d")
-        weather = get_weather(city, date)
+    if 'home_team_code' in df.columns and 'game_date' in df.columns:
+        df['weather_key'] = df['home_team_code'] + "_" + df['game_date'].dt.strftime("%Y%m%d")
+        unique_keys = df['weather_key'].unique()
+        for i, key in enumerate(unique_keys):
+            team = key.split('_')[0]
+            city = mlb_team_city_map.get(team, "New York")
+            date = df[df['weather_key'] == key].iloc[0]['game_date'].strftime("%Y-%m-%d")
+            weather = get_weather(city, date)
+            for feat in weather_features:
+                df.loc[df['weather_key'] == key, feat] = weather[feat]
+            progress.progress(5 + int(35 * (i+1) / len(unique_keys)), text=f"Weather {i+1}/{len(unique_keys)}")
+        progress.progress(40, text="Weather merged")
+    else:
         for feat in weather_features:
-            df.loc[df['weather_key'] == key, feat] = weather[feat]
-        progress.progress(5 + int(35 * (i+1) / len(unique_keys)), text=f"Weather {i+1}/{len(unique_keys)}")
-    progress.progress(40, text="Weather merged")
+            df[feat] = None
 
-    # ========== Wind Direction Encoding ==========
-    compass_map = {
-        'N':0, 'NNE':22.5, 'NE':45, 'ENE':67.5, 'E':90, 'ESE':112.5, 'SE':135, 'SSE':157.5,
-        'S':180, 'SSW':202.5, 'SW':225, 'WSW':247.5, 'W':270, 'WNW':292.5, 'NW':315, 'NNW':337.5
-    }
-    def compass_to_deg(s):
-        s = str(s).upper()
-        for k, v in compass_map.items():
-            if k in s: return v
-        return np.nan
-    df['wind_dir_deg'] = df['wind_dir'].apply(compass_to_deg)
-    df['wind_dir_sin'] = np.sin(np.deg2rad(df['wind_dir_deg']))
-    df['wind_dir_cos'] = np.cos(np.deg2rad(df['wind_dir_deg']))
+    # Wind Direction Encoding
+    df['wind_dir_angle'] = df['wind_dir'].apply(wind_dir_to_angle)
+    df['wind_dir_sin'] = np.sin(np.deg2rad(df['wind_dir_angle']))
+    df['wind_dir_cos'] = np.cos(np.deg2rad(df['wind_dir_angle']))
 
-    # ========== Add Categorical/Indicator Features ==========
-    df['is_home'] = (df['home_team_code'] == df['batter'].map(lambda x: x[:3]) if 'batter' in df.columns else False).astype(int)
-    # High leverage, late/early inning, runners on
+    # Categorical/Indicator Features
+    df['is_home'] = (df['home_team_code'] == df['batter'].map(lambda x: str(x)[:3]) if 'batter' in df.columns and 'home_team_code' in df.columns else False).astype(int)
     df['is_high_leverage'] = ((df['inning'] >= 8) & (df['bat_score_diff'].abs() <= 2)).astype(int) if 'inning' in df.columns and 'bat_score_diff' in df.columns else 0
     df['is_late_inning'] = (df['inning'] >= 8).astype(int) if 'inning' in df.columns else 0
     df['is_early_inning'] = (df['inning'] <= 3).astype(int) if 'inning' in df.columns else 0
     df['runners_on'] = (df[['on_1b', 'on_2b', 'on_3b']].fillna(0).astype(int).sum(axis=1) > 0).astype(int) if set(['on_1b','on_2b','on_3b']).issubset(df.columns) else 0
 
-    # ========== Batted Ball Type Binary Flags ==========
+    # Batted Ball Type Binary Flags
     if 'bb_type' in df.columns:
         df['bb_type_fly_ball'] = (df['bb_type']=='fly_ball').astype(int)
         df['bb_type_line_drive'] = (df['bb_type']=='line_drive').astype(int)
         df['bb_type_ground_ball'] = (df['bb_type']=='ground_ball').astype(int)
         df['bb_type_popup'] = (df['bb_type']=='popup').astype(int)
 
-    # ========== Interactions for Weather/Batted Ball ==========
+    # Interactions for Weather/Batted Ball
     for feat in ['is_hard_hit','flyball','pull_air','is_barrel']:
         if feat in df.columns:
             df[f'{feat}_x_temp'] = df[feat] * df['temp']
             df[f'{feat}_x_humidity'] = df[feat] * df['humidity']
             df[f'{feat}_x_wind_mph'] = df[feat] * df['wind_mph']
 
-    # ========== Rolling & Pitch Mix Features (auto-detects already present) ==========
-    # No re-calculation if present (from CSV); if fetching, add rolling, pitch_pct, etc.
-    if not any(c.startswith('B_launch_speed_3') for c in df.columns):
-        ROLL = [3,5,7,14]
-        batter_stats = ['launch_speed','launch_angle','hit_distance_sc','woba_value']
-        for stat in batter_stats:
-            for w in ROLL:
-                df[f'B_{stat}_{w}'] = df.groupby('batter_id')[stat].transform(lambda x: x.shift(1).rolling(w, min_periods=1).mean())
-    # Rolling max/median EV
-    for w in [3,5,7,14]:
-        df[f'B_max_ev_{w}'] = df.groupby('batter_id')['launch_speed'].transform(lambda x: x.shift(1).rolling(w, min_periods=1).max())
-        df[f'B_median_ev_{w}'] = df.groupby('batter_id')['launch_speed'].transform(lambda x: x.shift(1).rolling(w, min_periods=1).median())
-
-    # Same for pitcher
+    # Rolling & Pitch Mix Features (auto-detect)
+    df = df.sort_values(['batter_id', 'game_date']) if 'batter_id' in df.columns and 'game_date' in df.columns else df
+    ROLL = [3,5,7,14]
+    batter_stats = ['launch_speed','launch_angle','hit_distance_sc','woba_value']
+    for stat in batter_stats:
+        for w in ROLL:
+            cname = f'B_{stat}_{w}'
+            if cname not in df.columns and stat in df.columns:
+                df[cname] = df.groupby('batter_id')[stat].transform(lambda x: x.shift(1).rolling(w, min_periods=1).mean())
+    for w in ROLL:
+        if 'launch_speed' in df.columns:
+            df[f'B_max_ev_{w}'] = df.groupby('batter_id')['launch_speed'].transform(lambda x: x.shift(1).rolling(w, min_periods=1).max())
+            df[f'B_median_ev_{w}'] = df.groupby('batter_id')['launch_speed'].transform(lambda x: x.shift(1).rolling(w, min_periods=1).median())
     pitcher_stats = ['launch_speed','launch_angle','hit_distance_sc','woba_value']
     for stat in pitcher_stats:
-        for w in [3,5,7,14]:
-            df[f'P_{stat}_{w}'] = df.groupby('pitcher_id')[stat].transform(lambda x: x.shift(1).rolling(w, min_periods=1).mean())
-    for w in [3,5,7,14]:
-        df[f'P_max_ev_{w}'] = df.groupby('pitcher_id')['launch_speed'].transform(lambda x: x.shift(1).rolling(w, min_periods=1).max())
-        df[f'P_median_ev_{w}'] = df.groupby('pitcher_id')['launch_speed'].transform(lambda x: x.shift(1).rolling(w, min_periods=1).median())
-        df[f'P_rolling_hr_rate_{w}'] = df.groupby('pitcher_id')['hr_outcome'].transform(lambda x: x.shift(1).rolling(w, min_periods=1).mean()) if 'hr_outcome' in df.columns else np.nan
+        for w in ROLL:
+            cname = f'P_{stat}_{w}'
+            if cname not in df.columns and stat in df.columns:
+                df[cname] = df.groupby('pitcher_id')[stat].transform(lambda x: x.shift(1).rolling(w, min_periods=1).mean())
+    for w in ROLL:
+        if 'launch_speed' in df.columns:
+            df[f'P_max_ev_{w}'] = df.groupby('pitcher_id')['launch_speed'].transform(lambda x: x.shift(1).rolling(w, min_periods=1).max())
+            df[f'P_median_ev_{w}'] = df.groupby('pitcher_id')['launch_speed'].transform(lambda x: x.shift(1).rolling(w, min_periods=1).median())
+        if 'hr_outcome' in df.columns:
+            df[f'P_rolling_hr_rate_{w}'] = df.groupby('pitcher_id')['hr_outcome'].transform(lambda x: x.shift(1).rolling(w, min_periods=1).mean())
 
-    # Pitch type mix and one-hot encoding
     pitch_types = ['SL','SI','FC','FF','ST','CH','CU','FS','FO','SV','KC','EP','FA','KN','CS','SC']
     for pt in pitch_types:
-        # event-level
-        df[f'pitch_type_{pt}'] = (df['pitch_type']==pt).astype(int) if 'pitch_type' in df.columns else 0
-        # rolling batter-level pitch mix
-        for w in [3,5,7,14]:
-            mask = (df['pitch_type']==pt) if 'pitch_type' in df.columns else 0
-            df[f'B_pitch_pct_{pt}_{w}'] = (
-                df.groupby('batter_id')[mask].transform(lambda x: x.shift(1).rolling(w, min_periods=1).mean()) if hasattr(df, 'groupby') else 0
-            )
-            df[f'P_pitch_pct_{pt}_{w}'] = (
-                df.groupby('pitcher_id')[mask].transform(lambda x: x.shift(1).rolling(w, min_periods=1).mean()) if hasattr(df, 'groupby') else 0
-            )
+        if 'pitch_type' in df.columns:
+            (df['pitch_type'] == pt).astype(int)
+            # Rolling batter-level pitch mix
+            for w in ROLL:
+                df[f'B_pitch_pct_{pt}_{w}'] = (
+                    df.groupby('batter_id')['pitch_type'].transform(
+                        lambda x: x.shift(1).eq(pt).rolling(w, min_periods=1).mean()
+                    )
+                )
+                df[f'P_pitch_pct_{pt}_{w}'] = (
+                    df.groupby('pitcher_id')['pitch_type'].transform(
+                        lambda x: x.shift(1).eq(pt).rolling(w, min_periods=1).mean()
+                    )
+                )
 
-    # ========== Park-Handed HR Rate ==========
-def compute_park_handed_hr_rate(df):
-    if 'stand' in df.columns and 'p_throws' in df.columns and 'hr_outcome' in df.columns and 'park' in df.columns:
-        df['handed_matchup'] = df['stand'].astype(str) + df['p_throws'].astype(str)
-        grp = df.groupby(['park', 'handed_matchup'])
-        rate = grp['hr_outcome'].mean().reset_index().rename(
-            columns={'hr_outcome': 'park_handed_hr_rate'}
-        )
-        df = df.merge(rate, on=['park', 'handed_matchup'], how='left')
+    # Park-Handed HR Rate
+    df = compute_park_handed_hr_rate(df)
+
+    # Categorical dummies
+    cat_cols = [
+        "stand", "p_throws", "pitch_type", "pitch_name", "bb_type",
+        "condition", "roof_status", "handed_matchup"
+    ]
+    for col in cat_cols:
+        if col in df.columns:
+            df[col] = df[col].astype(str).fillna('Unknown')
+    df = pd.get_dummies(df, columns=[col for col in cat_cols if col in df.columns], drop_first=False)
+
+    # Batted Ball Flags (fillna, ensure int)
+    batted_ball_flags = [
+        'is_barrel', 'is_sweet_spot', 'is_hard_hit', 'flyball', 'line_drive',
+        'groundball', 'pull_air', 'pull_side'
+    ]
+    for col in batted_ball_flags:
+        if col in df.columns:
+            df[col] = df[col].fillna(0).astype(int)
+
+    # More weather interactions
+    for col in ['is_barrel', 'is_hard_hit', 'flyball', 'pull_air']:
+        if col in df.columns and all(x in df.columns for x in ['humidity', 'temp', 'wind_mph']):
+            df[f'{col}_x_humidity'] = df[col] * df['humidity']
+            df[f'{col}_x_temp'] = df[col] * df['temp']
+            df[f'{col}_x_wind_mph'] = df[col] * df['wind_mph']
+
+    # Situational Features
+    if 'inning' in df.columns:
+        df['is_early_inning'] = (df['inning'] <= 3).astype(int)
+        df['is_late_inning'] = (df['inning'] >= 7).astype(int)
     else:
-        df['park_handed_hr_rate'] = np.nan
-    return df
-
-df = compute_park_handed_hr_rate(df)
-
-# ========== Add Pitcher Rolling Features ==========
-ROLL = [3, 5, 7, 14]
-for w in ROLL:
-    if 'hr_outcome' in df.columns:
-        df[f'P_rolling_hr_rate_{w}'] = (
-            df.groupby('pitcher_id')['hr_outcome'].transform(lambda x: x.shift(1).rolling(w, min_periods=1).mean())
+        df['is_early_inning'] = 0
+        df['is_late_inning'] = 0
+    if 'outs_when_up' in df.columns:
+        df['is_high_leverage'] = (df['outs_when_up'] == 2).astype(int)
+    else:
+        df['is_high_leverage'] = 0
+    if set(['on_1b', 'on_2b', 'on_3b']).issubset(df.columns):
+        df['runners_on'] = (
+            df['on_1b'].notnull().astype(int) +
+            df['on_2b'].notnull().astype(int) +
+            df['on_3b'].notnull().astype(int)
         )
+    else:
+        df['runners_on'] = 0
 
-# ========== Categorical & Batted Ball Flags ==========
-cat_cols = [
-    "stand", "p_throws", "pitch_type", "pitch_name", "bb_type",
-    "condition", "roof_status", "handed_matchup"
-]
-for col in cat_cols:
-    if col in df.columns:
-        df[col] = df[col].astype(str).fillna('Unknown')
+    # Home/Away feature
+    if all(x in df.columns for x in ['home_team', 'batter']):
+        df['is_home'] = (df['batter'].astype(str) == df['home_team'].astype(str)).astype(int)
+    else:
+        df['is_home'] = 0
 
-batted_ball_flags = ['is_barrel', 'is_sweet_spot', 'is_hard_hit', 'flyball', 'line_drive', 'groundball', 'pull_air', 'pull_side']
-for col in batted_ball_flags:
-    if col in df.columns:
-        df[col] = df[col].fillna(0).astype(int)
+    # Wind trigonometric encoding
+    if 'wind_dir' in df.columns:
+        df['wind_dir_angle'] = df['wind_dir'].apply(wind_dir_to_angle)
+        df['wind_dir_sin'] = np.sin(np.deg2rad(df['wind_dir_angle']))
+        df['wind_dir_cos'] = np.cos(np.deg2rad(df['wind_dir_angle']))
+    else:
+        df['wind_dir_sin'] = 0
+        df['wind_dir_cos'] = 1
 
-# ========== Interaction Features ==========
-# Weather interactions
-for col in ['is_barrel', 'is_hard_hit', 'flyball', 'pull_air']:
-    if col in df.columns and 'humidity' in df.columns and 'temp' in df.columns and 'wind_mph' in df.columns:
-        df[f'{col}_x_humidity'] = df[col] * df['humidity']
-        df[f'{col}_x_temp'] = df[col] * df['temp']
-        df[f'{col}_x_wind_mph'] = df[col] * df['wind_mph']
+    # =================== Feature List for Modeling ===================
+    model_features = [
+        # Numeric/statcast/context
+        'woba_value', 'launch_speed', 'launch_angle', 'hit_distance_sc', 'launch_speed_angle',
+        'B_max_ev_3', 'B_max_ev_5', 'B_max_ev_7', 'B_max_ev_14',
+        'B_median_ev_3', 'B_median_ev_5', 'B_median_ev_7', 'B_median_ev_14',
+        'B_hit_distance_sc_3', 'B_hit_distance_sc_5', 'B_hit_distance_sc_7', 'B_hit_distance_sc_14',
+        'B_launch_speed_3', 'B_launch_speed_5', 'B_launch_speed_7', 'B_launch_speed_14',
+        'B_launch_angle_3', 'B_launch_angle_5', 'B_launch_angle_7', 'B_launch_angle_14',
+        'park_hr_rate', 'park_handed_hr_rate', 'park_altitude',
+        'temp', 'humidity', 'wind_mph', 'wind_dir_sin', 'wind_dir_cos',
+        'is_barrel', 'is_hard_hit', 'is_sweet_spot', 'flyball', 'line_drive',
+        'groundball', 'pull_air', 'pull_side',
+        'is_barrel_x_humidity', 'is_barrel_x_temp', 'is_barrel_x_wind_mph',
+        'is_hard_hit_x_humidity', 'is_hard_hit_x_temp', 'is_hard_hit_x_wind_mph',
+        'flyball_x_humidity', 'flyball_x_temp', 'flyball_x_wind_mph',
+        'pull_air_x_humidity', 'pull_air_x_temp', 'pull_air_x_wind_mph',
+        'is_high_leverage', 'is_early_inning', 'is_late_inning', 'runners_on', 'is_home'
+    ]
+    # Add dummies for context
+    model_features += [c for c in df.columns if (
+        c.startswith('pitch_type_') or c.startswith('pitch_name_') or c.startswith('bb_type_') or
+        c.startswith('condition_') or c.startswith('roof_status_') or c.startswith('handed_matchup_') or
+        c.startswith('stand_') or c.startswith('p_throws_'))]
 
-# ========== Situational Features ==========
-if 'inning' in df.columns:
-    df['is_early_inning'] = (df['inning'] <= 3).astype(int)
-    df['is_late_inning'] = (df['inning'] >= 7).astype(int)
-else:
-    df['is_early_inning'] = 0
-    df['is_late_inning'] = 0
-if 'outs_when_up' in df.columns:
-    df['is_high_leverage'] = (df['outs_when_up'] == 2).astype(int)
-else:
-    df['is_high_leverage'] = 0
-if 'on_1b' in df.columns and 'on_2b' in df.columns and 'on_3b' in df.columns:
-    df['runners_on'] = (df['on_1b'].notnull().astype(int) +
-                        df['on_2b'].notnull().astype(int) +
-                        df['on_3b'].notnull().astype(int))
-else:
-    df['runners_on'] = 0
+    # Add pitcher rolling stats if present
+    for stat in [
+        'P_max_ev_3', 'P_max_ev_5', 'P_max_ev_7', 'P_max_ev_14',
+        'P_median_ev_3', 'P_median_ev_5', 'P_median_ev_7', 'P_median_ev_14',
+        'P_launch_speed_3', 'P_launch_speed_5', 'P_launch_speed_7', 'P_launch_speed_14',
+        'P_launch_angle_3', 'P_launch_angle_5', 'P_launch_angle_7', 'P_launch_angle_14',
+        'P_hit_distance_sc_3', 'P_hit_distance_sc_5', 'P_hit_distance_sc_7', 'P_hit_distance_sc_14',
+        'P_woba_value_3', 'P_woba_value_5', 'P_woba_value_7', 'P_woba_value_14',
+        'P_rolling_hr_rate_3', 'P_rolling_hr_rate_5', 'P_rolling_hr_rate_7', 'P_rolling_hr_rate_14'
+    ]:
+        if stat in df.columns:
+            model_features.append(stat)
 
-# ========== Home/Away Feature ==========
-if 'home_team' in df.columns and 'bat_score' in df.columns and 'away_team' in df.columns:
-    df['is_home'] = (df['batter'].astype(str) == df['home_team'].astype(str)).astype(int)
-else:
-    df['is_home'] = 0
+    # Remove duplicates, only keep those in df
+    model_features = list(dict.fromkeys([c for c in model_features if c in df.columns]))
 
-# ========== Trig Encodings for Wind Direction ==========
-def wind_to_angle(wind_dir):
-    directions = {
-        'N': 0, 'NNE': 22.5, 'NE': 45, 'ENE': 67.5, 'E': 90, 'ESE': 112.5,
-        'SE': 135, 'SSE': 157.5, 'S': 180, 'SSW': 202.5, 'SW': 225, 'WSW': 247.5,
-        'W': 270, 'WNW': 292.5, 'NW': 315, 'NNW': 337.5
-    }
-    try:
-        return directions.get(wind_dir.upper(), np.nan)
-    except Exception:
-        return np.nan
+    # =================== XGBoost Modeling ===================
+    if 'hr_outcome' in df.columns:
+        model_df = df.dropna(subset=model_features + ['hr_outcome'], how='any')
+        if len(model_df) > 50:
+            X = model_df[model_features]
+            y = model_df['hr_outcome'].astype(int)
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y, test_size=0.15, random_state=42, stratify=y
+            )
+            xgb_model = xgb.XGBClassifier(
+                n_estimators=120, max_depth=5, learning_rate=0.15,
+                subsample=0.9, colsample_bytree=0.8, eval_metric='auc', use_label_encoder=False
+            )
+            xgb_model.fit(X_train, y_train)
+            y_pred_prob = xgb_model.predict_proba(X_test)[:, 1]
+            auc = roc_auc_score(y_test, y_pred_prob)
+            st.success(f"XGBoost Model ROC-AUC: {auc:.3f}")
+            st.write(classification_report(y_test, y_pred_prob > 0.5, digits=3))
+            feature_importance = pd.Series(xgb_model.feature_importances_, index=X.columns).sort_values(ascending=False)
+            st.markdown("#### XGBoost Feature Importances")
+            st.dataframe(feature_importance.head(50))
+            st.download_button(
+                "⬇️ Download XGBoost Model (.pkl)",
+                data=pickle.dumps(xgb_model),
+                file_name="xgboost_hr_model.pkl"
+            )
+        else:
+            st.warning("Not enough complete events to fit XGBoost model. Try a wider date range.")
+    else:
+        st.warning("No 'hr_outcome' column found in data.")
 
-if 'wind_dir' in df.columns:
-    df['wind_dir_angle'] = df['wind_dir'].apply(wind_to_angle)
-    df['wind_dir_sin'] = np.sin(np.deg2rad(df['wind_dir_angle']))
-    df['wind_dir_cos'] = np.cos(np.deg2rad(df['wind_dir_angle']))
-else:
-    df['wind_dir_sin'] = 0
-    df['wind_dir_cos'] = 1
+    # =================== CSV OUTPUTS ===================
+    export_cols = [
+        'game_date', 'batter', 'batter_id', 'pitcher', 'pitcher_id', 'events', 'description',
+        'stand', 'p_throws', 'park', 'park_hr_rate', 'park_handed_hr_rate', 'park_altitude', 'roof_status',
+        'temp', 'wind_mph', 'wind_dir', 'humidity', 'condition',
+        'handed_matchup', 'platoon', 'is_day', 'hr_outcome'
+    ]
+    export_cols += [c for c in df.columns if c not in export_cols]
+    event_cols = [c for c in export_cols if c in df.columns]
+    event_df = df[event_cols].copy()
+    st.markdown("#### Download Event-Level CSV (all features, 1 row per batted ball event):")
+    st.dataframe(event_df.head(20))
+    st.download_button("⬇️ Download Event-Level CSV", data=event_df.to_csv(index=False), file_name="event_level_hr_features.csv")
 
-# ========== Dummies ==========
-dummy_cols = []
-for c in cat_cols:
-    if c in df.columns:
-        dummy_cols.append(c)
-df = pd.get_dummies(df, columns=dummy_cols, drop_first=False)
-
-# ========== Select Features for Modeling ==========
-model_features = [
-    # Numeric features (prioritize high leverage, then all rolling/statcast/weather/context)
-    'woba_value', 'launch_speed', 'launch_angle', 'hit_distance_sc', 'launch_speed_angle',
-    'B_max_ev_3', 'B_max_ev_5', 'B_max_ev_7', 'B_max_ev_14', 'B_median_ev_3', 'B_median_ev_5', 'B_median_ev_7', 'B_median_ev_14',
-    'B_hit_distance_sc_3', 'B_hit_distance_sc_5', 'B_hit_distance_sc_7', 'B_hit_distance_sc_14',
-    'B_launch_speed_3', 'B_launch_speed_5', 'B_launch_speed_7', 'B_launch_speed_14',
-    'B_launch_angle_3', 'B_launch_angle_5', 'B_launch_angle_7', 'B_launch_angle_14',
-    'park_hr_rate', 'park_handed_hr_rate', 'park_altitude', 'temp', 'humidity', 'wind_mph', 'wind_dir_sin', 'wind_dir_cos',
-    'is_barrel', 'is_hard_hit', 'is_sweet_spot', 'flyball', 'line_drive', 'groundball', 'pull_air', 'pull_side',
-    'is_barrel_x_humidity', 'is_barrel_x_temp', 'is_barrel_x_wind_mph', 'is_hard_hit_x_humidity', 'is_hard_hit_x_temp', 'is_hard_hit_x_wind_mph',
-    'flyball_x_humidity', 'flyball_x_temp', 'flyball_x_wind_mph', 'pull_air_x_humidity', 'pull_air_x_temp', 'pull_air_x_wind_mph',
-    'is_high_leverage', 'is_early_inning', 'is_late_inning', 'runners_on', 'is_home'
-]
-# Add all dummies created above, prioritize event-level and context
-model_features += [c for c in df.columns if c.startswith('pitch_type_') or c.startswith('pitch_name_') or c.startswith('bb_type_') or c.startswith('condition_') or c.startswith('roof_status_') or c.startswith('handed_matchup_') or c.startswith('stand_') or c.startswith('p_throws_')]
-
-# Add pitcher rolling stats and features if present
-for stat in [
-    'P_max_ev_3', 'P_max_ev_5', 'P_max_ev_7', 'P_max_ev_14',
-    'P_median_ev_3', 'P_median_ev_5', 'P_median_ev_7', 'P_median_ev_14',
-    'P_launch_speed_3', 'P_launch_speed_5', 'P_launch_speed_7', 'P_launch_speed_14',
-    'P_launch_angle_3', 'P_launch_angle_5', 'P_launch_angle_7', 'P_launch_angle_14',
-    'P_hit_distance_sc_3', 'P_hit_distance_sc_5', 'P_hit_distance_sc_7', 'P_hit_distance_sc_14',
-    'P_woba_value_3', 'P_woba_value_5', 'P_woba_value_7', 'P_woba_value_14',
-    'P_rolling_hr_rate_3', 'P_rolling_hr_rate_5', 'P_rolling_hr_rate_7', 'P_rolling_hr_rate_14'
-]:
-    if stat in df.columns:
-        model_features.append(stat)
-
-# Remove any duplicate columns
-model_features = list(dict.fromkeys([c for c in model_features if c in df.columns]))
-
-# ========== XGBoost Modeling ==========
-import xgboost as xgb
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import roc_auc_score, classification_report
-
-# Filter NA rows
-model_df = df.dropna(subset=model_features + ['hr_outcome'], how='any')
-if len(model_df) > 50:  # Require enough rows
-    X = model_df[model_features]
-    y = model_df['hr_outcome'].astype(int)
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.15, random_state=42, stratify=y)
-    xgb_model = xgb.XGBClassifier(
-        n_estimators=120, max_depth=5, learning_rate=0.15,
-        subsample=0.9, colsample_bytree=0.8, eval_metric='auc', use_label_encoder=False
+    # Player-Level CSV
+    player_cols = ['batter_id', 'batter'] + [c for c in df.columns if c.startswith('B_')]
+    if any(c.startswith('P_') for c in df.columns):
+        player_cols += [c for c in df.columns if c.startswith('P_')]
+    player_df = (
+        event_df.groupby(['batter_id', 'batter'])
+        .tail(1)[player_cols]
+        .reset_index(drop=True)
     )
-    xgb_model.fit(X_train, y_train)
-    y_pred_prob = xgb_model.predict_proba(X_test)[:, 1]
-    auc = roc_auc_score(y_test, y_pred_prob)
-    st.success(f"XGBoost Model ROC-AUC: {auc:.3f}")
-    st.write(classification_report(y_test, y_pred_prob > 0.5, digits=3))
+    st.markdown("#### Download Player-Level Rolling Feature CSV (1 row per batter):")
+    st.dataframe(player_df.head(20))
+    st.download_button("⬇️ Download Player-Level CSV", data=player_df.to_csv(index=False), file_name="player_level_hr_features.csv")
 
-    # Show top features
-    feature_importance = pd.Series(xgb_model.feature_importances_, index=X.columns).sort_values(ascending=False)
-    st.markdown("#### XGBoost Feature Importances")
-    st.dataframe(feature_importance.head(50))
-
-    # Save/download model if needed (pickle)
-    import pickle
-    st.download_button(
-        "⬇️ Download XGBoost Model (.pkl)",
-        data=pickle.dumps(xgb_model),
-        file_name="xgboost_hr_model.pkl"
-    )
-else:
-    st.warning("Not enough complete events to fit XGBoost model. Try a wider date range.")
-
-# ========== CSV OUTPUTS ==========
-
-# --- Event-Level CSV ---
-export_cols = [
-    'game_date', 'batter', 'batter_id', 'pitcher', 'pitcher_id', 'events', 'description',
-    'stand', 'p_throws', 'park', 'park_hr_rate', 'park_handed_hr_rate', 'park_altitude', 'roof_status',
-    'temp', 'wind_mph', 'wind_dir', 'humidity', 'condition',
-    'handed_matchup', 'platoon', 'is_day', 'hr_outcome'
-]
-export_cols += [c for c in df.columns if c not in export_cols]
-event_cols = [c for c in export_cols if c in df.columns]
-event_df = df[event_cols].copy()
-st.markdown("#### Download Event-Level CSV (all features, 1 row per batted ball event):")
-st.dataframe(event_df.head(20))
-st.download_button("⬇️ Download Event-Level CSV", data=event_df.to_csv(index=False), file_name="event_level_hr_features.csv")
-
-# --- Player-Level CSV ---
-player_cols = ['batter_id', 'batter'] + [c for c in df.columns if c.startswith('B_')]
-if any(c.startswith('P_') for c in df.columns):
-    player_cols += [c for c in df.columns if c.startswith('P_')]
-player_df = (
-    event_df.groupby(['batter_id', 'batter'])
-    .tail(1)[player_cols]
-    .reset_index(drop=True)
-)
-st.markdown("#### Download Player-Level Rolling Feature CSV (1 row per batter):")
-st.dataframe(player_df.head(20))
-st.download_button("⬇️ Download Player-Level CSV", data=player_df.to_csv(index=False), file_name="player_level_hr_features.csv")
-
-st.success("All-in-one MLB HR Analyzer is complete! 🚀")
+    st.success("All-in-one MLB HR Analyzer is complete! 🚀")
