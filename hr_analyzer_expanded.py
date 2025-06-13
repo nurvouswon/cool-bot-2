@@ -158,7 +158,17 @@ if (load_source == "Fetch Statcast" and 'run_query' in locals() and run_query) o
     df['park_hr_rate'] = df['park'].map(park_hr_rate_map).fillna(1.0)
     df['park_altitude'] = df['park'].map(park_altitude_map).fillna(0)
     df['roof_status'] = df['park'].map(roof_status_map).fillna("open")
-
+    # ----- CREATE HR OUTCOME COLUMN -----
+    if 'hr_outcome' not in df.columns:
+        if 'events' in df.columns:
+            df['hr_outcome'] = (
+                (df['events'].fillna('').str.lower() == 'home_run') |
+                (df['description'].fillna('').str.lower().str.contains('home run')) if 'description' in df.columns else False
+            ).astype(int)
+        elif 'description' in df.columns:
+            df['hr_outcome'] = df['description'].fillna('').str.lower().str.contains('home run').astype(int)
+        else:
+            st.warning("Could not auto-create 'hr_outcome': No 'events' or 'description' column found.")
     # Weather API Integration (event-level)
     weather_features = ['temp', 'wind_mph', 'wind_dir', 'humidity', 'condition']
     if 'home_team_code' in df.columns and 'game_date' in df.columns:
