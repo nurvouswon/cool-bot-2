@@ -297,7 +297,7 @@ if (load_source == "Fetch Statcast" and 'run_query' in locals() and run_query) o
     # Start from all columns and keep only those that are numeric and not constant
     model_features = []
     for c in df.columns:
-        if np.issubdtype(df[c].dtype, np.number) and df[c].nunique() > 1:
+        if pd.api.types.is_numeric_dtype(df[c]) and df[c].nunique() > 1:
             model_features.append(c)
 
     # Remove obviously non-feature columns
