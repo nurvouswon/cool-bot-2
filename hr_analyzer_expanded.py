@@ -318,13 +318,13 @@ elif mode == "Upload & Analyze Data":
     
     if 'hr_outcome' not in df.columns:
     # Statcast: event = 'home_run' is a HR
-    if 'events' in df.columns:
-        df['hr_outcome'] = (df['events'] == 'home_run').astype(int)
+        if 'events' in df.columns:
+            df['hr_outcome'] = (df['events'] == 'home_run').astype(int)
     # OR try with description if your column is called that
-    elif 'description' in df.columns:
-        df['hr_outcome'] = (df['description'].str.contains('home_run', case=False, na=False)).astype(int)
-    else:
-        st.warning("Cannot compute 'hr_outcome' automatically. Please check your event columns.")
+        elif 'description' in df.columns:
+            df['hr_outcome'] = (df['description'].str.contains('home_run', case=False, na=False)).astype(int)
+        else:
+            st.warning("Cannot compute 'hr_outcome' automatically. Please check your event columns.")
     # -- XGBoost and Logistic Regression Leaderboard --
     if 'hr_outcome' not in df.columns:
         st.error("No 'hr_outcome' column detected in event CSV! All downstream scoring requires it.")
