@@ -10,6 +10,11 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score, classification_report
 import pickle
 
+def remove_duplicate_columns(df):
+    """Remove duplicate columns from a DataFrame, keeping the first occurrence."""
+    _, idx = np.unique(df.columns, return_index=True)
+    return df.iloc[:, idx]
+
 # ======= Context Maps =======
 park_hr_rate_map = {
     'angels_stadium': 1.05, 'angel_stadium': 1.05, 'minute_maid_park': 1.06, 'coors_field': 1.30,
@@ -374,6 +379,7 @@ if (load_source == "Fetch Statcast" and 'run_query' in locals() and run_query) o
     export_cols += [c for c in df.columns if c not in export_cols]
     event_cols = [c for c in export_cols if c in df.columns]
     event_df = df[event_cols].copy()
+    event_df = remove_duplicate_columns(event_df)   # <- REMOVE DUPLICATE COLUMNS HERE
     st.markdown("#### Download Event-Level CSV (all features, 1 row per batted ball event):")
     st.dataframe(event_df.head(20))
     st.download_button(
