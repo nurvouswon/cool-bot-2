@@ -233,14 +233,15 @@ if app_mode == "Fetch Data & Feature Engineer":
         # === OPTIMIZED pitch type pct features ===
         batter_pitch_features = optimize_pitch_type_pct(df, 'batter_id', roll_windows, 'B_')
         pitcher_pitch_features = optimize_pitch_type_pct(df, 'pitcher_id', roll_windows, 'P_')
-
+        # Ensure unique index for concat
+        df = df.reset_index(drop=True)
         # === Add all new columns at once to avoid fragmentation ===
         df = pd.concat([df, 
-                        pd.DataFrame(batter_features, index=df.index),
-                        pd.DataFrame(pitcher_features, index=df.index),
-                        pd.DataFrame(batter_pitch_features, index=df.index),
-                        pd.DataFrame(pitcher_pitch_features, index=df.index)
-                        ], axis=1)
+            pd.DataFrame(batter_features, index=df.index),
+            pd.DataFrame(pitcher_features, index=df.index),
+            pd.DataFrame(batter_pitch_features, index=df.index),
+            pd.DataFrame(pitcher_pitch_features, index=df.index)
+            ], axis=1)
 
         # === Park-Handed HR Rate ===
         df = compute_park_handed_hr_rate(df)
