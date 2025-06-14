@@ -398,17 +398,4 @@ if (load_source == "Fetch Statcast" and 'run_query' in locals() and run_query) o
     st.dataframe(event_df.head(20))
     st.download_button("⬇️ Download Event-Level CSV", data=event_df.to_csv(index=False), file_name="event_level_hr_features.csv")
 
-    # Player-Level CSV
-    player_cols = ['batter_id', 'batter'] + [c for c in df.columns if c.startswith('B_')]
-    if any(c.startswith('P_') for c in df.columns):
-        player_cols += [c for c in df.columns if c.startswith('P_')]
-    player_df = (
-        event_df.groupby(['batter_id', 'batter'])
-        .tail(1)[player_cols]
-        .reset_index(drop=True)
-    )
-    st.markdown("#### Download Player-Level Rolling Feature CSV (1 row per batter):")
-    st.dataframe(player_df.head(20))
-    st.download_button("⬇️ Download Player-Level CSV", data=player_df.to_csv(index=False), file_name="player_level_hr_features.csv")
-
     st.success("All-in-one MLB HR Analyzer is complete! 🚀")
