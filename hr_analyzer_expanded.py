@@ -8,9 +8,8 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score, classification_report
 import xgboost as xgb
-import pickle
 
-# ========== CONTEXT MAPS ==========
+# =================== CONTEXT MAPS ======================
 park_hr_rate_map = {
     'angels_stadium': 1.05, 'angel_stadium': 1.05, 'minute_maid_park': 1.06, 'coors_field': 1.30,
     'yankee_stadium': 1.19, 'fenway_park': 0.97, 'rogers_centre': 1.10, 'tropicana_field': 0.85,
@@ -147,7 +146,7 @@ with tab1:
         # ========== FILTER EVENTS ==========
         valid_events = ['single', 'double', 'triple', 'homerun', 'home_run', 'field_out']
         if 'events' in df.columns:
-            df = df[df['events'].str.lower().str.replace(' ', '').isin(valid_events)].copy()
+            df = df[df['events'].astype(str).str.lower().str.replace(' ', '').isin(valid_events)].copy()
 
         # ========== HR OUTCOME ==========
         if 'hr_outcome' not in df.columns:
@@ -240,13 +239,40 @@ with tab1:
         # ========== DEDUP BEFORE OUTPUT ==========
         df = dedup_columns(df)
 
-        # ========== DOWNLOAD ==========
+        # ========== LOGISTIC REGRESSION WEIGHTS ==========
+        logit_weights = pd.DataFrame()
+        if 'hr_outcome' in df.columns and df['hr_outcome'].nunique() == 2:
+            model_features = [c for c in robust_numeric_columns(df) if c not in ['hr_outcome', 'batter', 'pitcher', 'game_date', 'batter_id', 'pitcher_id']]
+            model_df = df.dropna(subset=model_features + ['hr_outcome'], how='any')
+            X = model_df[model_features]
+            y = model_df['hr_outcome'].astype(int)
+            logit = LogisticRegression(max_iter=200, solver='liblinear')
+            logit.fit(X, y)
+            weights = pd.DataFrame({'feature': model_features, 'weight': logit.coef_[0]})
+            intercept_row = pd.DataFrame({'feature': ['Intercept'], 'weight': [logit.intercept_[0]]})
+            logit_weights = pd.concat([weights, intercept_row], ignore_index=True)
+            st.markdown("#### Download Logistic Regression Weights as CSV")
+            st.dataframe(logit_weights.sort_values('weight', ascending=False))
+            st.download_button(
+                "⬇️ Download Logistic Regression Weights as CSV",
+                data=logit_weights.to_csv(index=False),
+                file_name="logistic_weights.csv"
+            )
+        else:
+            st.info("Not enough HR/non-HR events to compute logistic regression weights for this range.")
+
+        # ========== DOWNLOAD EVENT DATA ==========
         st.success(f"Feature engineering complete! {len(df)} batted ball events.")
         st.markdown("#### Download Event-Level CSV (all features, 1 row per batted ball event):")
         st.dataframe(df.head(20))
-        st.download_button("⬇️ Download Event-Level CSV", data=df.to_csv(index=False), file_name="event_level_hr_features.csv")
+        st.download_button(
+            "⬇️ Download Event-Level CSV",
+            data=df.to_csv(index=False),
+            file_name="event_level_hr_features.csv"
+        )
         progress.empty()
 
+# ==== TAB 2: Upload, Logistic/XGB Scoring, Leaderboard ====
 with tab2:
     st.header("Upload Event, Matchup, and Analyze")
     st.markdown("**All 3 uploads required!**")
@@ -300,6 +326,10 @@ with tab2:
 
         # ========== COMPUTE LOGIT SCORE ==========
         # Use only model features present in both event-level and logit weights CSV
+        # Exclude 'Intercept' row if present
+        if 'feature' in logit_weights.columns:
+            logit_weights = logit_weights[logit_weights['feature'] != 'Intercept']
+
         model_features = [
             f for f in logit_weights['feature'].values if f in event_df.columns and pd.api.types.is_numeric_dtype(event_df[f])
         ]
@@ -309,10 +339,10 @@ with tab2:
 
         X = event_df[model_features].fillna(0)
         coef = logit_weights.set_index('feature')['weight'].reindex(model_features).fillna(0).values
-        # Score = logit intercept + sum(feature_i * weight_i)
-        intercept = logit_weights['intercept'].iloc[0] if 'intercept' in logit_weights.columns else 0
+        intercept = 0
+        if 'Intercept' in logit_weights['feature'].values:
+            intercept = logit_weights[logit_weights['feature'] == 'Intercept']['weight'].values[0]
         event_df['logit_score'] = intercept + np.dot(X, coef)
-        # Apply logistic to get probability
         event_df['logit_prob'] = 1 / (1 + np.exp(-event_df['logit_score']))
 
         # ========== XGBOOST ANALYSIS ==========
@@ -358,5 +388,4 @@ with tab2:
         auc = roc_auc_score(y_test, xgb_model.predict_proba(X_test)[:, 1])
         st.metric("XGBoost ROC-AUC", round(auc, 4))
 
-        # Progress: All Done!
         st.success("Analysis complete!")
