@@ -213,8 +213,25 @@ with tab1:
         # ========== PARK/TEAM MAPPING ==========
         if 'home_team_code' in df.columns:
             df['home_team_code'] = df['home_team_code'].astype(str).str.upper()
+
+        # Step 1: Try to create 'park' from home_team_code if not present
         if 'park' not in df.columns and 'home_team_code' in df.columns:
-            df['park'] = df['home_team_code'].map(team_code_to_park).fillna(df['home_team_code'].str.lower().str.replace(' ', '_'))
+            df['park'] = df['home_team_code'].map(team_code_to_park)
+
+        # Step 2: If 'park' still has missing values and home_team is present, fill those
+        if 'park' in df.columns and df['park'].isnull().any() and 'home_team' in df.columns:
+            df['park'] = df['park'].fillna(df['home_team'].str.lower().str.replace(' ', '_'))
+
+        # Step 3: If 'park' still not in columns but home_team is, create from home_team
+        if 'park' not in df.columns and 'home_team' in df.columns:
+            df['park'] = df['home_team'].str.lower().str.replace(' ', '_')
+
+        # Step 4: Final check for 'park'
+        if 'park' not in df.columns:
+            st.error("Could not determine ballpark from your data (missing 'park', 'home_team_code', and 'home_team').")
+            st.stop()
+
+        # Add park context maps (always present from here)
         df['park_hr_rate'] = df['park'].map(park_hr_rate_map).fillna(1.0)
         df['park_altitude'] = df['park'].map(park_altitude_map).fillna(0)
         df['roof_status'] = df['park'].map(roof_status_map).fillna("open")
