@@ -297,7 +297,7 @@ with tab1:
             model_features = robust_numeric_columns(df) + [c for c in context_features if c in df.columns]
             model_features = [c for c in model_features if c != 'hr_outcome']
             if 'hr_outcome' in df.columns:
-            st.write("HR outcome value counts:", dict(df['hr_outcome'].value_counts()))
+                st.write("HR outcome value counts:", dict(df['hr_outcome'].value_counts()))
         model_features_initial = model_features.copy()
         feature_na_fracs = {c: df[c].isna().mean() for c in model_features}
         # Only keep features with less than 20% missing values
