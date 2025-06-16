@@ -359,7 +359,7 @@ with tab2:
         context_features = [
             'park_hr_rate', 'park_altitude', 'park_hand_hr_rate',
             'temp', 'humidity', 'wind_mph',
-            'wind_dir_angle, 'wind_dir_sin', 'wind_dir_cos'
+            'wind_dir_angle', 'wind_dir_sin', 'wind_dir_cos'
         ]
         for c in context_features:
             if c in event_df.columns:
