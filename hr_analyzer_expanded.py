@@ -331,8 +331,8 @@ with tab1:
                 'weight': logit.coef_[0],
                 'intercept': logit.intercept_[0]
             })
-                st.dataframe(weights.sort_values('weight', ascending=False))
-                st.download_button("⬇️ Download Logistic Weights CSV", data=weights.to_csv(index=False), file_name="logit_weights.csv")
+            st.dataframe(weights.sort_values('weight', ascending=False))
+            st.download_button("⬇️ Download Logistic Weights CSV", data=weights.to_csv(index=False), file_name="logit_weights.csv")
 
 with tab2:
     st.header("Upload Event, Matchup, and Analyze")
