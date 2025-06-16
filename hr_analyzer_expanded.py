@@ -434,5 +434,18 @@ with tab2:
         # ROC AUC
         auc = roc_auc_score(y_test, xgb_model.predict_proba(X_test)[:, 1])
         st.metric("XGBoost ROC-AUC", round(auc, 4))
+        # === Logistic Regression Classifier Performance ===
+
+        from sklearn.linear_model import LogisticRegression
+
+        # Use the same train/test split as for XGBoost
+        logit_model = LogisticRegression(max_iter=200, solver='liblinear', class_weight='balanced')
+        logit_model.fit(X_train, y_train)
+        logit_pred = logit_model.predict(X_test)
+        logit_proba = logit_model.predict_proba(X_test)[:, 1]
+
+        st.markdown("### Logistic Regression Performance")
+        st.metric("Logistic Regression ROC-AUC", round(roc_auc_score(y_test, logit_proba), 4))
+        st.code(classification_report(y_test, logit_pred), language='text')
 
         st.success("Analysis complete!")
