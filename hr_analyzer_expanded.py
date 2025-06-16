@@ -296,20 +296,32 @@ with tab1:
             # Only dropna on model features, not on all columns!
             model_features = robust_numeric_columns(df) + [c for c in context_features if c in df.columns]
             model_features = [c for c in model_features if c != 'hr_outcome']
-            model_df = df.dropna(subset=['hr_outcome'] + model_features, how='any')
-            st.write(f"After NA drop: {model_df['hr_outcome'].value_counts().to_dict()}, n={len(model_df)}")
-            if model_df['hr_outcome'].nunique() < 2:
-                st.warning("Not enough HR/non-HR events for logistic regression weights (check date range or missing features).")
-            else:
-                X = model_df[model_features].fillna(0)
-                y = model_df['hr_outcome'].astype(int)
-                logit = LogisticRegression(max_iter=200, solver='liblinear')
-                logit.fit(X, y)
-                weights = pd.DataFrame({
-                    'feature': model_features,
-                    'weight': logit.coef_[0],
-                    'intercept': logit.intercept_[0]
-                })
+            if 'hr_outcome' in df.columns:
+            st.write("HR outcome value counts:", dict(df['hr_outcome'].value_counts()))
+        model_features_initial = model_features.copy()
+        feature_na_fracs = {c: df[c].isna().mean() for c in model_features}
+        # Only keep features with less than 20% missing values
+        model_features = [c for c in model_features if feature_na_fracs[c] < 0.2]
+        dropped_feats = set(model_features_initial) - set(model_features)
+        if dropped_feats:
+            st.info(f"Dropped features due to NAs: {dropped_feats}")
+        if not model_features:
+            st.error("No usable model features (all too many missing values).")
+            st.stop()
+        model_df = df.dropna(subset=model_features + ['hr_outcome'], how='any')
+        st.write(f"After NA drop: {dict(model_df['hr_outcome'].value_counts())}, n={len(model_df)}")
+        if model_df['hr_outcome'].nunique() < 2 or len(model_df) < 30:
+            st.warning("Not enough HR/non-HR events for logistic regression weights (check date range or missing features).")
+            st.stop()
+        X = model_df[model_features].fillna(0)
+        y = model_df['hr_outcome'].astype(int)
+        logit = LogisticRegression(max_iter=200, solver='liblinear')
+        logit.fit(X, y)
+        weights = pd.DataFrame({
+            'feature': model_features,
+            'weight': logit.coef_[0],
+            'intercept': logit.intercept_[0]
+        })
                 st.dataframe(weights.sort_values('weight', ascending=False))
                 st.download_button("⬇️ Download Logistic Weights CSV", data=weights.to_csv(index=False), file_name="logit_weights.csv")
 
