@@ -248,7 +248,23 @@ with tab1:
         df = pd.concat([df, pd.DataFrame(batter_feat_dict), pd.DataFrame(pitcher_feat_dict)], axis=1)
         df = dedup_columns(df)  # Defragment!
         progress.progress(70, "Rolling stats + matchup splits done")
-
+        # ========== ADVANCED ROLLING SPLITS: BATTER VS PITCHER HAND ==========
+        roll_windows = [3, 5, 7, 14]
+        for w in roll_windows:
+            colname = f'B_vsP_hand_HR_{w}'
+            if 'batter_id' in df.columns and 'p_throws' in df.columns and 'hr_outcome' in df.columns:
+                df[colname] = (
+                    df
+                    .groupby(['batter_id', 'p_throws'])['hr_outcome']
+                    .transform(lambda x: x.shift(1).rolling(w, min_periods=1).mean())
+                )
+            colname2 = f'P_vsB_hand_HR_{w}'
+            if 'pitcher_id' in df.columns and 'stand' in df.columns and 'hr_outcome' in df.columns:
+                df[colname2] = (
+                    df
+                    .groupby(['pitcher_id', 'stand'])['hr_outcome']
+                    .transform(lambda x: x.shift(1).rolling(w, min_periods=1).mean())
+        )
         # ========== MORE PHYSICS & INTERACTIONS ==========
         for col in ['is_barrel', 'is_hard_hit', 'flyball', 'pull_air']:
             if col in df.columns and all(x in df.columns for x in ['humidity', 'temp', 'wind_mph']):
