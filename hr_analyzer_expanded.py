@@ -58,7 +58,7 @@ mlb_team_city_map = {
     'WSH': 'Washington'
 }
 
-# ======= UTILITY FUNCTIONS =======
+# ========== UTILITY FUNCTIONS ==========
 def wind_dir_to_angle(wind_dir):
     directions = {
         'N': 0, 'NNE': 22.5, 'NE': 45, 'ENE': 67.5, 'E': 90, 'ESE': 112.5,
@@ -109,10 +109,29 @@ def robust_numeric_columns(df):
 def dedup_columns(df):
     return df.loc[:, ~df.columns.duplicated()]
 
-# ======= MAIN APP =======
+# Rolling HR rate per pitch type (batter & pitcher)
+def rolling_pitch_type_hr(df, group_key, pitch_col, hr_col='hr_outcome', window=30):
+    def _func(x):
+        return x.shift(1).rolling(window, min_periods=1).mean()
+    return (
+        df.groupby([group_key, pitch_col])[hr_col]
+        .transform(_func)
+    )
+
+# Park HR rate by handedness
+def compute_park_hand_hr_rate(df, hand_col='stand', park_col='park'):
+    # L/R handedness park HR rate based on historical HRs
+    if hand_col not in df.columns or park_col not in df.columns or 'hr_outcome' not in df.columns:
+        return pd.Series(np.nan, index=df.index)
+    park_hand_hr = (
+        df.groupby([park_col, hand_col])['hr_outcome'].transform(lambda x: x.rolling(100, min_periods=20).mean())
+    )
+    return park_hand_hr
+
+# ========== APP MAIN UI ==========
 st.set_page_config("MLB HR Analyzer", layout="wide")
-st.title("⚾ MLB HR Analyzer & XGBoost Modeler (ALL FEATURES)")
-st.caption("Statcast + Physics + Weather + Park + Handed Splits + Advanced Context + Modeler")
+st.title("⚾ All-in-One MLB HR Analyzer & XGBoost Modeler")
+st.caption("Statcast + Physics + Rolling Features + Pitch Type Splits + Park Hand HR Rate + Context + Modeler")
 
 tab1, tab2 = st.tabs(["1️⃣ Fetch & Feature Engineer Data", "2️⃣ Upload & Analyze"])
 
@@ -132,26 +151,28 @@ with tab1:
         df = statcast(start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
         progress.progress(10, "Loaded Statcast")
         st.write(f"Loaded {len(df)} raw Statcast events.")
+        if len(df) == 0:
+            st.error("No data! Try different dates.")
+            st.stop()
 
-        # Clean/Prep
         if 'game_date' in df.columns:
             df['game_date'] = pd.to_datetime(df['game_date'])
+
         valid_events = ['single', 'double', 'triple', 'homerun', 'home_run', 'field_out']
         if 'events' in df.columns:
-            df = df[df['events'].astype(str).str.lower().str.replace(' ', '').isin(valid_events)].copy()
+            df = df[df['events'].str.lower().str.replace(' ', '').isin(valid_events)].copy()
 
-        # HR Outcome
         if 'hr_outcome' not in df.columns:
             if 'events' in df.columns:
                 df['hr_outcome'] = df['events'].astype(str).str.lower().str.replace(' ', '').isin(['homerun', 'home_run']).astype(int)
             else:
                 df['hr_outcome'] = np.nan
 
-        # ======= CONTEXT/PARK LOGIC =======
         if 'home_team_code' in df.columns:
             df['home_team_code'] = df['home_team_code'].astype(str).str.upper()
-        if 'park' not in df.columns and 'home_team_code' in df.columns:
-            df['park'] = df['home_team_code'].map(team_code_to_park)
+        if 'park' not in df.columns:
+            if 'home_team_code' in df.columns:
+                df['park'] = df['home_team_code'].map(team_code_to_park)
         if 'park' in df.columns and df['park'].isnull().any() and 'home_team' in df.columns:
             df['park'] = df['park'].fillna(df['home_team'].str.lower().str.replace(' ', '_'))
         elif 'home_team' in df.columns and 'park' not in df.columns:
@@ -164,7 +185,7 @@ with tab1:
         df['roof_status'] = df['park'].map(roof_status_map).fillna("open")
         progress.progress(20, "Park/team context merged")
 
-        # WEATHER
+        # Weather
         weather_features = ['temp', 'wind_mph', 'wind_dir', 'humidity', 'condition']
         if 'home_team_code' in df.columns and 'game_date' in df.columns:
             df['weather_key'] = df['home_team_code'] + "_" + df['game_date'].dt.strftime("%Y%m%d")
@@ -186,23 +207,26 @@ with tab1:
         df['wind_dir_sin'] = np.sin(np.deg2rad(df['wind_dir_angle']))
         df['wind_dir_cos'] = np.cos(np.deg2rad(df['wind_dir_angle']))
 
-        # ========== ADVANCED ROLLING FEATURES ==========
-        progress.progress(60, "Rolling/statcast/physics features...")
+        # Advanced rolling features
+        progress.progress(55, "Advanced rolling features...")
         roll_windows = [3, 5, 7, 14]
         batter_cols = ['launch_speed', 'launch_angle', 'hit_distance_sc', 'woba_value',
                        'release_speed', 'release_spin_rate', 'spin_axis', 'pfx_x', 'pfx_z']
-        pitcher_cols = batter_cols
+        pitcher_cols = ['launch_speed', 'launch_angle', 'hit_distance_sc', 'woba_value',
+                        'release_speed', 'release_spin_rate', 'spin_axis', 'pfx_x', 'pfx_z']
         if 'batter_id' not in df.columns and 'batter' in df.columns:
             df['batter_id'] = df['batter']
         if 'pitcher_id' not in df.columns and 'pitcher' in df.columns:
             df['pitcher_id'] = df['pitcher']
 
+        # Batters
         batter_feat_dict = {}
         for col in batter_cols:
             if col in df.columns:
                 for w in roll_windows:
                     cname = f'B_{col}_{w}'
                     batter_feat_dict[cname] = df.groupby('batter_id')[col].transform(lambda x: x.shift(1).rolling(w, min_periods=1).mean())
+        # Pitchers
         pitcher_feat_dict = {}
         for col in pitcher_cols:
             if col in df.columns:
@@ -210,15 +234,26 @@ with tab1:
                     cname = f'P_{col}_{w}'
                     pitcher_feat_dict[cname] = df.groupby('pitcher_id')[col].transform(lambda x: x.shift(1).rolling(w, min_periods=1).mean())
 
-        # Hand splits
+        # Hand matchup splits (batter vs pitcher hand HR rolling mean)
         if 'stand' in df.columns and 'p_throws' in df.columns:
             for w in roll_windows:
                 df[f'B_vsP_hand_HR_{w}'] = df.groupby(['batter_id', 'p_throws'])['hr_outcome'].transform(lambda x: x.shift(1).rolling(w, min_periods=1).mean())
                 df[f'P_vsB_hand_HR_{w}'] = df.groupby(['pitcher_id', 'stand'])['hr_outcome'].transform(lambda x: x.shift(1).rolling(w, min_periods=1).mean())
 
+        # ========== Pitch Type HR Rate Features ==========
+        if 'pitch_type' in df.columns:
+            for w in roll_windows:
+                df[f'B_pitch_type_HR_{w}'] = rolling_pitch_type_hr(df, 'batter_id', 'pitch_type', window=w)
+                df[f'P_pitch_type_HR_{w}'] = rolling_pitch_type_hr(df, 'pitcher_id', 'pitch_type', window=w)
+
+        # ========== Park Hand HR Rate ==========
+        if 'park' in df.columns and 'stand' in df.columns:
+            df['park_hand_hr_rate'] = compute_park_hand_hr_rate(df, hand_col='stand', park_col='park')
+
+        # Merge new features
         df = pd.concat([df, pd.DataFrame(batter_feat_dict), pd.DataFrame(pitcher_feat_dict)], axis=1)
         df = df.copy()
-        progress.progress(70, "Rolling/statcast/physics features complete")
+        progress.progress(70, "Physics, splits, and pitch type features complete")
 
         # Interactions: weather x batted ball
         for col in ['is_barrel', 'is_hard_hit']:
@@ -226,19 +261,22 @@ with tab1:
                 df[f'{col}_x_humidity'] = df[col] * df['humidity']
                 df[f'{col}_x_temp'] = df[col] * df['temp']
                 df[f'{col}_x_wind_mph'] = df[col] * df['wind_mph']
-        df = dedup_columns(df)
-        progress.progress(80, "Interactions/context complete")
 
-        # Categorical encoding for roof
+        progress.progress(85, "Interactions complete")
+        df = dedup_columns(df)
+
+        # ================== CONTEXT + CATEGORICAL ENCODING FOR MODEL ==================
+        context_features = [
+            'park_hr_rate', 'park_altitude', 'temp', 'humidity', 'wind_mph', 
+            'wind_dir_angle', 'wind_dir_sin', 'wind_dir_cos', 'park_hand_hr_rate'
+        ]
+        for c in context_features:
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors='coerce')
         if 'roof_status' in df.columns:
             df = pd.get_dummies(df, columns=['roof_status'], drop_first=True)
 
-        # FINAL FILTER: keep only rows with valid hr_outcome (0 or 1)
-        st.write("hr_outcome counts BEFORE filter:")
-        st.dataframe(df['hr_outcome'].value_counts().rename('count').to_frame())
-        df = df[df['hr_outcome'].isin([0,1])]
-        st.write("hr_outcome counts AFTER filter:")
-        st.dataframe(df['hr_outcome'].value_counts().rename('count').to_frame())
+        progress.progress(95, "Context/categorical features encoded")
 
         st.success(f"Feature engineering complete! {len(df)} batted ball events.")
         st.markdown("#### Download Event-Level CSV (all features, 1 row per batted ball event):")
@@ -246,40 +284,36 @@ with tab1:
         st.download_button("⬇️ Download Event-Level CSV", data=df.to_csv(index=False), file_name="event_level_hr_features.csv")
         progress.empty()
 
-        # ========== LOGISTIC WEIGHTS BLOCK ==========
-        numerics = robust_numeric_columns(df)
-        cat_context = [c for c in ['park_hr_rate', 'park_altitude', 'temp', 'humidity', 'wind_mph', 
-            'wind_dir_angle', 'wind_dir_sin', 'wind_dir_cos'] if c in df.columns]
-        if 'roof_status_closed' in df.columns:
-            cat_context.append('roof_status_closed')
-        if 'roof_status_open' in df.columns:
-            cat_context.append('roof_status_open')
-        model_features = [c for c in numerics + cat_context if c != 'hr_outcome']
+# === LOGISTIC WEIGHTS DOWNLOAD BLOCK (after feature engineering) ===
 
-        # Check NA per feature in each class and keep features with sufficient non-NA
-        min_non_na_hr = 10
-        robust_features = [
-            c for c in model_features
-            if df[df['hr_outcome']==1][c].notna().sum() >= min_non_na_hr
-            and df[df['hr_outcome']==0][c].notna().sum() >= min_non_na_hr
-        ]
-        model_df = df[robust_features + ['hr_outcome']].dropna(subset=robust_features + ['hr_outcome'], how='any')
-        st.write("hr_outcome counts for model fitting:")
-        st.dataframe(model_df['hr_outcome'].value_counts().rename('count').to_frame())
+if 'df' in locals() and not df.empty and 'hr_outcome' in df.columns and df['hr_outcome'].nunique() > 1:
+    st.markdown("#### Download Logistic Regression Weights CSV (after fetch data):")
+    numerics = robust_numeric_columns(df)
+    cat_context = [c for c in [
+        'park_hr_rate', 'park_altitude', 'temp', 'humidity', 'wind_mph', 
+        'wind_dir_angle', 'wind_dir_sin', 'wind_dir_cos', 'park_hand_hr_rate'
+    ] if c in df.columns]
+    for dummy_col in ['roof_status_closed', 'roof_status_open']:
+        if dummy_col in df.columns:
+            cat_context.append(dummy_col)
+    model_features = [c for c in numerics + cat_context if c != 'hr_outcome']
 
-        if model_df['hr_outcome'].nunique() > 1:
-            X = model_df[robust_features].fillna(0)
-            y = model_df['hr_outcome'].astype(int)
-            logit = LogisticRegression(max_iter=200, solver='liblinear')
-            logit.fit(X, y)
-            weights = pd.DataFrame({'feature': robust_features, 'weight': logit.coef_[0], 'intercept': logit.intercept_[0]})
-            st.markdown("#### Download Logistic Regression Weights CSV (after fetch data):")
-            st.dataframe(weights.sort_values('weight', ascending=False))
-            st.download_button("⬇️ Download Logistic Weights CSV", data=weights.to_csv(index=False), file_name="logit_weights.csv")
-        else:
-            st.warning("Not enough HR/non-HR events for logistic regression weights after feature NA drop.")
+    model_df = df.dropna(subset=model_features + ['hr_outcome'], how='any')
+    if model_df['hr_outcome'].nunique() > 1:
+        X = model_df[model_features].fillna(0)
+        y = model_df['hr_outcome'].astype(int)
+        logit = LogisticRegression(max_iter=200, solver='liblinear')
+        logit.fit(X, y)
+        weights = pd.DataFrame({
+            'feature': model_features,
+            'weight': logit.coef_[0],
+            'intercept': logit.intercept_[0]
+        })
+        st.dataframe(weights.sort_values('weight', ascending=False))
+        st.download_button("⬇️ Download Logistic Weights CSV", data=weights.to_csv(index=False), file_name="logit_weights.csv")
+    else:
+        st.warning("Not enough HR/non-HR events for logistic regression weights.")
 
-# ---- UPLOAD & ANALYZE TAB (same as your previous logic, with NA checks/robustness) ----
 with tab2:
     st.header("Upload Event, Matchup, and Analyze")
     st.markdown("**All 3 uploads required!**")
@@ -295,8 +329,10 @@ with tab2:
         df = pd.read_csv(uploaded_events)
         matchups = pd.read_csv(uploaded_matchups)
         logit_weights = pd.read_csv(uploaded_logit)
+
         st.write(f"Loaded {len(df)} events, {len(matchups)} matchup rows, {len(logit_weights)} logistic weights.")
 
+        # ========== FILTER EVENTS FOR ANALYSIS ==========
         valid_events = ['single', 'double', 'triple', 'homerun', 'home_run', 'field_out']
         if 'events' in df.columns:
             df = df[df['events'].astype(str).str.lower().str.replace(' ', '').isin(valid_events)].copy()
@@ -306,9 +342,10 @@ with tab2:
             else:
                 st.error("No HR outcome detected, and 'events' column not available for mapping!")
                 st.stop()
+
         df = dedup_columns(df)
 
-        # Merge matchups (as before)
+        # ========== MERGE IN MATCHUPS ==========
         merge_cols = None
         if 'batter_id' in df.columns and 'mlb id' in matchups.columns:
             merge_cols = ['batter_id', 'mlb id']
@@ -327,9 +364,10 @@ with tab2:
         else:
             event_df = df
 
+        # CONTEXT FEATURE ENCODING
         context_features = [
             'park_hr_rate', 'park_altitude', 'temp', 'humidity', 'wind_mph',
-            'wind_dir_angle', 'wind_dir_sin', 'wind_dir_cos'
+            'wind_dir_angle', 'wind_dir_sin', 'wind_dir_cos', 'park_hand_hr_rate'
         ]
         for c in context_features:
             if c in event_df.columns:
@@ -337,32 +375,30 @@ with tab2:
         if 'roof_status' in event_df.columns:
             event_df = pd.get_dummies(event_df, columns=['roof_status'], drop_first=True)
 
+        # ========== COMPUTE LOGIT SCORE ==========
         model_features = [
             f for f in logit_weights['feature'].values if f in event_df.columns and pd.api.types.is_numeric_dtype(event_df[f])
         ]
         if not model_features or 'hr_outcome' not in event_df.columns:
             st.error("Model features or hr_outcome missing from event-level data.")
             st.stop()
+
         X = event_df[model_features].fillna(0)
         coef = logit_weights.set_index('feature')['weight'].reindex(model_features).fillna(0).values
         intercept = logit_weights['intercept'].iloc[0] if 'intercept' in logit_weights.columns else 0
         event_df['logit_score'] = intercept + np.dot(X, coef)
         event_df['logit_prob'] = 1 / (1 + np.exp(-event_df['logit_score']))
 
-        # XGBOOST
+        # ========== XGBOOST ANALYSIS ==========
         st.write("Fitting XGBoost model...")
         model_df = event_df.dropna(subset=model_features + ['hr_outcome'], how='any')
-        st.write("HR outcome breakdown in modeling data:")
-        st.dataframe(model_df['hr_outcome'].value_counts().rename('count').to_frame())
         if model_df['hr_outcome'].nunique() < 2:
-            st.warning("Not enough HR/non-HR events for XGBoost. Need at least 2 classes after filtering.")
+            st.warning("Not enough HR/non-HR events for XGBoost. Need at least 2 classes.")
             st.stop()
         X_train, X_test, y_train, y_test = train_test_split(
             model_df[model_features], model_df['hr_outcome'], test_size=0.2, random_state=42
         )
-        xgb_model = xgb.XGBClassifier(
-            n_estimators=100, max_depth=3, learning_rate=0.13, use_label_encoder=False, eval_metric='logloss'
-        )
+        xgb_model = xgb.XGBClassifier(n_estimators=100, max_depth=3, learning_rate=0.13, use_label_encoder=False, eval_metric='logloss')
         xgb_model.fit(X_train, y_train)
         model_df['xgb_prob'] = xgb_model.predict_proba(model_df[model_features])[:, 1]
 
@@ -386,11 +422,7 @@ with tab2:
 
         # ========== DOWNLOADABLES ==========
         st.markdown("#### Download Full Event-Level Data with Model Scores:")
-        st.download_button(
-            "⬇️ Download Scored Event CSV",
-            data=model_df.to_csv(index=False),
-            file_name="event_level_scored.csv"
-        )
+        st.download_button("⬇️ Download Scored Event CSV", data=model_df.to_csv(index=False), file_name="event_level_scored.csv")
 
         # CLASSIFICATION REPORTS
         st.markdown("### Classification Reports")
@@ -401,5 +433,3 @@ with tab2:
         st.metric("XGBoost ROC-AUC", round(auc, 4))
 
         st.success("Analysis complete!")
-
-# ========== END OF APP ==========
