@@ -340,6 +340,10 @@ with tab2:
     uploaded_events = st.file_uploader("Upload Event-Level Features CSV", type="csv", key="evup")
     uploaded_matchups = st.file_uploader("Upload Matchups CSV", type="csv", key="mup")
     uploaded_logit = st.file_uploader("Upload Logistic Weights CSV", type="csv", key="lup")
+
+    st.markdown("#### Threshold: Adjust probability for HR prediction below")
+    threshold = st.slider("Set HR Probability Threshold", min_value=0.01, max_value=0.99, value=0.5, step=0.01)
+
     analyze_btn = st.button("Run Analysis (Logit + XGBoost Leaderboard)", type="primary")
 
     if analyze_btn:
@@ -362,11 +366,9 @@ with tab2:
             else:
                 st.error("No HR outcome detected, and 'events' column not available for mapping!")
                 st.stop()
-
         df = dedup_columns(df)
 
-        # ========== MATCHUPS MERGE (for batter name lookup) ==========
-        # Merge on MLB ID if available, else name
+        # ========== MATCHUPS MERGE ==========
         merge_cols = None
         if 'batter_id' in df.columns and 'mlb id' in matchups.columns:
             merge_cols = ['batter_id', 'mlb id']
@@ -383,7 +385,7 @@ with tab2:
         else:
             event_df = df
 
-        # ========== CONTEXT ENCODING ==========
+        # CONTEXT ENCODING
         context_features = [
             'park_hr_rate', 'park_altitude', 'park_hand_hr_rate',
             'temp', 'humidity', 'wind_mph', 'wind_dir_angle', 'wind_dir_sin', 'wind_dir_cos'
@@ -394,22 +396,20 @@ with tab2:
         if 'roof_status' in event_df.columns:
             event_df = pd.get_dummies(event_df, columns=['roof_status'], drop_first=True)
 
-        # ========== SCORING: LOGIT AND XGBOOST ==========
-        # -- Get model features present in both event-level and logit weights
+        # SCORING
         model_features = [
             f for f in logit_weights['feature'].values if f in event_df.columns and pd.api.types.is_numeric_dtype(event_df[f])
         ]
         if not model_features or 'hr_outcome' not in event_df.columns:
             st.error("Model features or hr_outcome missing from event-level data.")
             st.stop()
-
         X = event_df[model_features].fillna(0)
         coef = logit_weights.set_index('feature')['weight'].reindex(model_features).fillna(0).values
         intercept = logit_weights['intercept'].iloc[0] if 'intercept' in logit_weights.columns else 0
         event_df['logit_score'] = intercept + np.dot(X, coef)
         event_df['logit_prob'] = 1 / (1 + np.exp(-event_df['logit_score']))
 
-        # -- XGBoost model
+        # XGBoost
         st.write("Fitting XGBoost model...")
         model_df = event_df.dropna(subset=model_features + ['hr_outcome'], how='any')
         if model_df['hr_outcome'].nunique() < 2:
@@ -422,63 +422,58 @@ with tab2:
         xgb_model.fit(X_train, y_train)
         model_df['xgb_prob'] = xgb_model.predict_proba(model_df[model_features])[:, 1]
 
-        # ========== THRESHOLD SLIDER ==========
-        st.markdown("#### Threshold: Adjust probability for HR prediction below")
-        threshold = st.slider("Set HR Probability Threshold", min_value=0.01, max_value=0.99, value=0.5, step=0.01)
-
-        # ========== HITTER LEADERBOARDS ==========
+        # HITTER LEADERBOARDS (defensive)
         event_df['batting order'] = pd.to_numeric(event_df.get('batting order', np.nan), errors='coerce')
         hitters_df = event_df[event_df['batting order'].between(1, 9, inclusive="both")].copy()
-        # Use best name column
-        if 'player name' in hitters_df.columns:
-            batter_col = 'player name'
-        elif 'batter_name' in hitters_df.columns:
-            batter_col = 'batter_name'
-        elif 'batter' in hitters_df.columns:
-            batter_col = 'batter'
+
+        if hitters_df.empty or 'logit_prob' not in hitters_df.columns or 'xgb_prob' not in hitters_df.columns:
+            st.error("No hitter data available for leaderboard! Check your matchup or event CSVs for proper batting order columns.")
         else:
-            batter_col = hitters_df.columns[0]  # fallback
-
-        top_n = 15
-        # Leaderboard: Logit
-        logit_leaderboard = (
-            hitters_df.groupby(batter_col)
-            .agg(
-                n_events=('hr_outcome', 'count'),
-                HRs=('hr_outcome', 'sum'),
-                mean_logit_prob=('logit_prob', 'mean'),
-                predicted_HR=('logit_prob', lambda x: (x > threshold).sum())
+            if 'player name' in hitters_df.columns:
+                batter_col = 'player name'
+            elif 'batter_name' in hitters_df.columns:
+                batter_col = 'batter_name'
+            elif 'batter' in hitters_df.columns:
+                batter_col = 'batter'
+            else:
+                batter_col = hitters_df.columns[0]
+            top_n = 15
+            logit_leaderboard = (
+                hitters_df.groupby(batter_col)
+                .agg(
+                    n_events=('hr_outcome', 'count'),
+                    HRs=('hr_outcome', 'sum'),
+                    mean_logit_prob=('logit_prob', 'mean'),
+                    predicted_HR=('logit_prob', lambda x: (x > threshold).sum())
+                )
+                .sort_values('mean_logit_prob', ascending=False)
+                .reset_index()
+                .head(top_n)
             )
-            .sort_values('mean_logit_prob', ascending=False)
-            .reset_index()
-            .head(top_n)
-        )
-        # Leaderboard: XGBoost
-        xgb_leaderboard = (
-            hitters_df.groupby(batter_col)
-            .agg(
-                n_events=('hr_outcome', 'count'),
-                HRs=('hr_outcome', 'sum'),
-                mean_xgb_prob=('xgb_prob', 'mean'),
-                predicted_HR=('xgb_prob', lambda x: (x > threshold).sum())
+            xgb_leaderboard = (
+                hitters_df.groupby(batter_col)
+                .agg(
+                    n_events=('hr_outcome', 'count'),
+                    HRs=('hr_outcome', 'sum'),
+                    mean_xgb_prob=('xgb_prob', 'mean'),
+                    predicted_HR=('xgb_prob', lambda x: (x > threshold).sum())
+                )
+                .sort_values('mean_xgb_prob', ascending=False)
+                .reset_index()
+                .head(top_n)
             )
-            .sort_values('mean_xgb_prob', ascending=False)
-            .reset_index()
-            .head(top_n)
-        )
-        st.markdown("### Top Hitters by Model Probability")
-        c1, c2 = st.columns(2)
-        with c1:
-            st.subheader("Logistic Regression")
-            st.dataframe(logit_leaderboard)
-        with c2:
-            st.subheader("XGBoost")
-            st.dataframe(xgb_leaderboard)
+            st.markdown("### Top Hitters by Model Probability")
+            c1, c2 = st.columns(2)
+            with c1:
+                st.subheader("Logistic Regression")
+                st.dataframe(logit_leaderboard)
+            with c2:
+                st.subheader("XGBoost")
+                st.dataframe(xgb_leaderboard)
 
-        # ========== ROC, CLASSIFICATION REPORTS ==========
+        # ROC, CLASSIFICATION REPORTS
         st.markdown("### Model Performance Reports")
         col1, col2 = st.columns(2)
-        # -- Logit
         with col1:
             st.write("**Logistic Regression Performance**")
             try:
@@ -488,7 +483,6 @@ with tab2:
                 st.code(classification_report(y_test, y_pred_logit, zero_division=0), language='text')
             except Exception as e:
                 st.warning(f"Logit model report failed: {e}")
-        # -- XGBoost
         with col2:
             st.write("**XGBoost Performance**")
             try:
@@ -499,6 +493,6 @@ with tab2:
             except Exception as e:
                 st.warning(f"XGBoost report failed: {e}")
 
-        # ========== DOWNLOAD ==========
+        # DOWNLOAD
         st.markdown("#### Download Full Event-Level Data with Model Scores:")
         st.download_button("⬇️ Download Scored Event CSV", data=model_df.to_csv(index=False), file_name="event_level_scored.csv")
