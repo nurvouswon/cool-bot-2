@@ -110,11 +110,14 @@ def dedup_columns(df):
     return df.loc[:, ~df.columns.duplicated()]
 
 # ========== Pitch type context ==============
-def rolling_pitch_type_hr(df, entity_col, pitch_col, window=30):
+def rolling_pitch_type_hr(df, group_col, pitch_type_col, window=5):
+    # Returns rolling HR rate by pitch type for each group (batter or pitcher)
+    def rolling_func(x):
+        return x.shift(1).rolling(window, min_periods=1).mean()
+    # Group by both group_col and pitch_type_col for correct split
     return (
-        df.groupby([entity_col, pitch_col])['hr_outcome']
-        .apply(lambda x: x.shift(1).rolling(window, min_periods=1).mean())
-        .reindex(df.index)
+        df.groupby([group_col, pitch_type_col])['hr_outcome']
+        .transform(rolling_func)
     )
 
 # ========== APP MAIN UI ==========
