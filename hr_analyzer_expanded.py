@@ -343,6 +343,7 @@ with tab2:
     analyze_btn = st.button("Run Analysis (Logit + XGBoost Leaderboard)", type="primary")
 
     if analyze_btn:
+        # ========== LOAD DATA ==========
         if not uploaded_events or not uploaded_matchups or not uploaded_logit:
             st.warning("Please upload event-level, matchup, and logistic weights CSVs before running analysis.")
             st.stop()
@@ -352,105 +353,79 @@ with tab2:
 
         st.write(f"Loaded {len(df)} events, {len(matchups)} matchup rows, {len(logit_weights)} logistic weights.")
 
-        # FILTER EVENTS FOR ANALYSIS (robust to string cases)
-        valid_events = ['single', 'double', 'triple', 'homerun', 'home_run', 'field_out']
-        if 'events' in df.columns:
-            df = df[df['events'].astype(str).str.lower().str.replace(' ', '').isin(valid_events)].copy()
-        if 'hr_outcome' not in df.columns:
-            if 'events' in df.columns:
-                df['hr_outcome'] = df['events'].astype(str).str.lower().str.replace(' ', '').isin(['homerun', 'home_run']).astype(int)
-            else:
-                st.error("No HR outcome detected, and 'events' column not available for mapping!")
-                st.stop()
-
-        df = dedup_columns(df)
-
-        # MERGE IN MATCHUPS (fallbacks for common formats)
-        merge_cols = None
+        # ========== FILTER EVENTS TO ONLY VALID BATTERS ==========
+        # Use 'mlb id' or 'player name' to match
         if 'batter_id' in df.columns and 'mlb id' in matchups.columns:
-            merge_cols = ['batter_id', 'mlb id']
+            merge_on = ('batter_id', 'mlb id')
         elif 'batter' in df.columns and 'player name' in matchups.columns:
-            merge_cols = ['batter', 'player name']
-        if merge_cols:
-            event_df = df.merge(
-                matchups,
-                left_on=merge_cols[0],
-                right_on=merge_cols[1],
-                how='left',
-                suffixes=('', '_mu')
-            )
+            merge_on = ('batter', 'player name')
         else:
-            event_df = df
-
-        # CONTEXT/CATEGORICAL ENCODING
-        context_features = [
-            'park_hr_rate', 'park_altitude', 'park_hand_hr_rate', 'temp', 'humidity', 'wind_mph',
-            'wind_dir_angle', 'wind_dir_sin', 'wind_dir_cos'
-        ]
-        for c in context_features:
-            if c in event_df.columns:
-                event_df[c] = pd.to_numeric(event_df[c], errors='coerce')
-        if 'roof_status' in event_df.columns:
-            event_df = pd.get_dummies(event_df, columns=['roof_status'], drop_first=True)
-        event_df = dedup_columns(event_df)
-
-        # MODEL FEATURES: Only use features in both data and logistic weights CSV
-        model_features = [
-            f for f in logit_weights['feature'].values
-            if f in event_df.columns and pd.api.types.is_numeric_dtype(event_df[f])
-        ]
-        if not model_features or 'hr_outcome' not in event_df.columns:
-            st.error("Model features or hr_outcome missing from event-level data.")
+            st.error("Could not match batters between event-level data and matchup file. Check columns.")
             st.stop()
 
-        # LOGISTIC PROBABILITY
+        # Merge events with today's matchups to get only today's batters
+        today_batters = matchups[merge_on[1]].unique()
+        event_df = df[df[merge_on[0]].isin(today_batters)].copy()
+        if event_df.empty:
+            st.error("No matching batters found in event-level data for today's lineup.")
+            st.stop()
+        # Merge in matchup info for display
+        event_df = event_df.merge(matchups, left_on=merge_on[0], right_on=merge_on[1], how='left', suffixes=('', '_mu'))
+
+        # ========== PREPARE FEATURES ==========
+        model_features = [f for f in logit_weights['feature'].values if f in event_df.columns and pd.api.types.is_numeric_dtype(event_df[f])]
+        if not model_features:
+            st.error("None of the model features from weights file are present in your data.")
+            st.stop()
+        if 'hr_outcome' not in event_df.columns:
+            st.warning("No hr_outcome column in the event-level data! Scoring only.")
+
         X = event_df[model_features].fillna(0)
         coef = logit_weights.set_index('feature')['weight'].reindex(model_features).fillna(0).values
         intercept = logit_weights['intercept'].iloc[0] if 'intercept' in logit_weights.columns else 0
+
+        # ========== LOGISTIC REGRESSION SCORING ==========
         event_df['logit_score'] = intercept + np.dot(X, coef)
         event_df['logit_prob'] = 1 / (1 + np.exp(-event_df['logit_score']))
 
-        # XGBOOST ANALYSIS
-        st.write("Fitting XGBoost model...")
-        model_df = event_df.dropna(subset=model_features + ['hr_outcome'], how='any')
-        if model_df['hr_outcome'].nunique() < 2:
-            st.warning("Not enough HR/non-HR events for XGBoost. Need at least 2 classes.")
-            st.stop()
-        X_train, X_test, y_train, y_test = train_test_split(
-            model_df[model_features], model_df['hr_outcome'], test_size=0.2, random_state=42
-        )
-        xgb_model = xgb.XGBClassifier(
-            n_estimators=100, max_depth=3, learning_rate=0.13,
-            use_label_encoder=False, eval_metric='logloss'
-        )
-        xgb_model.fit(X_train, y_train)
-        model_df['xgb_prob'] = xgb_model.predict_proba(model_df[model_features])[:, 1]
-
-        # LEADERBOARD
-        st.markdown("### HR Leaderboard")
-        if 'batter' in model_df.columns:
-            leaderboard = (
-                model_df.groupby('batter')
-                .agg(
-                    events=('hr_outcome', 'count'),
-                    HRs=('hr_outcome', 'sum'),
-                    mean_logit_prob=('logit_prob', 'mean'),
-                    mean_xgb_prob=('xgb_prob', 'mean')
-                )
-                .sort_values('mean_xgb_prob', ascending=False)
-                .reset_index()
+        # ========== XGBOOST MODEL (TRAIN/INFER) ==========
+        # If hr_outcome present, train XGBoost, otherwise skip
+        if 'hr_outcome' in event_df.columns and event_df['hr_outcome'].nunique() > 1:
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, event_df['hr_outcome'], test_size=0.2, random_state=42
             )
-            st.dataframe(leaderboard.head(30))
+            xgb_model = xgb.XGBClassifier(n_estimators=100, max_depth=3, learning_rate=0.13, use_label_encoder=False, eval_metric='logloss')
+            xgb_model.fit(X_train, y_train)
+            event_df['xgb_prob'] = xgb_model.predict_proba(X)[:, 1]
+            # Show XGB AUC
+            auc = roc_auc_score(y_test, xgb_model.predict_proba(X_test)[:, 1])
+            st.metric("XGBoost ROC-AUC", round(auc, 4))
+            st.markdown("### Classification Reports")
+            st.code(classification_report(y_test, xgb_model.predict(X_test)), language='text')
         else:
-            st.dataframe(model_df[['logit_prob', 'xgb_prob', 'hr_outcome']].head(30))
+            event_df['xgb_prob'] = np.nan
+            st.info("Not enough HR/non-HR events to fit XGBoost. Only logit scoring shown.")
 
-        # DOWNLOAD SCORED EVENT DATA
-        st.markdown("#### Download Full Event-Level Data with Model Scores:")
-        st.download_button(
-            "⬇️ Download Scored Event CSV",
-            data=model_df.to_csv(index=False),
-            file_name="event_level_scored.csv"
+        # ========== LEADERBOARD ==========
+        st.markdown("### HR Leaderboard (Today's Batters)")
+        # Get best row per batter for leaderboard (use max logit_prob)
+        leaderboard = (
+            event_df.groupby(merge_on[0])
+            .agg(
+                batter_name=('batter' if 'batter' in event_df.columns else merge_on[0], 'first'),
+                team=('team code' if 'team code' in event_df.columns else 'team', 'first'),
+                batting_order=('batting order' if 'batting order' in event_df.columns else 'batting_order', 'first'),
+                logit_prob=('logit_prob', 'max'),
+                xgb_prob=('xgb_prob', 'max'),
+            )
+            .reset_index()
+            .sort_values('logit_prob', ascending=False)
         )
+        st.dataframe(leaderboard.head(15), use_container_width=True)
+
+        # ========== DOWNLOADABLES ==========
+        st.markdown("#### Download Full Event-Level Data with Model Scores:")
+        st.download_button("⬇️ Download Scored Event CSV", data=event_df.to_csv(index=False), file_name="event_level_scored.csv")
 
         # CLASSIFICATION REPORTS
         st.markdown("### Classification Reports")
