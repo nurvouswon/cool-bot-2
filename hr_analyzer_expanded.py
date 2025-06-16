@@ -163,7 +163,21 @@ with tab1:
 
         # ========== PARK/TEAM/CONTEXT ========== (copy full mapping logic as above)
 
-        # ---- (Insert the robust park/team logic here from previous completions) ----
+        # ========== PARK/TEAM MAPPING ==========
+        if 'home_team_code' in df.columns:
+            df['home_team_code'] = df['home_team_code'].astype(str).str.upper()
+        # 1. Try to create park from home_team_code
+        if 'park' not in df.columns and 'home_team_code' in df.columns:
+            df['park'] = df['home_team_code'].map(team_code_to_park)
+        # 2. Fill missing park with home_team (fallback)
+        if 'park' in df.columns and df['park'].isnull().any() and 'home_team' in df.columns:
+            df['park'] = df['park'].fillna(df['home_team'].str.lower().str.replace(' ', '_'))
+        elif 'home_team' in df.columns and 'park' not in df.columns:
+            df['park'] = df['home_team'].str.lower().str.replace(' ', '_')
+        # 3. Last resort: abort with error
+        if 'park' not in df.columns or df['park'].isnull().all():
+            st.error("Could not determine ballpark from your data (missing 'park', 'home_team_code', and 'home_team').")
+            st.stop()
 
         # Add park_hr_rate, park_altitude, roof_status, and park_hand_hr_rate if you have the data
         df['park_hr_rate'] = df['park'].map(park_hr_rate_map).fillna(1.0)
