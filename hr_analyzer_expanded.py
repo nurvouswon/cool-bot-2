@@ -297,16 +297,19 @@ with tab1:
 
 # ========= TAB 2: UPLOAD & ANALYZE ===========
 with tab2:
-    st.header("Upload Event, Matchup, and Analyze")
-    st.markdown("**All 3 uploads required!**")
+    st.header("Upload Event, Matchup, and Logistic Weights to Analyze & Score")
+    st.markdown("All 3 uploads required! CSVs must match feature sets generated from Tab 1.")
+
+    # Make slider always visible (set threshold for predicted HRs)
+    threshold = st.slider(
+        "Set HR Probability Threshold",
+        min_value=0.01, max_value=0.5, step=0.01, value=0.13,
+        help="Only events with HR probability above this are counted as HR predictions."
+    )
 
     uploaded_events = st.file_uploader("Upload Event-Level Features CSV", type="csv", key="evup")
     uploaded_matchups = st.file_uploader("Upload Matchups CSV", type="csv", key="mup")
     uploaded_logit = st.file_uploader("Upload Logistic Weights CSV", type="csv", key="lup")
-
-    st.markdown("#### Set HR Probability Threshold")
-    threshold = st.slider("Set HR Probability Threshold", 0.01, 0.5, 0.06, step=0.01)
-
     analyze_btn = st.button("Run Analysis (Logit + XGBoost Leaderboard)", type="primary")
 
     if analyze_btn:
@@ -314,66 +317,80 @@ with tab2:
             st.warning("Please upload event-level, matchup, and logistic weights CSVs before running analysis.")
             st.stop()
 
-        # --- Read/clean uploads ---
-        df = pd.read_csv(uploaded_events)
+        # Load all inputs
+        event_df = pd.read_csv(uploaded_events)
         matchups = pd.read_csv(uploaded_matchups)
         logit_weights = pd.read_csv(uploaded_logit)
 
-        # Standardize string IDs (avoid whitespace issues)
-        df['batter_id'] = df['batter_id'].astype(str).str.strip()
-        matchups['mlb id'] = matchups['mlb id'].astype(str).str.strip()
+        st.write(f"Loaded {len(event_df)} events, {len(matchups)} matchup rows, {len(logit_weights)} logistic weights.")
 
-        # Merge matchup info by MLB ID
-        needed_cols = [c for c in ['mlb id', 'player name', 'batting order', 'position'] if c in matchups.columns]
-        df = df.merge(
-            matchups[needed_cols],
-            left_on='batter_id', right_on='mlb id', how='left'
+        # --- Merge player names and batting order from matchups ---
+        # Standardize matchup columns
+        matchup_cols = [col.lower().replace(" ", "_") for col in matchups.columns]
+        matchups.columns = matchup_cols
+        # batter_id in event_df, mlb_id in matchups
+        merge_df = event_df.merge(
+            matchups[['mlb_id', 'player_name', 'batting_order']],
+            left_on='batter_id', right_on='mlb_id', how='left', suffixes=('', '_mu')
         )
-        df['batter_name'] = df['player name'] if 'player name' in df.columns else df['batter']
 
-        # Show a diagnostic sample
-        st.write("Merged sample:", df[['batter_id', 'batter_name', 'batting order', 'position']].head())
-
-        # --- Filter hitters (exclude pitchers but keep for matchup logic) ---
-        hitters_df = df[
-            (df['batting order'].notnull()) &
-            (~df['position'].astype(str).str.upper().str.contains('SP', na=False)) &
-            (df['batter_name'].notnull())
+        # Identify hitters (batting order 1–9, not SP)
+        # Handle possible string/integer
+        hitters_df = merge_df[
+            merge_df['batting_order'].apply(lambda x: str(x).isdigit() and 1 <= int(x) <= 9)
         ].copy()
-
         if hitters_df.empty:
-            st.error("No hitter data available for leaderboard! Check your matchups and event CSVs for matching batter IDs and filled batting order columns.")
+            st.error("No hitter data available for leaderboard! Check your matchups or event CSVs for proper batting order columns.")
             st.stop()
 
-        # --- Prepare model features for scoring ---
-        model_features = [
-            f for f in logit_weights['feature'].values
-            if f in df.columns and pd.api.types.is_numeric_dtype(df[f])
+        # Assign batter name for display (from matchup or fallback)
+        if 'player_name' in hitters_df.columns:
+            hitters_df['batter_name'] = hitters_df['player_name']
+        elif 'batter' in hitters_df.columns:
+            hitters_df['batter_name'] = hitters_df['batter']
+        else:
+            hitters_df['batter_name'] = hitters_df['batter_id'].astype(str)
+
+        # --- FILTER EVENTS FOR ANALYSIS ---
+        valid_events = [
+            'single', 'double', 'triple', 'homerun', 'home_run',
+            'field_out', 'flyout', 'popout', 'groundout', 'lineout',
+            'force_out', 'other_out', 'sac_fly', 'sac_bunt', 'double_play'
         ]
-        if not model_features or 'hr_outcome' not in df.columns:
+        if 'events' in hitters_df.columns:
+            hitters_df = hitters_df[
+                hitters_df['events'].astype(str).str.lower().str.replace(' ', '').isin(valid_events)
+            ].copy()
+
+        if 'hr_outcome' not in hitters_df.columns:
+            if 'events' in hitters_df.columns:
+                hitters_df['hr_outcome'] = hitters_df['events'].astype(str).str.lower().str.replace(' ', '').isin(['homerun', 'home_run']).astype(int)
+            else:
+                st.error("No HR outcome detected, and 'events' column not available for mapping!")
+                st.stop()
+
+        # --- ENSURE NO DUPLICATE COLUMNS ---
+        hitters_df = hitters_df.loc[:, ~hitters_df.columns.duplicated()]
+
+        # --- LOAD LOGIT FEATURES ---
+        model_features = [f for f in logit_weights['feature'].values if f in hitters_df.columns and pd.api.types.is_numeric_dtype(hitters_df[f])]
+        if not model_features or 'hr_outcome' not in hitters_df.columns:
             st.error("Model features or hr_outcome missing from event-level data.")
             st.stop()
 
-        # --- Compute logit score & probability ---
-        X = df[model_features].fillna(0)
+        X = hitters_df[model_features].fillna(0)
         coef = logit_weights.set_index('feature')['weight'].reindex(model_features).fillna(0).values
         intercept = logit_weights['intercept'].iloc[0] if 'intercept' in logit_weights.columns else 0
-        df['logit_score'] = intercept + np.dot(X, coef)
-        df['logit_prob'] = 1 / (1 + np.exp(-df['logit_score']))
+        hitters_df['logit_score'] = intercept + np.dot(X, coef)
+        hitters_df['logit_prob'] = 1 / (1 + np.exp(-hitters_df['logit_score']))
+        hitters_df['logit_hr_pred'] = (hitters_df['logit_prob'] > threshold).astype(int)
 
-        # --- Logistic regression threshold prediction ---
-        df['logit_hr_pred'] = (df['logit_prob'] > threshold).astype(int)
-
-        # --- XGBoost fit & score (only on events with valid HR outcome and no NA in model features) ---
-        model_df = df.dropna(subset=model_features + ['hr_outcome'], how='any')
-        if model_df['hr_outcome'].nunique() < 2 or len(model_df) < 30:
-            st.warning("Not enough HR/non-HR events for XGBoost. Need at least 2 classes and 30+ events.")
+        # --- XGBOOST ---
+        st.write("Fitting XGBoost model...")
+        model_df = hitters_df.dropna(subset=model_features + ['hr_outcome'], how='any').copy()
+        if model_df['hr_outcome'].nunique() < 2:
+            st.warning("Not enough HR/non-HR events for XGBoost. Need at least 2 classes.")
             st.stop()
-
-        from sklearn.model_selection import train_test_split
-        import xgboost as xgb
-        from sklearn.metrics import classification_report, roc_auc_score
-
         X_train, X_test, y_train, y_test = train_test_split(
             model_df[model_features], model_df['hr_outcome'], test_size=0.2, random_state=42
         )
@@ -382,62 +399,55 @@ with tab2:
         model_df['xgb_prob'] = xgb_model.predict_proba(model_df[model_features])[:, 1]
         model_df['xgb_hr_pred'] = (model_df['xgb_prob'] > threshold).astype(int)
 
-        # --- Merge xgboost preds to hitters_df by event index (using left join to keep original ordering) ---
-        for col in ['xgb_prob', 'xgb_hr_pred']:
-            if col in model_df.columns:
-                hitters_df[col] = model_df.set_index(df.index)[col]
-
-        # --- Leaderboards: Show top 15 hitters for each model ---
-        st.subheader("Side-by-Side HR Probability Leaderboards (Top 15 Hitters)")
+        # --- LEADERBOARDS ---
+        st.markdown("## Side-by-Side HR Probability Leaderboards (Top 15 Hitters)")
         col1, col2 = st.columns(2)
-
-        # LOGIT leaderboard
         with col1:
-            st.markdown("**Logit Leaderboard**")
-            leaderboard_logit = (
-                hitters_df.groupby('batter_name')
+            st.markdown("#### Logit Leaderboard")
+            logit_leaderboard = (
+                model_df.groupby('batter_name')
                 .agg(
                     n_events=('hr_outcome', 'count'),
                     n_predicted_HR=('logit_hr_pred', 'sum'),
                     mean_logit_prob=('logit_prob', 'mean')
                 )
-                .sort_values('mean_logit_prob', ascending=False)
-                .reset_index()
+                .sort_values(['n_predicted_HR', 'mean_logit_prob'], ascending=False)
                 .head(15)
             )
-            st.dataframe(leaderboard_logit)
+            st.dataframe(logit_leaderboard)
 
-        # XGBOOST leaderboard
         with col2:
-            st.markdown("**XGBoost Leaderboard**")
-            leaderboard_xgb = (
-                hitters_df.groupby('batter_name')
+            st.markdown("#### XGBoost Leaderboard")
+            xgb_leaderboard = (
+                model_df.groupby('batter_name')
                 .agg(
                     n_events=('hr_outcome', 'count'),
                     n_predicted_HR=('xgb_hr_pred', 'sum'),
                     mean_xgb_prob=('xgb_prob', 'mean')
                 )
-                .sort_values('mean_xgb_prob', ascending=False)
-                .reset_index()
+                .sort_values(['n_predicted_HR', 'mean_xgb_prob'], ascending=False)
                 .head(15)
             )
-            st.dataframe(leaderboard_xgb)
+            st.dataframe(xgb_leaderboard)
 
-        # --- Downloadable scored data ---
         st.markdown("#### Download Full Event-Level Data with Model Scores:")
-        st.download_button(
-            "⬇️ Download Scored Event CSV",
-            data=model_df.to_csv(index=False),
-            file_name="event_level_scored.csv"
-        )
+        st.download_button("⬇️ Download Scored Event CSV", data=model_df.to_csv(index=False), file_name="event_level_scored.csv")
 
-        # --- Model evaluation metrics (classification report/ROC-AUC) ---
-        st.subheader("Logistic Regression Performance")
-        st.metric("Logistic Regression ROC-AUC", round(roc_auc_score(y_test, xgb_model.predict_proba(X_test)[:, 1]), 4))
-        st.code(classification_report(y_test, xgb_model.predict(X_test)), language='text')
+        # --- LOGISTIC REPORT ---
+        st.markdown("### Logistic Regression Performance")
+        try:
+            y_pred = (model_df['logit_prob'] > threshold).astype(int)
+            auc = roc_auc_score(y_test, (model_df.loc[X_test.index, 'logit_prob'] if 'logit_prob' in model_df.columns else y_pred))
+            st.metric("Logistic Regression ROC-AUC", round(auc, 4))
+            st.code(classification_report(y_test, (model_df.loc[X_test.index, 'logit_prob'] > threshold).astype(int)), language='text')
+        except Exception as e:
+            st.warning(f"Logit model report failed: {e}")
 
-        st.subheader("XGBoost Performance")
-        st.metric("XGBoost ROC-AUC", round(roc_auc_score(y_test, xgb_model.predict_proba(X_test)[:, 1]), 4))
-        st.code(classification_report(y_test, xgb_model.predict(X_test)), language='text')
-
-        st.success("Analysis complete!")
+        # --- XGBOOST REPORT ---
+        st.markdown("### XGBoost Performance")
+        try:
+            auc = roc_auc_score(y_test, xgb_model.predict_proba(X_test)[:, 1])
+            st.metric("XGBoost ROC-AUC", round(auc, 4))
+            st.code(classification_report(y_test, (xgb_model.predict_proba(X_test)[:, 1] > threshold).astype(int)), language='text')
+        except Exception as e:
+            st.warning(f"XGBoost report failed: {e}")
