@@ -141,10 +141,14 @@ with tab1:
 
     # === Robust, correct rolling pitch type HR calculation ===
     def rolling_pitch_type_hr(df, id_col, pitch_col, window):
-        # Attach a unique index to every row
-        df_temp = df.copy().reset_index(drop=False).rename(columns={'index': '_row_idx'})
-        df_temp['_row_idx'] = df_temp.index
-
+        """Returns a Series with rolling HR rates for each (id, pitch_type) group."""
+        out = np.full(len(df), np.nan)
+    # Use enumerate for safe assignment
+        for k, g in df.groupby([id_col, pitch_col]).groups.items():
+            idx = list(g)
+            vals = df.loc[idx, 'hr_outcome'].shift(1).rolling(window, min_periods=1).mean()
+            out[idx] = vals
+        return out
         # Rolling HR per (id, pitch_type) group, using this index for merge
         roll_result = (
             df_temp.groupby([id_col, pitch_col])['hr_outcome']
