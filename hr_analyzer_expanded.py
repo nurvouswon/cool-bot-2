@@ -139,17 +139,27 @@ with tab1:
     fetch_btn = st.button("Fetch Statcast, Feature Engineer, and Download", type="primary")
     progress = st.empty()
 
-    # --- Robust rolling pitch type function (fixes MultiIndex error) ---
+    # === Robust, correct rolling pitch type HR calculation ===
     def rolling_pitch_type_hr(df, id_col, pitch_col, window):
-        df_temp = df.reset_index(drop=False)
+        # Attach a unique index to every row
+        df_temp = df.copy().reset_index(drop=False).rename(columns={'index': '_row_idx'})
+        df_temp['_row_idx'] = df_temp.index
+
+        # Rolling HR per (id, pitch_type) group, using this index for merge
         roll_result = (
             df_temp.groupby([id_col, pitch_col])['hr_outcome']
             .apply(lambda x: x.shift(1).rolling(window, min_periods=1).mean())
             .reset_index()
             .rename(columns={'hr_outcome': f'rolling_hr_{window}'})
         )
-        merged = pd.merge(df_temp, roll_result, how='left', on=['index', id_col, pitch_col])
-        merged = merged.sort_values('index')
+
+        # Add a join key: row index in original, id_col, pitch_col
+        merged = pd.merge(
+            df_temp, roll_result,
+            left_on=[id_col, pitch_col, '_row_idx'],
+            right_on=[id_col, pitch_col, 'level_0'],
+            how='left'
+        )
         return merged[f'rolling_hr_{window}'].values
 
     if fetch_btn:
@@ -164,7 +174,7 @@ with tab1:
         if 'game_date' in df.columns:
             df['game_date'] = pd.to_datetime(df['game_date'])
 
-        # --- Filter events (expanded valid events) ---
+        # --- Filter events ---
         valid_events = [
             'single', 'double', 'triple', 'homerun', 'home_run', 'field_out',
             'force_out', 'grounded_into_double_play', 'fielders_choice_out',
@@ -221,17 +231,28 @@ with tab1:
         df['wind_dir_cos'] = np.cos(np.deg2rad(df['wind_dir_angle']))
 
         # --- Advanced Statcast metrics ---
-        if 'barrel' in df.columns:
+        if 'batter_id' not in df.columns and 'batter' in df.columns:
+            df['batter_id'] = df['batter']
+        if 'pitcher_id' not in df.columns and 'pitcher' in df.columns:
+            df['pitcher_id'] = df['pitcher']
+
+        if 'barrel' in df.columns and 'batter_id' in df.columns:
             df['barrel_rate_20'] = df.groupby('batter_id')['barrel'].transform(lambda x: x.shift(1).rolling(20, min_periods=5).mean())
-        if 'launch_speed' in df.columns:
-            if 'batter_id' in df.columns:
-                df['hard_hit_rate_20'] = df.groupby('batter_id')['launch_speed'].transform(lambda x: (x.shift(1) >= 95).rolling(20, min_periods=5).mean())
-        if 'launch_angle' in df.columns:
-            if 'batter_id' in df.columns:
-                df['sweet_spot_rate_20'] = df.groupby('batter_id')['launch_angle'].transform(lambda x: x.shift(1).between(8, 32).rolling(20, min_periods=5).mean())
+        if 'launch_speed' in df.columns and 'batter_id' in df.columns:
+            df['hard_hit_rate_20'] = df.groupby('batter_id')['launch_speed'].transform(lambda x: (x.shift(1) >= 95).rolling(20, min_periods=5).mean())
+        if 'launch_angle' in df.columns and 'batter_id' in df.columns:
+            df['sweet_spot_rate_20'] = df.groupby('batter_id')['launch_angle'].transform(lambda x: x.shift(1).between(8, 32).rolling(20, min_periods=5).mean())
 
         # --- Directional wind context ---
         if 'stand' in df.columns and 'wind_dir_angle' in df.columns:
+            def relative_wind_angle(row):
+                try:
+                    if row['stand'] == 'L':
+                        return (row['wind_dir_angle'] - 45) % 360  # LHH pull
+                    else:
+                        return (row['wind_dir_angle'] - 135) % 360  # RHH pull
+                except Exception:
+                    return np.nan
             df['relative_wind_angle'] = df.apply(relative_wind_angle, axis=1)
             df['relative_wind_sin'] = np.sin(np.deg2rad(df['relative_wind_angle']))
             df['relative_wind_cos'] = np.cos(np.deg2rad(df['relative_wind_angle']))
@@ -248,10 +269,6 @@ with tab1:
                        'release_speed', 'release_spin_rate', 'spin_axis', 'pfx_x', 'pfx_z']
         pitcher_cols = ['launch_speed', 'launch_angle', 'hit_distance_sc', 'woba_value',
                         'release_speed', 'release_spin_rate', 'spin_axis', 'pfx_x', 'pfx_z']
-        if 'batter_id' not in df.columns and 'batter' in df.columns:
-            df['batter_id'] = df['batter']
-        if 'pitcher_id' not in df.columns and 'pitcher' in df.columns:
-            df['pitcher_id'] = df['pitcher']
 
         batter_feat_dict = {}
         pitcher_feat_dict = {}
@@ -298,8 +315,7 @@ with tab1:
             model_features = robust_numeric_columns(df)
             cat_context = [c for c in [
                 'park_hr_rate', 'park_altitude', 'temp', 'humidity', 'wind_mph', 
-                'wind_dir_angle', 'wind_dir_sin', 'wind_dir_cos', 'relative_wind_angle', 
-                'relative_wind_sin', 'relative_wind_cos'
+                'wind_dir_angle', 'wind_dir_sin', 'wind_dir_cos', 'relative_wind_angle', 'relative_wind_sin', 'relative_wind_cos'
             ] if c in df.columns]
             for c in df.columns:
                 if c.startswith("park_hand_HR_"):
