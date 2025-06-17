@@ -336,9 +336,15 @@ with tab2:
 
         # Identify hitters (batting order 1–9, not SP)
         # Handle possible string/integer
-        hitters_df = merge_df[
-            merge_df['batting_order'].apply(lambda x: str(x).isdigit() and 1 <= int(x) <= 9)
-        ].copy()
+        def is_hitter(row):
+            try:
+        # Some files may use int, some string, some may have "SP", "", "P", etc.
+                x = str(row).strip().upper()
+                return x.isdigit() and 1 <= int(x) <= 9
+            except Exception:
+                return False
+
+        hitters_df = merge_df[merge_df['batting_order'].apply(is_hitter)].copy()
         if hitters_df.empty:
             st.error("No hitter data available for leaderboard! Check your matchups or event CSVs for proper batting order columns.")
             st.stop()
