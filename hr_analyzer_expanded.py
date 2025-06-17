@@ -355,7 +355,11 @@ with tab2:
     st.header("Upload Event, Matchup, and Logistic Weights to Analyze & Score")
     st.markdown("All 3 uploads required! CSVs must match feature sets generated from Tab 1.")
 
-    threshold = 0.5  # Fixed threshold (no slider)
+    threshold = st.slider(
+        "Set HR Probability Threshold",
+        min_value=0.01, max_value=0.5, step=0.01, value=0.13,
+        help="Only events with HR probability above this are counted as HR predictions."
+    )
 
     uploaded_events = st.file_uploader("Upload Event-Level Features CSV", type="csv", key="evup")
     uploaded_matchups = st.file_uploader("Upload Matchups CSV", type="csv", key="mup")
@@ -364,9 +368,10 @@ with tab2:
 
     if analyze_btn:
         progress = st.progress(0, "Starting analysis...")
-        # --- Step 1: Load CSVs ---
+
+        # ========== LOAD CSVs ==========
         if not uploaded_events or not uploaded_matchups or not uploaded_logit:
-            st.warning("Please upload event-level, matchup, and logistic weights CSVs before running analysis.")
+            st.warning("Please upload all three required CSVs before running analysis.")
             st.stop()
         progress.progress(5, "Reading CSVs...")
 
@@ -374,53 +379,70 @@ with tab2:
         matchups = pd.read_csv(uploaded_matchups)
         logit_weights = pd.read_csv(uploaded_logit)
 
-        # --- Step 2: MLB ID Merge & Validation ---
-        progress.progress(10, "Preparing MLB ID merge...")
-
-        # Standardize MLB ID columns to string type
+        # ========== MLB ID COLUMN ROBUST HANDLING ==========
+        # Standardize MLB ID columns (event_df)
         if 'batter_id' in event_df.columns:
-            event_df['batter_id'] = event_df['batter_id'].astype(str)
-            event_id_col = 'batter_id'
+            event_df['mlb_id'] = event_df['batter_id'].astype(str)
         elif 'batter' in event_df.columns:
-            event_df['batter'] = event_df['batter'].astype(str)
-            event_id_col = 'batter'
+            event_df['mlb_id'] = event_df['batter'].astype(str)
         else:
-            st.error("No batter_id or batter column found in event-level data.")
+            st.error("Event-level data must have 'batter_id' or 'batter' column for MLB ID.")
+            st.stop()
+        # Standardize MLB ID columns (matchups)
+        if 'mlb id' in matchups.columns:
+            matchups['mlb_id'] = matchups['mlb id'].astype(str)
+        elif 'mlb_id' in matchups.columns:
+            matchups['mlb_id'] = matchups['mlb_id'].astype(str)
+        else:
+            st.error("Matchup file must have a 'mlb id' or 'mlb_id' column.")
             st.stop()
 
-        matchups['mlb id'] = matchups['mlb id'].astype(str)
+        # ========== BATTING ORDER & POSITION DETECTION ==========
+        # Find batting order column
+        batting_order_col = None
+        for possible in ['batting order', 'batting_order', 'order']:
+            if possible in matchups.columns:
+                batting_order_col = possible
+                break
+        if not batting_order_col:
+            st.error("No batting order column found in matchup CSV.")
+            st.stop()
+        # Find position column
+        position_col = None
+        for possible in ['position', 'pos']:
+            if possible in matchups.columns:
+                position_col = possible
+                break
+        if not position_col:
+            st.error("No position column found in matchup CSV.")
+            st.stop()
 
-        # --- Step 3: Merge Data ---
-        progress.progress(15, "Merging matchup columns...")
+        # ========== MERGE DATA ==========
         merged = event_df.merge(
-            matchups[['mlb id', 'player name', 'batting order', 'position']],
-            left_on=event_id_col,
-            right_on='mlb id',
-            how='left'
+            matchups[['mlb_id', 'player name', batting_order_col, position_col]],
+            on='mlb_id', how='left'
         )
 
-        progress.progress(25, "Filtering hitters by batting order/position...")
-
+        # ========== FILTER HITTERS (NOT PITCHERS) ==========
         def is_hitter(row):
-            try:
-                bo = str(row['batting order']).strip()
-                pos = str(row.get('position', '')).strip().upper()
-                return bo.isdigit() and (1 <= int(bo) <= 9) and (pos not in ['SP', 'P', 'RP', 'LHP', 'RHP'])
-            except Exception:
-                return False
-
+            bo = str(row[batting_order_col]).strip()
+            pos = str(row[position_col]).strip().upper()
+            return bo.isdigit() and (1 <= int(bo) <= 9) and (pos not in ['SP', 'P', 'RP', 'LHP', 'RHP'])
         hitters_df = merged[merged.apply(is_hitter, axis=1)].copy()
-        st.write(f"Hitters found: {len(hitters_df)}")
 
         if hitters_df.empty:
-            st.error("No hitter data available for leaderboard! (Check MLB IDs, batting order, and position fields in both CSVs.)")
+            st.error("No hitter data available for leaderboard! Check MLB IDs, batting order, and position fields in both CSVs.")
             st.stop()
 
-        # Name for leaderboard
-        hitters_df['batter_name'] = hitters_df['player name'].fillna(hitters_df.get('player_name')).fillna(hitters_df[event_id_col].astype(str))
+        hitters_df = hitters_df.loc[:, ~hitters_df.columns.duplicated()]
+        hitters_df['batter_name'] = (
+            hitters_df['player name']
+            .fillna(hitters_df.get('player_name'))
+            .fillna(hitters_df['mlb_id'])
+            .fillna(hitters_df.index.astype(str))
+        )
 
-        progress.progress(35, "Filtering valid events & HR outcome...")
-        # Filter events if present
+        # ========== HR OUTCOME LOGIC ==========
         valid_events = [
             'single', 'double', 'triple', 'homerun', 'home_run', 'field_out',
             'force_out', 'grounded_into_double_play', 'fielders_choice_out',
@@ -436,8 +458,7 @@ with tab2:
                 st.stop()
         hitters_df = hitters_df.loc[:, ~hitters_df.columns.duplicated()]
 
-        progress.progress(45, "Preparing model features...")
-        # --- Feature selection ---
+        # ========== MODEL FEATURE SELECTION ==========
         all_model_features = [f for f in logit_weights['feature'].values if f in hitters_df.columns and pd.api.types.is_numeric_dtype(hitters_df[f])]
         if not all_model_features or 'hr_outcome' not in hitters_df.columns:
             st.error("Model features or hr_outcome missing from event-level data.")
@@ -446,31 +467,32 @@ with tab2:
         X = hitters_df[all_model_features].fillna(0)
         y = hitters_df['hr_outcome'].astype(int)
 
-        # Train/test split
+        # ========== TRAIN/TEST SPLIT ==========
         from sklearn.model_selection import train_test_split
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-        progress.progress(55, "Running auto feature selection for Logistic Regression...")
+        progress.progress(50, "Train/test split complete.")
 
-        # --- Logistic Regression: RFECV + GridSearch ---
+        # ========== LOGISTIC REGRESSION: RFECV + GRIDSEARCH ==========
         from sklearn.linear_model import LogisticRegression
         from sklearn.feature_selection import RFECV
         from sklearn.metrics import classification_report, roc_auc_score
+
         rfecv = RFECV(estimator=LogisticRegression(max_iter=200, solver='liblinear'), step=1, cv=3, scoring='roc_auc', n_jobs=-1)
         rfecv.fit(X_train, y_train)
         features_mask = rfecv.support_
         X_train_sel = X_train.loc[:, features_mask]
         X_test_sel = X_test.loc[:, features_mask]
+        progress.progress(60, "Feature selection for Logistic Regression complete.")
 
-        progress.progress(65, "Grid search for best Logistic Regression model...")
         from sklearn.model_selection import GridSearchCV
         grid = GridSearchCV(LogisticRegression(max_iter=200, solver='liblinear'), param_grid={'C': [0.1, 1, 10]}, cv=3, scoring='roc_auc', n_jobs=-1)
         grid.fit(X_train_sel, y_train)
         best_logit = grid.best_estimator_
-
         hitters_df['logit_prob'] = best_logit.predict_proba(hitters_df.loc[:, features_mask])[:, 1]
         hitters_df['logit_hr_pred'] = (hitters_df['logit_prob'] > threshold).astype(int)
+        progress.progress(75, "Logistic Regression modeling complete.")
 
-        progress.progress(80, "Running XGBoost model with hyperparameter search...")
+        # ========== XGBOOST (WITH GRID SEARCH) ==========
         import xgboost as xgb
         xgb_params = {
             'max_depth': [3, 4, 5],
@@ -486,9 +508,9 @@ with tab2:
         best_xgb = xgb_grid.best_estimator_
         hitters_df['xgb_prob'] = best_xgb.predict_proba(X)[:, 1]
         hitters_df['xgb_hr_pred'] = (hitters_df['xgb_prob'] > threshold).astype(int)
+        progress.progress(90, "XGBoost modeling complete.")
 
-        progress.progress(95, "Building leaderboards and exporting results...")
-
+        # ========== LEADERBOARDS ==========
         st.markdown("## Side-by-Side HR Probability Leaderboards (Top 15 Hitters)")
         col1, col2 = st.columns(2)
         with col1:
@@ -521,7 +543,7 @@ with tab2:
         st.markdown("#### Download Full Event-Level Data with Model Scores:")
         st.download_button("⬇️ Download Scored Event CSV", data=hitters_df.to_csv(index=False), file_name="event_level_scored.csv")
 
-        # --- Performance reports ---
+        # ========== MODEL PERFORMANCE REPORTS ==========
         progress.progress(100, "Done. Displaying model metrics!")
         st.markdown("### Logistic Regression Performance (Auto-tuned)")
         try:
@@ -538,3 +560,5 @@ with tab2:
             st.code(classification_report(y_test, (best_xgb.predict_proba(X_test)[:, 1] > threshold).astype(int)), language='text')
         except Exception as e:
             st.warning(f"XGBoost report failed: {e}")
+
+        
