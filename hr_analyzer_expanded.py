@@ -355,7 +355,7 @@ with tab2:
     st.header("Upload Event, Matchup, and Logistic Weights to Analyze & Score")
     st.markdown("All 3 uploads required! CSVs must match feature sets generated from Tab 1.")
 
-    threshold = 0.5
+    threshold = 0.5  # Fixed threshold
 
     uploaded_events = st.file_uploader("Upload Event-Level Features CSV", type="csv", key="evup")
     uploaded_matchups = st.file_uploader("Upload Matchups CSV", type="csv", key="mup")
@@ -371,45 +371,80 @@ with tab2:
         matchups = pd.read_csv(uploaded_matchups)
         logit_weights = pd.read_csv(uploaded_logit)
 
-        st.write(f"Loaded {len(event_df)} events, {len(matchups)} matchup rows, {len(logit_weights)} logistic weights.")
+        # DEBUG: Show column names
+        st.write("Event CSV columns:", event_df.columns.tolist())
+        st.write("Matchup CSV columns:", matchups.columns.tolist())
 
-        # Force columns to string/strip to avoid merge problems!
-        event_df['batter_id'] = event_df['batter_id'].astype(str).str.strip()
-        matchups['mlb id'] = matchups['mlb id'].astype(str).str.strip()
-        matchups['batting order'] = matchups['batting order'].astype(str).str.strip()
-        # Also, ensure 'position' exists (if not, create as empty string)
-        if 'position' not in matchups.columns:
-            matchups['position'] = ''
+        # --- Find possible key columns ---
+        possible_event_id = [c for c in event_df.columns if "batter_id" in c.lower() or "mlb id" in c.lower() or c.lower() in ["batter"]]
+        possible_matchup_id = [c for c in matchups.columns if "mlb id" in c.lower() or "player id" in c.lower()]
+        st.write(f"Detected event batter ID columns: {possible_event_id}")
+        st.write(f"Detected matchup mlb id columns: {possible_matchup_id}")
 
-        # ---- Merge on MLB ID (batter_id <-> mlb id) ----
+        if not possible_event_id or not possible_matchup_id:
+            st.error("Could not detect 'batter_id' in event CSV or 'mlb id' in matchup CSV. Please check your file headers.")
+            st.stop()
+
+        event_id_col = possible_event_id[0]
+        matchup_id_col = possible_matchup_id[0]
+
+        # --- Cast IDs to string and trim whitespace just in case ---
+        event_df[event_id_col] = event_df[event_id_col].astype(str).str.strip()
+        matchups[matchup_id_col] = matchups[matchup_id_col].astype(str).str.strip()
+
+        # Name and batting order columns
+        matchup_name_col = 'player name' if 'player name' in matchups.columns else 'name'
+        matchup_bo_col = 'batting order' if 'batting order' in matchups.columns else 'batting_order'
+        matchup_pos_col = 'position' if 'position' in matchups.columns else None
+
+        merge_cols = [matchup_id_col, matchup_name_col, matchup_bo_col]
+        if matchup_pos_col:
+            merge_cols.append(matchup_pos_col)
+
+        # --- Merge ---
         merge_df = event_df.merge(
-            matchups[['mlb id', 'player name', 'batting order', 'position']],
-            left_on='batter_id', right_on='mlb id', how='left'
+            matchups[merge_cols],
+            left_on=event_id_col,
+            right_on=matchup_id_col,
+            how='left',
+            suffixes=('', '_mu')
         )
 
-        # ---- Hitter filter ----
+        st.write("Preview of merged data (first 5 rows):")
+        st.dataframe(merge_df.head())
+
+        # --- Hitter filter: batting order 1-9 and not pitcher ---
         def is_hitter(row):
-            bo = str(row['batting order']).strip()
-            pos = str(row['position']).strip().upper()
-            return bo.isdigit() and (1 <= int(bo) <= 9) and pos not in ['SP', 'P', 'RP', 'LHP', 'RHP']
+            try:
+                bo = str(row[matchup_bo_col]).strip().upper()
+                pos = str(row.get(matchup_pos_col, '')).strip().upper() if matchup_pos_col else ''
+                return bo.isdigit() and (1 <= int(bo) <= 9) and (pos not in ['SP', 'P', 'RP', 'LHP', 'RHP'])
+            except Exception:
+                return False
 
         hitters_df = merge_df[merge_df.apply(is_hitter, axis=1)].copy()
 
-        # Debug if empty
+        st.write(f"Hitters found: {len(hitters_df)}")
         if hitters_df.empty:
-            st.error("No hitter data available for leaderboard! (Check MLB IDs, batting order, and position fields in both CSVs.)")
-            st.markdown("**Debug preview (first 12 merged rows):**")
-            st.dataframe(merge_df[['batter_id', 'mlb id', 'player name', 'batting order', 'position']].head(12))
-            st.write("Unique batter_ids in event_df:", event_df['batter_id'].unique()[:10])
-            st.write("Unique mlb id in matchups:", matchups['mlb id'].unique()[:10])
-            st.write("Unique batting orders in matchups:", matchups['batting order'].unique())
-            st.write("Unique positions in matchups:", matchups['position'].unique())
+            st.error(
+                "No hitter data available for leaderboard! "
+                "(Check MLB IDs, batting order, and position fields in both CSVs.)\n\n"
+                f"Event CSV batter_id (first 10): {event_df[event_id_col].unique()[:10]}\n"
+                f"Matchup CSV mlb id (first 10): {matchups[matchup_id_col].unique()[:10]}"
+            )
             st.stop()
 
-        # Assign batter_name for leaderboard
-        hitters_df['batter_name'] = hitters_df['player name']
+        # Assign batter_name for display
+        if matchup_name_col in hitters_df.columns:
+            hitters_df['batter_name'] = hitters_df[matchup_name_col]
+        elif 'player_name' in hitters_df.columns:
+            hitters_df['batter_name'] = hitters_df['player_name']
+        elif 'batter' in hitters_df.columns:
+            hitters_df['batter_name'] = hitters_df['batter']
+        else:
+            hitters_df['batter_name'] = hitters_df[event_id_col].astype(str)
 
-        # --- FILTER EVENTS FOR ANALYSIS ---
+        # Filter valid batted ball events
         valid_events = [
             'single', 'double', 'triple', 'homerun', 'home_run',
             'field_out', 'force_out', 'grounded_into_double_play',
@@ -424,6 +459,7 @@ with tab2:
                 st.error("No HR outcome detected, and 'events' column not available for mapping!")
                 st.stop()
 
+        # Remove duplicate columns
         hitters_df = hitters_df.loc[:, ~hitters_df.columns.duplicated()]
 
         # --- LOAD LOGIT FEATURES ---
@@ -432,15 +468,11 @@ with tab2:
             st.error("Model features or hr_outcome missing from event-level data.")
             st.stop()
 
-        # Prepare X matrix
         X = hitters_df[all_model_features].fillna(0)
         y = hitters_df['hr_outcome'].astype(int)
-
-        # --- Model fitting ---
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-        # Logit (auto-tuned with feature selection)
-        from sklearn.feature_selection import RFECV
+        # Logit: auto feature select + grid search
         logit_base = LogisticRegression(max_iter=200, solver='liblinear')
         rfecv = RFECV(estimator=logit_base, step=1, cv=3, scoring='roc_auc', n_jobs=-1)
         rfecv.fit(X_train, y_train)
@@ -454,7 +486,7 @@ with tab2:
         hitters_df['logit_prob'] = best_logit.predict_proba(hitters_df.loc[:, features_mask])[:, 1]
         hitters_df['logit_hr_pred'] = (hitters_df['logit_prob'] > threshold).astype(int)
 
-        # XGBoost (auto-tune)
+        # --- XGBOOST auto-tune ---
         xgb_params = {
             'max_depth': [3, 4, 5],
             'learning_rate': [0.01, 0.05, 0.1],
