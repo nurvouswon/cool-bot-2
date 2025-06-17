@@ -414,7 +414,7 @@ with tab2:
         if hitters_df.empty:
             st.error("No hitter data available for leaderboard! Check the merged preview and value counts above for clues.")
             st.stop()
-                update_progress("Merged player names and batting orders", 20)
+            update_progress("Merged player names and batting orders", 20)
 
         # Ensure proper hitter selection: Batting order 1-9 and not a pitcher
         def is_hitter(row):
