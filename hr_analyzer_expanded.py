@@ -140,8 +140,14 @@ with tab1:
         if 'game_date' in df.columns:
             df['game_date'] = pd.to_datetime(df['game_date'])
 
-        # ==== Clean & Filter for valid batted ball events ====
-        valid_events = ['single', 'double', 'triple', 'homerun', 'home_run', 'field_out']
+        # ========== FILTER EVENTS ==========
+        valid_events = [
+            'single', 'double', 'triple',
+            'home_run', 'homerun',
+            'field_out', 'force_out', 'fly_out', 'lineout', 'groundout',
+            'double_play', 'grounded_into_double_play', 'fielders_choice_out',
+            'sac_fly', 'sac_fly_double_play'
+        ]
         if 'events' in df.columns:
             df = df[df['events'].astype(str).str.lower().str.replace(' ', '').isin(valid_events)].copy()
 
