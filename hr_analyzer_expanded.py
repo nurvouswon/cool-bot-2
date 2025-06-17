@@ -383,23 +383,38 @@ with tab2:
         st.write(f"Loaded {len(event_df)} events, {len(matchups)} matchup rows, {len(logit_weights)} logistic weights.")
 
         # --- Merge player names and batting order from matchups ---
-        batter_id_col = 'batter_id' if 'batter_id' in event_df.columns else 'batter'
-        matchup_batter_col = 'mlb id' if 'mlb id' in matchups.columns else 'player id'
-        matchup_name_col = 'player name' if 'player name' in matchups.columns else 'name'
-        matchup_bo_col = 'batting order' if 'batting order' in matchups.columns else 'batting_order'
-
-        # Ensure matching types
-        event_df[batter_id_col] = event_df[batter_id_col].astype(str)
-        matchups[matchup_batter_col] = matchups[matchup_batter_col].astype(str)
+        # --- Merge on 'mlb id' (as string everywhere) ---
+        event_df['mlb id'] = event_df['mlb id'].astype(str)
+        matchups['mlb id'] = matchups['mlb id'].astype(str)
 
         merge_df = event_df.merge(
-            matchups[[matchup_batter_col, matchup_name_col, matchup_bo_col, 'position' if 'position' in matchups.columns else matchup_bo_col]],
-            left_on=batter_id_col,
-            right_on=matchup_batter_col,
+            matchups[['mlb id', 'player name', 'batting order', 'position']],
+            on='mlb id',
             how='left',
             suffixes=('', '_mu')
         )
-        update_progress("Merged player names and batting orders", 20)
+
+        # Debugging outputs!
+        st.write("Merged (first 5 rows):")
+        st.dataframe(merge_df[['mlb id', 'player name', 'batting order', 'position']].head(5))
+        st.write("Batting order counts:", merge_df['batting order'].value_counts(dropna=False))
+        st.write("Position counts:", merge_df['position'].value_counts(dropna=False))
+
+        # Hitter filter (batting order 1-9, not SP/P/RP/LHP/RHP)
+        def is_hitter(row):
+            try:
+                bo = str(row['batting order']).strip().upper()
+                pos = str(row['position']).strip().upper()
+                return bo.isdigit() and (1 <= int(bo) <= 9) and (pos not in ['SP', 'P', 'RP', 'LHP', 'RHP'])
+            except Exception:
+                return False
+
+        hitters_df = merge_df[merge_df.apply(is_hitter, axis=1)].copy()
+
+        if hitters_df.empty:
+            st.error("No hitter data available for leaderboard! Check the merged preview and value counts above for clues.")
+            st.stop()
+                update_progress("Merged player names and batting orders", 20)
 
         # Ensure proper hitter selection: Batting order 1-9 and not a pitcher
         def is_hitter(row):
