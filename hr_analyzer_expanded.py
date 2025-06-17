@@ -317,10 +317,8 @@ with tab2:
     st.header("Upload Event, Matchup, and Logistic Weights to Analyze & Score")
     st.markdown("All 3 uploads required! CSVs must match feature sets generated from Tab 1.")
 
-    threshold = st.slider(
-        "Set HR Probability Threshold",
-        min_value=0.01, max_value=0.5, step=0.01, value=0.13, help="Only events with HR probability above this are counted as HR predictions."
-    )
+    # Set threshold automatically (0.5 is typical, you can change here)
+    threshold = 0.5
 
     uploaded_events = st.file_uploader("Upload Event-Level Features CSV", type="csv", key="evup")
     uploaded_matchups = st.file_uploader("Upload Matchups CSV", type="csv", key="mup")
@@ -344,7 +342,7 @@ with tab2:
         matchup_name_col = 'player name' if 'player name' in matchups.columns else 'name'
         matchup_bo_col = 'batting order' if 'batting order' in matchups.columns else 'batting_order'
         merge_df = event_df.merge(
-            matchups[[matchup_batter_col, matchup_name_col, matchup_bo_col]],
+            matchups[[matchup_batter_col, matchup_name_col, matchup_bo_col, 'position' if 'position' in matchups.columns else matchup_bo_col]],
             left_on=batter_id_col,
             right_on=matchup_batter_col,
             how='left',
@@ -356,7 +354,6 @@ with tab2:
             try:
                 bo = str(row[matchup_bo_col]).strip().upper()
                 pos = str(row.get('position', '')).strip().upper()
-                # Exclude rows where batting order is not digit or not 1-9, and/or explicitly marked as pitcher
                 return bo.isdigit() and (1 <= int(bo) <= 9) and (pos not in ['SP', 'P', 'RP', 'LHP', 'RHP'])
             except Exception:
                 return False
@@ -392,50 +389,55 @@ with tab2:
         hitters_df = hitters_df.loc[:, ~hitters_df.columns.duplicated()]
 
         # --- LOAD LOGIT FEATURES ---
-        model_features = [f for f in logit_weights['feature'].values if f in hitters_df.columns and pd.api.types.is_numeric_dtype(hitters_df[f])]
-        if not model_features or 'hr_outcome' not in hitters_df.columns:
+        all_model_features = [f for f in logit_weights['feature'].values if f in hitters_df.columns and pd.api.types.is_numeric_dtype(hitters_df[f])]
+        if not all_model_features or 'hr_outcome' not in hitters_df.columns:
             st.error("Model features or hr_outcome missing from event-level data.")
             st.stop()
 
         # Prepare X matrix
-        X = hitters_df[model_features].fillna(0)
-        coef = logit_weights.set_index('feature')['weight'].reindex(model_features).fillna(0).values
-        intercept = logit_weights['intercept'].iloc[0] if 'intercept' in logit_weights.columns else 0
-        hitters_df['logit_score'] = intercept + np.dot(X, coef)
-        hitters_df['logit_prob'] = 1 / (1 + np.exp(-hitters_df['logit_score']))
+        X = hitters_df[all_model_features].fillna(0)
+        y = hitters_df['hr_outcome'].astype(int)
+
+        # Auto feature selection for logit (RFECV) + grid search for C
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        from sklearn.feature_selection import RFECV
+        logit_base = LogisticRegression(max_iter=200, solver='liblinear')
+        rfecv = RFECV(estimator=logit_base, step=1, cv=3, scoring='roc_auc', n_jobs=-1)
+        rfecv.fit(X_train, y_train)
+        features_mask = rfecv.support_
+        X_train_sel = X_train.loc[:, features_mask]
+        X_test_sel = X_test.loc[:, features_mask]
+
+        grid = GridSearchCV(LogisticRegression(max_iter=200, solver='liblinear'), param_grid={'C': [0.1, 1, 10]}, cv=3, scoring='roc_auc', n_jobs=-1)
+        grid.fit(X_train_sel, y_train)
+        best_logit = grid.best_estimator_
+
+        hitters_df['logit_prob'] = best_logit.predict_proba(hitters_df.loc[:, features_mask])[:, 1]
         hitters_df['logit_hr_pred'] = (hitters_df['logit_prob'] > threshold).astype(int)
 
-        # --- XGBOOST ---
-        st.write("Fitting XGBoost model...")
-        model_df = hitters_df.dropna(subset=model_features + ['hr_outcome'], how='any').copy()
-        if model_df['hr_outcome'].nunique() < 2:
-            st.warning("Not enough HR/non-HR events for XGBoost. Need at least 2 classes.")
-            st.stop()
-        X_train, X_test, y_train, y_test = train_test_split(
-            model_df[model_features], model_df['hr_outcome'], test_size=0.2, random_state=42
-        )
-
-        # Hyperparameter-tuned XGBoost for better power
-        params = {
-            'max_depth': 4,
-            'learning_rate': 0.13,
-            'n_estimators': 100,
-            'subsample': 0.8,
-            'colsample_bytree': 0.8,
-            'eval_metric': 'logloss'
+        # --- XGBOOST auto-tune ---
+        xgb_params = {
+            'max_depth': [3, 4, 5],
+            'learning_rate': [0.01, 0.05, 0.1],
+            'subsample': [0.8, 0.9],
+            'colsample_bytree': [0.8, 0.9]
         }
-        xgb_model = xgb.XGBClassifier(**params)
-        xgb_model.fit(X_train, y_train)
-        model_df['xgb_prob'] = xgb_model.predict_proba(model_df[model_features])[:, 1]
-        model_df['xgb_hr_pred'] = (model_df['xgb_prob'] > threshold).astype(int)
+        xgb_grid = GridSearchCV(
+            xgb.XGBClassifier(n_estimators=100, eval_metric='logloss'),
+            xgb_params, cv=3, scoring='roc_auc', n_jobs=-1
+        )
+        xgb_grid.fit(X_train, y_train)
+        best_xgb = xgb_grid.best_estimator_
+        hitters_df['xgb_prob'] = best_xgb.predict_proba(X)[:, 1]
+        hitters_df['xgb_hr_pred'] = (hitters_df['xgb_prob'] > threshold).astype(int)
 
         # --- LEADERBOARDS ---
         st.markdown("## Side-by-Side HR Probability Leaderboards (Top 15 Hitters)")
         col1, col2 = st.columns(2)
         with col1:
-            st.markdown("#### Logit Leaderboard")
+            st.markdown("#### Logit Leaderboard (Auto-tuned)")
             logit_leaderboard = (
-                model_df.groupby('batter_name')
+                hitters_df.groupby('batter_name')
                 .agg(
                     n_events=('hr_outcome', 'count'),
                     n_predicted_HR=('logit_hr_pred', 'sum'),
@@ -446,9 +448,9 @@ with tab2:
             )
             st.dataframe(logit_leaderboard)
         with col2:
-            st.markdown("#### XGBoost Leaderboard")
+            st.markdown("#### XGBoost Leaderboard (Auto-tuned)")
             xgb_leaderboard = (
-                model_df.groupby('batter_name')
+                hitters_df.groupby('batter_name')
                 .agg(
                     n_events=('hr_outcome', 'count'),
                     n_predicted_HR=('xgb_hr_pred', 'sum'),
@@ -460,23 +462,22 @@ with tab2:
             st.dataframe(xgb_leaderboard)
 
         st.markdown("#### Download Full Event-Level Data with Model Scores:")
-        st.download_button("⬇️ Download Scored Event CSV", data=model_df.to_csv(index=False), file_name="event_level_scored.csv")
+        st.download_button("⬇️ Download Scored Event CSV", data=hitters_df.to_csv(index=False), file_name="event_level_scored.csv")
 
-        # --- LOGISTIC REPORT ---
-        st.markdown("### Logistic Regression Performance")
+        # --- LOGIT REPORT ---
+        st.markdown("### Logistic Regression Performance (Auto-tuned)")
         try:
-            y_pred = (model_df['logit_prob'] > threshold).astype(int)
-            auc = roc_auc_score(y_test, (model_df.loc[X_test.index, 'logit_prob'] if 'logit_prob' in model_df.columns else y_pred))
+            auc = roc_auc_score(y_test, best_logit.predict_proba(X_test_sel)[:, 1])
             st.metric("Logistic Regression ROC-AUC", round(auc, 4))
-            st.code(classification_report(y_test, (model_df.loc[X_test.index, 'logit_prob'] > threshold).astype(int)), language='text')
+            st.code(classification_report(y_test, (best_logit.predict_proba(X_test_sel)[:, 1] > threshold).astype(int)), language='text')
         except Exception as e:
             st.warning(f"Logit model report failed: {e}")
 
         # --- XGBOOST REPORT ---
-        st.markdown("### XGBoost Performance")
+        st.markdown("### XGBoost Performance (Auto-tuned)")
         try:
-            auc = roc_auc_score(y_test, xgb_model.predict_proba(X_test)[:, 1])
+            auc = roc_auc_score(y_test, best_xgb.predict_proba(X_test)[:, 1])
             st.metric("XGBoost ROC-AUC", round(auc, 4))
-            st.code(classification_report(y_test, (xgb_model.predict_proba(X_test)[:, 1] > threshold).astype(int)), language='text')
+            st.code(classification_report(y_test, (best_xgb.predict_proba(X_test)[:, 1] > threshold).astype(int)), language='text')
         except Exception as e:
             st.warning(f"XGBoost report failed: {e}")
