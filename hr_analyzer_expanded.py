@@ -300,7 +300,7 @@ with tab2:
     st.header("Upload Event, Matchup, and Logistic Weights to Analyze & Score")
     st.markdown("All 3 uploads required! CSVs must match feature sets generated from Tab 1.")
 
-    # Make slider always visible (set threshold for predicted HRs)
+    # --- Threshold slider always visible ---
     threshold = st.slider(
         "Set HR Probability Threshold",
         min_value=0.01, max_value=0.5, step=0.01, value=0.13,
@@ -317,57 +317,49 @@ with tab2:
             st.warning("Please upload event-level, matchup, and logistic weights CSVs before running analysis.")
             st.stop()
 
-        # Load all inputs
         event_df = pd.read_csv(uploaded_events)
         matchups = pd.read_csv(uploaded_matchups)
         logit_weights = pd.read_csv(uploaded_logit)
 
         st.write(f"Loaded {len(event_df)} events, {len(matchups)} matchup rows, {len(logit_weights)} logistic weights.")
 
-        # --- Merge player names and batting order from matchups ---
-        # Standardize matchup columns
-        matchup_cols = [col.lower().replace(" ", "_") for col in matchups.columns]
-        matchups.columns = matchup_cols
-        # batter_id in event_df, mlb_id in matchups
+        # --- Merge batter name, batting order, position ---
+        # Use batter_id (event_df) <-> mlb id (matchups)
+        if 'batting order' in matchups.columns:
+            matchups['batting_order'] = matchups['batting order']
+        else:
+            st.error("No 'batting order' column found in matchups CSV.")
+            st.stop()
+
         merge_df = event_df.merge(
-            matchups[['mlb_id', 'player_name', 'batting_order']],
-            left_on='batter_id', right_on='mlb_id', how='left', suffixes=('', '_mu')
+            matchups[['mlb id', 'player name', 'batting_order', 'position']],
+            left_on='batter_id',
+            right_on='mlb id',
+            how='left',
+            suffixes=('', '_mu')
         )
 
-        # Identify hitters (batting order 1–9, not SP)
-        # Handle possible string/integer
+        # --- Only hitters: batting_order 1-9 and NOT pitchers ---
         def is_hitter(row):
             try:
-        # Some files may use int, some string, some may have "SP", "", "P", etc.
-                x = str(row).strip().upper()
-                return x.isdigit() and 1 <= int(x) <= 9
+                order = str(row['batting_order']).strip()
+                pos = str(row['position']).strip().upper() if 'position' in row else ""
+                return order.isdigit() and 1 <= int(order) <= 9 and not (pos == "SP" or pos == "P")
             except Exception:
                 return False
 
-        hitters_df = merge_df[merge_df['batting_order'].apply(is_hitter)].copy()
+        hitters_df = merge_df[merge_df.apply(is_hitter, axis=1)].copy()
         if hitters_df.empty:
-            st.error("No hitter data available for leaderboard! Check your matchups or event CSVs for proper batting order columns.")
+            st.error("No hitter data available for leaderboard! Check your matchups/event CSVs for proper batting order and position columns.")
             st.stop()
 
-        # Assign batter name for display (from matchup or fallback)
-        if 'player_name' in hitters_df.columns:
-            hitters_df['batter_name'] = hitters_df['player_name']
-        elif 'batter' in hitters_df.columns:
-            hitters_df['batter_name'] = hitters_df['batter']
-        else:
-            hitters_df['batter_name'] = hitters_df['batter_id'].astype(str)
+        # Assign batter name
+        hitters_df['batter_name'] = hitters_df['player name'].fillna(hitters_df['batter']).fillna(hitters_df['batter_id'].astype(str))
 
-        # --- FILTER EVENTS FOR ANALYSIS ---
-        valid_events = [
-            'single', 'double', 'triple', 'homerun', 'home_run',
-            'field_out', 'flyout', 'popout', 'groundout', 'lineout',
-            'force_out', 'other_out', 'sac_fly', 'sac_bunt', 'double_play'
-        ]
+        # --- Filter events for analysis ---
+        valid_events = ['single', 'double', 'triple', 'homerun', 'home_run', 'field_out', 'force_out', 'grounded_into_double_play', 'double_play', 'sac_fly', 'fielders_choice', 'pop_out', 'fly_out', 'line_out']
         if 'events' in hitters_df.columns:
-            hitters_df = hitters_df[
-                hitters_df['events'].astype(str).str.lower().str.replace(' ', '').isin(valid_events)
-            ].copy()
-
+            hitters_df = hitters_df[hitters_df['events'].astype(str).str.lower().str.replace(' ', '').isin(valid_events)].copy()
         if 'hr_outcome' not in hitters_df.columns:
             if 'events' in hitters_df.columns:
                 hitters_df['hr_outcome'] = hitters_df['events'].astype(str).str.lower().str.replace(' ', '').isin(['homerun', 'home_run']).astype(int)
@@ -375,10 +367,10 @@ with tab2:
                 st.error("No HR outcome detected, and 'events' column not available for mapping!")
                 st.stop()
 
-        # --- ENSURE NO DUPLICATE COLUMNS ---
+        # --- Ensure no duplicate columns ---
         hitters_df = hitters_df.loc[:, ~hitters_df.columns.duplicated()]
 
-        # --- LOAD LOGIT FEATURES ---
+        # --- Load model features ---
         model_features = [f for f in logit_weights['feature'].values if f in hitters_df.columns and pd.api.types.is_numeric_dtype(hitters_df[f])]
         if not model_features or 'hr_outcome' not in hitters_df.columns:
             st.error("Model features or hr_outcome missing from event-level data.")
@@ -391,9 +383,9 @@ with tab2:
         hitters_df['logit_prob'] = 1 / (1 + np.exp(-hitters_df['logit_score']))
         hitters_df['logit_hr_pred'] = (hitters_df['logit_prob'] > threshold).astype(int)
 
-        # --- XGBOOST ---
+        # --- XGBoost Model ---
         st.write("Fitting XGBoost model...")
-        model_df = hitters_df.dropna(subset=model_features + ['hr_outcome'], how='any').copy()
+        model_df = hitters_df.dropna(subset=model_features + ['hr_outcome'], how='any')
         if model_df['hr_outcome'].nunique() < 2:
             st.warning("Not enough HR/non-HR events for XGBoost. Need at least 2 classes.")
             st.stop()
@@ -405,7 +397,7 @@ with tab2:
         model_df['xgb_prob'] = xgb_model.predict_proba(model_df[model_features])[:, 1]
         model_df['xgb_hr_pred'] = (model_df['xgb_prob'] > threshold).astype(int)
 
-        # --- LEADERBOARDS ---
+        # --- Side-by-Side Leaderboards ---
         st.markdown("## Side-by-Side HR Probability Leaderboards (Top 15 Hitters)")
         col1, col2 = st.columns(2)
         with col1:
@@ -421,7 +413,6 @@ with tab2:
                 .head(15)
             )
             st.dataframe(logit_leaderboard)
-
         with col2:
             st.markdown("#### XGBoost Leaderboard")
             xgb_leaderboard = (
@@ -439,7 +430,7 @@ with tab2:
         st.markdown("#### Download Full Event-Level Data with Model Scores:")
         st.download_button("⬇️ Download Scored Event CSV", data=model_df.to_csv(index=False), file_name="event_level_scored.csv")
 
-        # --- LOGISTIC REPORT ---
+        # --- Logistic Regression Report ---
         st.markdown("### Logistic Regression Performance")
         try:
             y_pred = (model_df['logit_prob'] > threshold).astype(int)
@@ -449,7 +440,7 @@ with tab2:
         except Exception as e:
             st.warning(f"Logit model report failed: {e}")
 
-        # --- XGBOOST REPORT ---
+        # --- XGBoost Report ---
         st.markdown("### XGBoost Performance")
         try:
             auc = roc_auc_score(y_test, xgb_model.predict_proba(X_test)[:, 1])
