@@ -207,13 +207,30 @@ with tab1:
         df['wind_dir_sin'] = np.sin(np.deg2rad(df['wind_dir_angle']))
         df['wind_dir_cos'] = np.cos(np.deg2rad(df['wind_dir_angle']))
 
+        # --- Ensure batter_id and pitcher_id columns exist (CRUCIAL FOR GROUPBY) ---
+        if 'batter_id' not in df.columns:
+            if 'batter' in df.columns:
+                df['batter_id'] = df['batter']
+            else:
+                st.error("Neither 'batter_id' nor 'batter' found in Statcast DataFrame. Please check the input file.")
+                st.stop()
+        if 'pitcher_id' not in df.columns:
+            if 'pitcher' in df.columns:
+                df['pitcher_id'] = df['pitcher']
+
         # --- Advanced Statcast metrics ---
         if 'barrel' in df.columns:
-            df['barrel_rate_20'] = df.groupby('batter_id')['barrel'].transform(lambda x: x.shift(1).rolling(20, min_periods=5).mean())
+            df['barrel_rate_20'] = df.groupby('batter_id')['barrel'].transform(
+                lambda x: x.shift(1).rolling(20, min_periods=5).mean()
+            )
         if 'launch_speed' in df.columns:
-            df['hard_hit_rate_20'] = df.groupby('batter_id')['launch_speed'].transform(lambda x: (x.shift(1) >= 95).rolling(20, min_periods=5).mean())
+            df['hard_hit_rate_20'] = df.groupby('batter_id')['launch_speed'].transform(
+                lambda x: (x.shift(1) >= 95).rolling(20, min_periods=5).mean()
+            )
         if 'launch_angle' in df.columns:
-            df['sweet_spot_rate_20'] = df.groupby('batter_id')['launch_angle'].transform(lambda x: x.shift(1).between(8, 32).rolling(20, min_periods=5).mean())
+            df['sweet_spot_rate_20'] = df.groupby('batter_id')['launch_angle'].transform(
+                lambda x: x.shift(1).between(8, 32).rolling(20, min_periods=5).mean()
+            )
 
         # --- Directional wind context ---
         if 'stand' in df.columns and 'wind_dir_angle' in df.columns:
@@ -233,10 +250,6 @@ with tab1:
                        'release_speed', 'release_spin_rate', 'spin_axis', 'pfx_x', 'pfx_z']
         pitcher_cols = ['launch_speed', 'launch_angle', 'hit_distance_sc', 'woba_value',
                         'release_speed', 'release_spin_rate', 'spin_axis', 'pfx_x', 'pfx_z']
-        if 'batter_id' not in df.columns and 'batter' in df.columns:
-            df['batter_id'] = df['batter']
-        if 'pitcher_id' not in df.columns and 'pitcher' in df.columns:
-            df['pitcher_id'] = df['pitcher']
 
         batter_feat_dict = {}
         pitcher_feat_dict = {}
@@ -310,7 +323,6 @@ with tab1:
                 })
                 st.dataframe(weights.sort_values('weight', ascending=False))
                 st.download_button("⬇️ Download Logistic Weights CSV", data=weights.to_csv(index=False), file_name="logit_weights.csv")
-# END TAB 1
 
 # ========== TAB 2 ==========
 with tab2:
