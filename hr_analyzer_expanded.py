@@ -9,6 +9,7 @@ from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.metrics import classification_report, roc_auc_score
 import xgboost as xgb
 import warnings
+import matplotlib.pyplot as plt
 
 # ========== CONTEXT MAPS ==========
 park_hr_rate_map = {
@@ -349,14 +350,26 @@ with tab1:
                 st.dataframe(weights.sort_values('weight', ascending=False))
                 st.download_button("⬇️ Download Logistic Weights CSV", data=weights.to_csv(index=False), file_name="logit_weights.csv")
 
-
-
+def fix_arrow_types(df):
+    # Convert all extension/object columns to basic float or string
+    for col in df.columns:
+        if pd.api.types.is_extension_array_dtype(df[col]):
+            df[col] = df[col].astype("float64")
+        elif df[col].dtype == object:
+            try:
+                df[col] = df[col].astype("float64")
+            except Exception:
+                try:
+                    df[col] = df[col].astype(str)
+                except Exception:
+                    pass
+    return df
 # ========== TAB 2 ==========
 with tab2:
     st.header("Upload Event, Matchup, and Logistic Weights to Analyze & Score")
     st.markdown("All 3 uploads required! CSVs must match feature sets generated from Tab 1.")
 
-    # --- Add back threshold slider ---
+    # --- Threshold slider ---
     threshold = st.slider(
         "Set HR Probability Threshold",
         min_value=0.01, max_value=0.5, step=0.01, value=0.13,
@@ -371,7 +384,6 @@ with tab2:
     if analyze_btn:
         progress = st.progress(0, "0%: Starting analysis...")
 
-        # 1. Load CSVs
         if not uploaded_events or not uploaded_matchups or not uploaded_logit:
             st.warning("Please upload all three required CSVs before running analysis.")
             st.stop()
@@ -381,7 +393,7 @@ with tab2:
         matchups = pd.read_csv(uploaded_matchups)
         logit_weights = pd.read_csv(uploaded_logit)
 
-        # 2. Clean and standardize MLB ID columns
+        # Standardize MLB ID columns
         progress.progress(10, "10%: Cleaning MLB ID columns...")
         if 'batter_id' in event_df.columns:
             event_df['mlb_id'] = event_df['batter_id'].astype(str).str.strip()
@@ -428,7 +440,7 @@ with tab2:
         )
 
         st.write("Merged sample (first 10 rows):")
-        st.dataframe(merged.head(10))
+        st.dataframe(fix_arrow_types(merged.head(10)))
         st.write("Unique batting order values:", merged[batting_order_col].unique())
         st.write("Unique position values:", merged[position_col].unique())
 
@@ -440,7 +452,6 @@ with tab2:
         hitters_mask = merged.apply(is_hitter, axis=1)
         st.write(f"Rows passing hitter filter: {hitters_mask.sum()} of {len(merged)}")
         hitters_df = merged[hitters_mask].copy()
-
         if hitters_df.empty:
             st.error(
                 "No hitter data available for leaderboard! "
@@ -449,7 +460,6 @@ with tab2:
             )
             st.stop()
 
-        # Drop duplicate columns (bugfix: context columns like park_hand_HR_* can get doubled!)
         hitters_df = hitters_df.loc[:, ~hitters_df.columns.duplicated()]
         hitters_df['batter_name'] = (
             hitters_df['player name']
@@ -601,37 +611,38 @@ with tab2:
 
         progress.progress(95, "95%: Building leaderboards and preparing outputs...")
 
+        logit_leaderboard = (
+            hitters_df.groupby('batter_name')
+            .agg(
+                n_events=('hr_outcome', 'count'),
+                n_predicted_HR=('logit_hr_pred', 'sum'),
+                mean_logit_prob=('logit_prob', 'mean')
+            )
+            .sort_values(['n_predicted_HR', 'mean_logit_prob'], ascending=False)
+            .head(15)
+        )
+        xgb_leaderboard = (
+            hitters_df.groupby('batter_name')
+            .agg(
+                n_events=('hr_outcome', 'count'),
+                n_predicted_HR=('xgb_hr_pred', 'sum'),
+                mean_xgb_prob=('xgb_prob', 'mean')
+            )
+            .sort_values(['n_predicted_HR', 'mean_xgb_prob'], ascending=False)
+            .head(15)
+        )
+
         st.markdown("## Side-by-Side HR Probability Leaderboards (Top 15 Hitters)")
         col1, col2 = st.columns(2)
         with col1:
             st.markdown("#### Logit Leaderboard (Auto-tuned)")
-            logit_leaderboard = (
-                hitters_df.groupby('batter_name')
-                .agg(
-                    n_events=('hr_outcome', 'count'),
-                    n_predicted_HR=('logit_hr_pred', 'sum'),
-                    mean_logit_prob=('logit_prob', 'mean')
-                )
-                .sort_values(['n_predicted_HR', 'mean_logit_prob'], ascending=False)
-                .head(15)
-            )
-            st.dataframe(logit_leaderboard)
+            st.dataframe(fix_arrow_types(logit_leaderboard))
         with col2:
             st.markdown("#### XGBoost Leaderboard (Auto-tuned)")
-            xgb_leaderboard = (
-                hitters_df.groupby('batter_name')
-                .agg(
-                    n_events=('hr_outcome', 'count'),
-                    n_predicted_HR=('xgb_hr_pred', 'sum'),
-                    mean_xgb_prob=('xgb_prob', 'mean')
-                )
-                .sort_values(['n_predicted_HR', 'mean_xgb_prob'], ascending=False)
-                .head(15)
-            )
-            st.dataframe(xgb_leaderboard)
+            st.dataframe(fix_arrow_types(xgb_leaderboard))
 
         st.markdown("#### Download Full Event-Level Data with Model Scores:")
-        st.download_button("⬇️ Download Scored Event CSV", data=hitters_df.to_csv(index=False), file_name="event_level_scored.csv")
+        st.download_button("⬇️ Download Scored Event CSV", data=fix_arrow_types(hitters_df).to_csv(index=False), file_name="event_level_scored.csv")
 
         progress.progress(100, "100%: Displaying model metrics!")
         st.markdown("### Logistic Regression Performance (Auto-tuned)")
@@ -655,3 +666,41 @@ with tab2:
             st.code(classification_report(y_test, (best_xgb.predict_proba(X_test_xgb)[:, 1] > threshold).astype(int)), language='text')
         except Exception as e:
             st.warning(f"XGBoost report failed: {e}")
+
+        # ---- FEATURE IMPORTANCES SECTION ----
+        st.markdown("---")
+        st.markdown("## Feature Importances")
+
+        # --- Logistic Regression Importances ---
+        st.markdown("### Logistic Regression Feature Importances")
+        try:
+            coef = best_logit.coef_[0]
+            feature_names = model_feature_names
+            logit_importances = pd.DataFrame({
+                'feature': feature_names,
+                'coefficient': coef,
+                'abs_importance': np.abs(coef)
+            }).sort_values('abs_importance', ascending=False)
+            st.dataframe(fix_arrow_types(logit_importances.head(20)))
+        except Exception as e:
+            st.warning(f"Could not compute logistic regression importances: {e}")
+        # --- XGBoost Feature Importances ---
+        st.markdown("### XGBoost Feature Importances")
+        try:
+            xgb_importances = best_xgb.feature_importances_
+            xgb_feat_names = best_xgb.feature_names_in_
+            xgb_imp_df = pd.DataFrame({
+                'feature': xgb_feat_names,
+                'importance': xgb_importances
+            }).sort_values('importance', ascending=False)
+            st.dataframe(fix_arrow_types(xgb_imp_df.head(20)))
+
+            # Bar plot for the top 20
+            fig, ax = plt.subplots(figsize=(8, 6))
+            imp_to_plot = xgb_imp_df.head(20).iloc[::-1]
+            ax.barh(imp_to_plot['feature'], imp_to_plot['importance'])
+            ax.set_title("Top 20 XGBoost Feature Importances")
+            ax.set_xlabel("Importance")
+            st.pyplot(fig)
+        except Exception as e:
+            st.warning(f"Could not compute or plot XGBoost feature importances: {e}")
