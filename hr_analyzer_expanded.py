@@ -533,9 +533,9 @@ with tab2:
         grid.fit(X_train_sel, y_train)
         best_logit = grid.best_estimator_
 
-        # 🚨 KEY PATCH: Reindex to what the model expects
+        # 🚨 KEY PATCH: Reindex and fillna to what the model expects
         model_feature_names = best_logit.feature_names_in_
-        X_hitters = hitters_df.reindex(columns=model_feature_names, fill_value=0)
+        X_hitters = hitters_df.reindex(columns=model_feature_names, fill_value=0).fillna(0)
         hitters_df['logit_prob'] = best_logit.predict_proba(X_hitters)[:, 1]
         hitters_df['logit_hr_pred'] = (hitters_df['logit_prob'] > threshold).astype(int)
 
@@ -553,9 +553,8 @@ with tab2:
         )
         xgb_grid.fit(X_train, y_train)
         best_xgb = xgb_grid.best_estimator_
-        # XGBoost: use same columns as trained on
         xgb_feature_names = best_xgb.feature_names_in_
-        X_hitters_xgb = hitters_df.reindex(columns=xgb_feature_names, fill_value=0)
+        X_hitters_xgb = hitters_df.reindex(columns=xgb_feature_names, fill_value=0).fillna(0)
         hitters_df['xgb_prob'] = best_xgb.predict_proba(X_hitters_xgb)[:, 1]
         hitters_df['xgb_hr_pred'] = (hitters_df['xgb_prob'] > threshold).astype(int)
 
@@ -596,16 +595,16 @@ with tab2:
         progress.progress(100, "100%: Displaying model metrics!")
         st.markdown("### Logistic Regression Performance (Auto-tuned)")
         try:
-            auc = roc_auc_score(y_test, best_logit.predict_proba(X_test_sel)[:, 1])
+            auc = roc_auc_score(y_test, best_logit.predict_proba(X_test_sel.fillna(0))[:, 1])
             st.metric("Logistic Regression ROC-AUC", round(auc, 4))
-            st.code(classification_report(y_test, (best_logit.predict_proba(X_test_sel)[:, 1] > threshold).astype(int)), language='text')
+            st.code(classification_report(y_test, (best_logit.predict_proba(X_test_sel.fillna(0))[:, 1] > threshold).astype(int)), language='text')
         except Exception as e:
             st.warning(f"Logit model report failed: {e}")
 
         st.markdown("### XGBoost Performance (Auto-tuned)")
         try:
-            auc = roc_auc_score(y_test, best_xgb.predict_proba(X_test)[:, 1])
+            auc = roc_auc_score(y_test, best_xgb.predict_proba(X_test.fillna(0))[:, 1])
             st.metric("XGBoost ROC-AUC", round(auc, 4))
-            st.code(classification_report(y_test, (best_xgb.predict_proba(X_test)[:, 1] > threshold).astype(int)), language='text')
+            st.code(classification_report(y_test, (best_xgb.predict_proba(X_test.fillna(0))[:, 1] > threshold).astype(int)), language='text')
         except Exception as e:
             st.warning(f"XGBoost report failed: {e}")
