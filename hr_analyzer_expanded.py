@@ -355,7 +355,7 @@ with tab2:
     st.header("Upload Event, Matchup, and Logistic Weights to Analyze & Score")
     st.markdown("All 3 uploads required! CSVs must match feature sets generated from Tab 1.")
 
-    threshold = 0.13  # Set your fixed HR probability threshold
+    threshold = 0.13  # Fixed HR probability threshold
 
     uploaded_events = st.file_uploader("Upload Event-Level Features CSV", type="csv", key="evup")
     uploaded_matchups = st.file_uploader("Upload Matchups CSV", type="csv", key="mup")
@@ -455,12 +455,14 @@ with tab2:
             st.stop()
 
         hitters_df = hitters_df.loc[:, ~hitters_df.columns.duplicated()]
+
+        # --- PATCH: Robustly assign batter_name with fallback to index string ---
         hitters_df['batter_name'] = (
             hitters_df['player name']
-            .fillna(hitters_df.get('player_name'))
-            .fillna(hitters_df['mlb_id'])
-            .fillna(hitters_df.index.astype(str))
+                .combine_first(hitters_df.get('player_name'))
+                .combine_first(hitters_df['mlb_id'])
         )
+        hitters_df['batter_name'] = hitters_df['batter_name'].fillna(hitters_df.index.to_series().astype(str))
 
         # 6. HR OUTCOME LOGIC
         progress.progress(40, "40%: Ensuring HR outcome logic and filtering events...")
