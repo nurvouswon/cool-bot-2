@@ -476,7 +476,7 @@ with tab2:
             st.error("Model features or hr_outcome missing from event-level data.")
             st.stop()
 
-        X = hitters_df[all_model_features].fillna(0)
+        X = hitters_df[all_model_features].fillna(0).replace([np.inf, -np.inf], 0).astype(float)
         y = hitters_df['hr_outcome'].astype(int)
 
         progress.progress(60, "60%: Train/test split complete.")
@@ -535,7 +535,7 @@ with tab2:
 
         # 🚨 KEY PATCH: Reindex and fillna to what the model expects
         model_feature_names = best_logit.feature_names_in_
-        X_hitters = hitters_df.reindex(columns=model_feature_names, fill_value=0).fillna(0)
+        X_hitters = hitters_df.reindex(columns=model_feature_names, fill_value=0).fillna(0).replace([np.inf, -np.inf], 0).astype(float)
         hitters_df['logit_prob'] = best_logit.predict_proba(X_hitters)[:, 1]
         hitters_df['logit_hr_pred'] = (hitters_df['logit_prob'] > threshold).astype(int)
 
@@ -547,24 +547,39 @@ with tab2:
             'colsample_bytree': [0.8, 0.9]
         }
         progress.progress(85, "85%: Fitting XGBoost model (hyperparameter grid search)...")
-        xgb_grid = GridSearchCV(
-            xgb.XGBClassifier(n_estimators=100, eval_metric='logloss', n_jobs=-1),
-            xgb_params, cv=2, scoring='roc_auc', n_jobs=-1
-        )
-        X_train_xgb = X_train.fillna(0).replace([np.inf, -np.inf], 0)
-        y_train_xgb = y_train.fillna(0)
-        # ==== Debug for XGBoost fit ====
+
+        # Defensive: ensure pure float, pure 1d y
+        X_train_xgb = X_train.fillna(0).replace([np.inf, -np.inf], 0).astype(float)
+        y_train_xgb = y_train
+        if isinstance(y_train_xgb, pd.DataFrame):
+            y_train_xgb = y_train_xgb.iloc[:, 0]
+        y_train_xgb = y_train_xgb.astype(int).values.ravel()
+
+        # SUPER DEBUG for all XGBoost fit failures:
         st.write("X_train_xgb shape:", X_train_xgb.shape)
         st.write("y_train_xgb shape:", y_train_xgb.shape)
         st.write("X_train_xgb dtypes:", X_train_xgb.dtypes.value_counts())
         st.write("Any NaN in X_train_xgb?", X_train_xgb.isna().any().any())
         st.write("Any inf in X_train_xgb?", np.isinf(X_train_xgb.to_numpy()).any())
-        st.write("y_train_xgb unique values:", y_train_xgb.unique())
-        st.write("y_train_xgb value counts:", y_train_xgb.value_counts())
-        xgb_grid.fit(X_train_xgb, y_train_xgb)
+        st.write("y_train_xgb unique values:", np.unique(y_train_xgb))
+        st.write("y_train_xgb value counts:", dict(zip(*np.unique(y_train_xgb, return_counts=True))))
+
+        xgb_grid = GridSearchCV(
+            xgb.XGBClassifier(n_estimators=100, eval_metric='logloss', n_jobs=-1),
+            xgb_params, cv=2, scoring='roc_auc', n_jobs=-1
+        )
+        with warnings.catch_warnings(record=True) as w:
+            try:
+                xgb_grid.fit(X_train_xgb, y_train_xgb)
+            except Exception as e:
+                st.error(f"XGBoost grid fit failed: {e}")
+                for warning in w:
+                    st.warning(str(warning.message))
+                st.stop()
+
         best_xgb = xgb_grid.best_estimator_
         xgb_feature_names = best_xgb.feature_names_in_
-        X_hitters_xgb = hitters_df.reindex(columns=xgb_feature_names, fill_value=0).fillna(0)
+        X_hitters_xgb = hitters_df.reindex(columns=xgb_feature_names, fill_value=0).fillna(0).replace([np.inf, -np.inf], 0).astype(float)
         hitters_df['xgb_prob'] = best_xgb.predict_proba(X_hitters_xgb)[:, 1]
         hitters_df['xgb_hr_pred'] = (hitters_df['xgb_prob'] > threshold).astype(int)
 
@@ -618,3 +633,5 @@ with tab2:
             st.code(classification_report(y_test, (best_xgb.predict_proba(X_test.fillna(0))[:, 1] > threshold).astype(int)), language='text')
         except Exception as e:
             st.warning(f"XGBoost report failed: {e}")
+                
+            
