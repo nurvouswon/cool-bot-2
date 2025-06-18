@@ -496,24 +496,59 @@ with tab2:
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
         progress.progress(60, "60%: Train/test split complete.")
 
-        # 9. Logistic Regression with Feature Selection
+        # ---- FAST RFECV LOGISTIC REGRESSION ----
         from sklearn.linear_model import LogisticRegression
         from sklearn.feature_selection import RFECV
         from sklearn.metrics import classification_report, roc_auc_score
 
-        progress.progress(70, "70%: Fitting Logistic Regression with RFECV...")
-        rfecv = RFECV(estimator=LogisticRegression(max_iter=200, solver='liblinear'), step=1, cv=3, scoring='roc_auc', n_jobs=-1)
-        rfecv.fit(X_train, y_train)
-        features_mask = rfecv.support_
-        X_train_sel = X_train.loc[:, features_mask]
-        X_test_sel = X_test.loc[:, features_mask]
+        # Optionally cache selected features in session state for speed-up on rerun
+        if 'selected_feature_names' not in st.session_state:
+            st.session_state['selected_feature_names'] = None
+
+        run_rfecv = True
+        if st.session_state['selected_feature_names'] is not None:
+            selected_feature_names = st.session_state['selected_feature_names']
+            run_rfecv = False
+        else:
+            selected_feature_names = None
+
+        if run_rfecv:
+            progress.progress(70, "70%: Fitting Logistic Regression with FAST RFECV (step=3, cv=2, max_iter=120)...")
+            # Use warm_start for some speed benefit if repeated
+            lr = LogisticRegression(max_iter=120, solver='liblinear', warm_start=True)
+            rfecv = RFECV(
+                estimator=lr,
+                step=3,
+                cv=2,
+                scoring='roc_auc',
+                n_jobs=-1
+            )
+            # Optionally run on a subsample for even more speed
+            max_rows = 1500
+            if len(X_train) > max_rows:
+                np.random.seed(42)
+                sample_idx = np.random.choice(X_train.index, size=max_rows, replace=False)
+                rfecv.fit(X_train.loc[sample_idx], y_train.loc[sample_idx])
+            else:
+                rfecv.fit(X_train, y_train)
+            features_mask = rfecv.support_
+            selected_feature_names = X_train.columns[features_mask].tolist()
+            st.session_state['selected_feature_names'] = selected_feature_names  # Cache for next rerun
+        else:
+            progress.progress(70, "70%: Using cached selected features.")
+
+        X_train_sel = X_train[selected_feature_names]
+        X_test_sel = X_test[selected_feature_names]
 
         from sklearn.model_selection import GridSearchCV
         progress.progress(75, "75%: Hyperparameter tuning Logistic Regression...")
-        grid = GridSearchCV(LogisticRegression(max_iter=200, solver='liblinear'), param_grid={'C': [0.1, 1, 10]}, cv=3, scoring='roc_auc', n_jobs=-1)
+        grid = GridSearchCV(
+            LogisticRegression(max_iter=120, solver='liblinear'),
+            param_grid={'C': [0.1, 1, 10]}, cv=2, scoring='roc_auc', n_jobs=-1
+        )
         grid.fit(X_train_sel, y_train)
         best_logit = grid.best_estimator_
-        hitters_df['logit_prob'] = best_logit.predict_proba(hitters_df.loc[:, features_mask])[:, 1]
+        hitters_df['logit_prob'] = best_logit.predict_proba(hitters_df[selected_feature_names].fillna(0))[:, 1]
         hitters_df['logit_hr_pred'] = (hitters_df['logit_prob'] > threshold).astype(int)
 
         # 10. XGBoost Model
@@ -527,7 +562,7 @@ with tab2:
         progress.progress(85, "85%: Fitting XGBoost model (hyperparameter grid search)...")
         xgb_grid = GridSearchCV(
             xgb.XGBClassifier(n_estimators=100, eval_metric='logloss', n_jobs=-1),
-            xgb_params, cv=3, scoring='roc_auc', n_jobs=-1
+            xgb_params, cv=2, scoring='roc_auc', n_jobs=-1
         )
         xgb_grid.fit(X_train, y_train)
         best_xgb = xgb_grid.best_estimator_
