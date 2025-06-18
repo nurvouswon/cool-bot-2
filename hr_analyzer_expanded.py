@@ -355,8 +355,7 @@ with tab2:
     st.header("Upload Event, Matchup, and Logistic Weights to Analyze & Score")
     st.markdown("All 3 uploads required! CSVs must match feature sets generated from Tab 1.")
 
-    # Fixed HR probability threshold
-    threshold = 0.13
+    threshold = 0.13  # Set your fixed HR probability threshold
 
     uploaded_events = st.file_uploader("Upload Event-Level Features CSV", type="csv", key="evup")
     uploaded_matchups = st.file_uploader("Upload Matchups CSV", type="csv", key="mup")
@@ -376,10 +375,10 @@ with tab2:
         matchups = pd.read_csv(uploaded_matchups)
         logit_weights = pd.read_csv(uploaded_logit)
 
-        # 2. Clean and standardize MLB ID columns
+        # 2. Clean and standardize MLB ID columns (critical fix for float vs string!)
         progress.progress(10, "10%: Cleaning MLB ID columns...")
 
-        # Event file MLB ID assignment
+        # Event file MLB ID assignment (already good)
         if 'batter_id' in event_df.columns:
             event_df['mlb_id'] = event_df['batter_id'].astype(str).str.strip()
         elif 'batter' in event_df.columns:
@@ -387,11 +386,12 @@ with tab2:
         else:
             st.error("Event-level data must have a 'batter_id' or 'batter' column for MLB ID.")
             st.stop()
-        # Matchup file MLB ID assignment
+
+        # Matchup file MLB ID assignment (force float->int->str for exact match)
         if 'mlb id' in matchups.columns:
-            matchups['mlb_id'] = matchups['mlb id'].astype(str).str.strip()
+            matchups['mlb_id'] = matchups['mlb id'].apply(lambda x: str(int(float(x))) if pd.notnull(x) else "").str.strip()
         elif 'mlb_id' in matchups.columns:
-            matchups['mlb_id'] = matchups['mlb_id'].astype(str).str.strip()
+            matchups['mlb_id'] = matchups['mlb_id'].apply(lambda x: str(int(float(x))) if pd.notnull(x) else "").str.strip()
         else:
             st.error("Matchup file must have a 'mlb id' or 'mlb_id' column.")
             st.stop()
