@@ -352,7 +352,6 @@ with tab1:
                 st.download_button("⬇️ Download Logistic Weights CSV", data=weights.to_csv(index=False), file_name="logit_weights.csv")
 
 def fix_arrow_types(df):
-    # Converts pandas extension types and object columns in-place, warning-free.
     for col in df.columns:
         if pd.api.types.is_extension_array_dtype(df[col]):
             df.loc[:, col] = df[col].astype("float64")
@@ -370,7 +369,6 @@ with tab2:
     st.header("Upload Event, Matchup, and Logistic Weights to Analyze & Score")
     st.markdown("All 3 uploads required! CSVs must match feature sets generated from Tab 1.")
 
-    # Threshold slider
     threshold = st.slider(
         "Set HR Probability Threshold",
         min_value=0.01, max_value=0.5, step=0.01, value=0.13,
@@ -439,6 +437,8 @@ with tab2:
             matchups[['mlb_id', 'player name', batting_order_col, position_col]],
             on='mlb_id', how='left'
         )
+        # Deduplicate columns after merge
+        merged = merged.loc[:, ~merged.columns.duplicated()]
 
         st.write("Merged sample (first 10 rows):")
         st.dataframe(fix_arrow_types(merged.head(10)))
@@ -453,6 +453,8 @@ with tab2:
         hitters_mask = merged.apply(is_hitter, axis=1)
         st.write(f"Rows passing hitter filter: {hitters_mask.sum()} of {len(merged)}")
         hitters_df = merged[hitters_mask].copy()
+        # Deduplicate columns after filtering
+        hitters_df = hitters_df.loc[:, ~hitters_df.columns.duplicated()]
         if hitters_df.empty:
             st.error(
                 "No hitter data available for leaderboard! "
@@ -461,7 +463,6 @@ with tab2:
             )
             st.stop()
 
-        hitters_df = hitters_df.loc[:, ~hitters_df.columns.duplicated()]
         hitters_df['batter_name'] = (
             hitters_df['player name']
                 .combine_first(hitters_df.get('player_name'))
@@ -492,10 +493,14 @@ with tab2:
             st.stop()
 
         X = hitters_df[all_model_features].fillna(0).replace([np.inf, -np.inf], 0).astype(float)
+        # Deduplicate X
+        X = X.loc[:, ~X.columns.duplicated()]
         y = hitters_df['hr_outcome'].astype(int)
 
         progress.progress(60, "60%: Train/test split complete.")
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        X_train = X_train.loc[:, ~X_train.columns.duplicated()]
+        X_test = X_test.loc[:, ~X_test.columns.duplicated()]
 
         # FAST RFECV with feature name selection and caching
         if 'selected_feature_names' not in st.session_state:
@@ -544,6 +549,7 @@ with tab2:
 
         model_feature_names = best_logit.feature_names_in_
         X_hitters = hitters_df.reindex(columns=model_feature_names, fill_value=0).fillna(0).replace([np.inf, -np.inf], 0).astype(float)
+        X_hitters = X_hitters.loc[:, ~X_hitters.columns.duplicated()]
         hitters_df['logit_prob'] = best_logit.predict_proba(X_hitters)[:, 1]
         hitters_df['logit_hr_pred'] = (hitters_df['logit_prob'] > threshold).astype(int)
 
@@ -557,6 +563,7 @@ with tab2:
         progress.progress(85, "85%: Fitting XGBoost model (hyperparameter grid search)...")
 
         X_train_xgb = X_train.fillna(0).replace([np.inf, -np.inf], 0)
+        X_train_xgb = X_train_xgb.loc[:, ~X_train_xgb.columns.duplicated()]
         bad_cols = [col for col in X_train_xgb.columns if not pd.api.types.is_numeric_dtype(X_train_xgb[col])]
         if bad_cols:
             st.info(f"Dropping non-numeric columns from XGBoost features: {bad_cols}")
@@ -639,6 +646,9 @@ with tab2:
 
         st.markdown("### XGBoost Performance (Auto-tuned)")
         try:
+            # --- The key block: full deduplication of test set ---
+            X_test = X_test.loc[:, ~X_test.columns.duplicated()]
+            xgb_feature_names = pd.Index(xgb_feature_names).unique()
             X_test_xgb = X_test.reindex(columns=xgb_feature_names, fill_value=0)
             X_test_xgb = X_test_xgb.loc[:, ~X_test_xgb.columns.duplicated()]
             assert X_test_xgb.columns.is_unique
