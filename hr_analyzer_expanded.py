@@ -10,6 +10,7 @@ from sklearn.metrics import classification_report, roc_auc_score
 import xgboost as xgb
 import warnings
 import matplotlib.pyplot as plt
+from sklearn.feature_selection import RFECV
 
 # ========== CONTEXT MAPS ==========
 park_hr_rate_map = {
