@@ -488,9 +488,6 @@ with tab2:
         from sklearn.metrics import classification_report, roc_auc_score
 
         # --- FAST RFECV with feature name selection and caching ---
-        def safe_feature_input(df, col_list):
-            return df.reindex(columns=col_list, fill_value=0)
-
         if 'selected_feature_names' not in st.session_state:
             st.session_state['selected_feature_names'] = None
 
@@ -536,7 +533,9 @@ with tab2:
         grid.fit(X_train_sel, y_train)
         best_logit = grid.best_estimator_
 
-        X_hitters = safe_feature_input(hitters_df, selected_feature_names)
+        # 🚨 KEY PATCH: Reindex to what the model expects
+        model_feature_names = best_logit.feature_names_in_
+        X_hitters = hitters_df.reindex(columns=model_feature_names, fill_value=0)
         hitters_df['logit_prob'] = best_logit.predict_proba(X_hitters)[:, 1]
         hitters_df['logit_hr_pred'] = (hitters_df['logit_prob'] > threshold).astype(int)
 
@@ -554,7 +553,10 @@ with tab2:
         )
         xgb_grid.fit(X_train, y_train)
         best_xgb = xgb_grid.best_estimator_
-        hitters_df['xgb_prob'] = best_xgb.predict_proba(X)[:, 1]
+        # XGBoost: use same columns as trained on
+        xgb_feature_names = best_xgb.feature_names_in_
+        X_hitters_xgb = hitters_df.reindex(columns=xgb_feature_names, fill_value=0)
+        hitters_df['xgb_prob'] = best_xgb.predict_proba(X_hitters_xgb)[:, 1]
         hitters_df['xgb_hr_pred'] = (hitters_df['xgb_prob'] > threshold).astype(int)
 
         progress.progress(95, "95%: Building leaderboards and preparing outputs...")
