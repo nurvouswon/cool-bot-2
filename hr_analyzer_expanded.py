@@ -351,25 +351,25 @@ with tab1:
                 st.download_button("⬇️ Download Logistic Weights CSV", data=weights.to_csv(index=False), file_name="logit_weights.csv")
 
 def fix_arrow_types(df):
-    # Convert all extension/object columns to basic float or string
+    # Converts pandas extension types and object columns in-place, warning-free.
     for col in df.columns:
         if pd.api.types.is_extension_array_dtype(df[col]):
-            df[col] = df[col].astype("float64")
+            df.loc[:, col] = df[col].astype("float64")
         elif df[col].dtype == object:
             try:
-                df[col] = df[col].astype("float64")
+                df.loc[:, col] = df[col].astype("float64")
             except Exception:
                 try:
-                    df[col] = df[col].astype(str)
+                    df.loc[:, col] = df[col].astype(str)
                 except Exception:
                     pass
     return df
-# ========== TAB 2 ==========
+
 with tab2:
     st.header("Upload Event, Matchup, and Logistic Weights to Analyze & Score")
     st.markdown("All 3 uploads required! CSVs must match feature sets generated from Tab 1.")
 
-    # --- Threshold slider ---
+    # Threshold slider
     threshold = st.slider(
         "Set HR Probability Threshold",
         min_value=0.01, max_value=0.5, step=0.01, value=0.13,
@@ -494,14 +494,9 @@ with tab2:
         y = hitters_df['hr_outcome'].astype(int)
 
         progress.progress(60, "60%: Train/test split complete.")
-        from sklearn.model_selection import train_test_split
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-        from sklearn.linear_model import LogisticRegression
-        from sklearn.feature_selection import RFECV
-        from sklearn.metrics import classification_report, roc_auc_score
-
-        # --- FAST RFECV with feature name selection and caching ---
+        # FAST RFECV with feature name selection and caching
         if 'selected_feature_names' not in st.session_state:
             st.session_state['selected_feature_names'] = None
 
@@ -538,7 +533,6 @@ with tab2:
         X_train_sel = X_train[selected_feature_names]
         X_test_sel = X_test[selected_feature_names]
 
-        from sklearn.model_selection import GridSearchCV
         progress.progress(75, "75%: Hyperparameter tuning Logistic Regression...")
         grid = GridSearchCV(
             LogisticRegression(max_iter=120, solver='liblinear'),
@@ -552,7 +546,7 @@ with tab2:
         hitters_df['logit_prob'] = best_logit.predict_proba(X_hitters)[:, 1]
         hitters_df['logit_hr_pred'] = (hitters_df['logit_prob'] > threshold).astype(int)
 
-        import xgboost as xgb
+        # XGBoost section
         xgb_params = {
             'max_depth': [3, 4, 5],
             'learning_rate': [0.01, 0.05, 0.1],
@@ -561,26 +555,13 @@ with tab2:
         }
         progress.progress(85, "85%: Fitting XGBoost model (hyperparameter grid search)...")
 
-        # Defensive: ensure pure float, pure 1d y, drop non-numeric cols
         X_train_xgb = X_train.fillna(0).replace([np.inf, -np.inf], 0)
         bad_cols = [col for col in X_train_xgb.columns if not pd.api.types.is_numeric_dtype(X_train_xgb[col])]
         if bad_cols:
-            st.warning(f"Dropping non-numeric columns from XGBoost features: {bad_cols}")
+            st.info(f"Dropping non-numeric columns from XGBoost features: {bad_cols}")
             X_train_xgb = X_train_xgb.drop(columns=bad_cols)
         X_train_xgb = X_train_xgb.astype(float)
-        y_train_xgb = y_train
-        if isinstance(y_train_xgb, pd.DataFrame):
-            y_train_xgb = y_train_xgb.iloc[:, 0]
-        y_train_xgb = y_train_xgb.astype(int).values.ravel()
-
-        st.write("X_train_xgb shape:", X_train_xgb.shape)
-        st.write("y_train_xgb shape:", y_train_xgb.shape)
-        st.write("X_train_xgb dtypes:", X_train_xgb.dtypes.value_counts())
-        st.write("Any NaN in X_train_xgb?", X_train_xgb.isna().any().any())
-        st.write("Any inf in X_train_xgb?", np.isinf(X_train_xgb.to_numpy()).any())
-        uniq, counts = np.unique(y_train_xgb, return_counts=True)
-        st.write("y_train_xgb unique values:", [int(u) for u in uniq])
-        st.write("y_train_xgb value counts:", {int(k): int(v) for k, v in zip(uniq, counts)})
+        y_train_xgb = y_train.values.ravel()
 
         xgb_grid = GridSearchCV(
             xgb.XGBClassifier(n_estimators=100, eval_metric='logloss', n_jobs=-1),
@@ -592,20 +573,21 @@ with tab2:
             except Exception as e:
                 st.error(f"XGBoost grid fit failed: {e}")
                 for warning in w:
-                    st.warning(str(warning.message))
+                    st.info(str(warning.message))
                 st.stop()
 
         best_xgb = xgb_grid.best_estimator_
-        xgb_feature_names = best_xgb.feature_names_in_
+        xgb_feature_names = pd.Index(best_xgb.feature_names_in_).unique()  # Ensure unique
 
-        # --- XGBoost Predict: Drop non-numeric, deduplicate ---
-        X_hitters_xgb = hitters_df.reindex(columns=xgb_feature_names, fill_value=0).fillna(0).replace([np.inf, -np.inf], 0)
+        # Predict for all hitters
+        X_hitters_xgb = hitters_df.reindex(columns=xgb_feature_names, fill_value=0)
         X_hitters_xgb = X_hitters_xgb.loc[:, ~X_hitters_xgb.columns.duplicated()]
+        assert X_hitters_xgb.columns.is_unique
+        X_hitters_xgb = X_hitters_xgb.fillna(0).replace([np.inf, -np.inf], 0)
         for col in X_hitters_xgb.columns:
             if not pd.api.types.is_numeric_dtype(X_hitters_xgb[col]):
                 X_hitters_xgb = X_hitters_xgb.drop(columns=[col])
         X_hitters_xgb = X_hitters_xgb.astype(float)
-
         hitters_df['xgb_prob'] = best_xgb.predict_proba(X_hitters_xgb)[:, 1]
         hitters_df['xgb_hr_pred'] = (hitters_df['xgb_prob'] > threshold).astype(int)
 
@@ -649,15 +631,16 @@ with tab2:
         try:
             auc = roc_auc_score(y_test, best_logit.predict_proba(X_test_sel.fillna(0))[:, 1])
             st.metric("Logistic Regression ROC-AUC", round(auc, 4))
-            st.code(classification_report(y_test, (best_logit.predict_proba(X_test_sel.fillna(0))[:, 1] > threshold).astype(int)), language='text')
+            st.code(classification_report(
+                y_test, (best_logit.predict_proba(X_test_sel.fillna(0))[:, 1] > threshold).astype(int), zero_division=0), language='text')
         except Exception as e:
             st.warning(f"Logit model report failed: {e}")
 
         st.markdown("### XGBoost Performance (Auto-tuned)")
         try:
-        # Safe reindex and deduplicate!
             X_test_xgb = X_test.reindex(columns=xgb_feature_names, fill_value=0)
             X_test_xgb = X_test_xgb.loc[:, ~X_test_xgb.columns.duplicated()]
+            assert X_test_xgb.columns.is_unique
             X_test_xgb = X_test_xgb.fillna(0).replace([np.inf, -np.inf], 0)
             for col in X_test_xgb.columns:
                 if not pd.api.types.is_numeric_dtype(X_test_xgb[col]):
@@ -665,7 +648,8 @@ with tab2:
             X_test_xgb = X_test_xgb.astype(float)
             auc = roc_auc_score(y_test, best_xgb.predict_proba(X_test_xgb)[:, 1])
             st.metric("XGBoost ROC-AUC", round(auc, 4))
-            st.code(classification_report(y_test, (best_xgb.predict_proba(X_test_xgb)[:, 1] > threshold).astype(int)), language='text')
+            st.code(classification_report(
+                y_test, (best_xgb.predict_proba(X_test_xgb)[:, 1] > threshold).astype(int), zero_division=0), language='text')
         except Exception as e:
             st.warning(f"XGBoost report failed: {e}")
 
@@ -673,7 +657,7 @@ with tab2:
         st.markdown("---")
         st.markdown("## Feature Importances")
 
-        # --- Logistic Regression Importances ---
+        # Logistic Regression Importances
         st.markdown("### Logistic Regression Feature Importances")
         try:
             coef = best_logit.coef_[0]
@@ -686,7 +670,8 @@ with tab2:
             st.dataframe(fix_arrow_types(logit_importances.head(20)))
         except Exception as e:
             st.warning(f"Could not compute logistic regression importances: {e}")
-        # --- XGBoost Feature Importances ---
+
+        # XGBoost Feature Importances
         st.markdown("### XGBoost Feature Importances")
         try:
             xgb_importances = best_xgb.feature_importances_
