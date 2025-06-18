@@ -378,7 +378,6 @@ with tab2:
         # 2. Clean and standardize MLB ID columns (critical fix for float vs string!)
         progress.progress(10, "10%: Cleaning MLB ID columns...")
 
-        # Event file MLB ID assignment (already good)
         if 'batter_id' in event_df.columns:
             event_df['mlb_id'] = event_df['batter_id'].astype(str).str.strip()
         elif 'batter' in event_df.columns:
@@ -387,7 +386,6 @@ with tab2:
             st.error("Event-level data must have a 'batter_id' or 'batter' column for MLB ID.")
             st.stop()
 
-        # Matchup file MLB ID assignment (force float->int->str for exact match)
         if 'mlb id' in matchups.columns:
             matchups['mlb_id'] = matchups['mlb id'].apply(lambda x: str(int(float(x))) if pd.notnull(x) else "").str.strip()
         elif 'mlb_id' in matchups.columns:
@@ -396,11 +394,9 @@ with tab2:
             st.error("Matchup file must have a 'mlb id' or 'mlb_id' column.")
             st.stop()
 
-        # Show debug: print sample of MLB IDs for both files
         st.write("Sample event file mlb_id values:", event_df['mlb_id'].unique()[:10])
         st.write("Sample matchup file mlb_id values:", matchups['mlb_id'].unique()[:10])
 
-        # 3. Detect batting order and position columns
         progress.progress(15, "15%: Detecting batting order and position columns...")
         batting_order_col = None
         for possible in ['batting order', 'batting_order', 'order']:
@@ -421,22 +417,17 @@ with tab2:
             st.write("Matchup columns available:", list(matchups.columns))
             st.stop()
 
-        # 4. Merge Data on Cleaned MLB ID
         progress.progress(20, "20%: Merging event & matchup files on MLB ID...")
         merged = event_df.merge(
             matchups[['mlb_id', 'player name', batting_order_col, position_col]],
             on='mlb_id', how='left'
         )
 
-        # Show debug: merged columns and first few rows
         st.write("Merged sample (first 10 rows):")
         st.dataframe(merged.head(10))
-
-        # Show unique values in batting order and position columns after merge
         st.write("Unique batting order values:", merged[batting_order_col].unique())
         st.write("Unique position values:", merged[position_col].unique())
 
-        # 5. Filter to true hitters (batting order 1-9, not pitcher types)
         progress.progress(30, "30%: Filtering for hitters (batting order 1-9, not pitchers)...")
         def is_hitter(row):
             bo = str(row[batting_order_col]).strip()
@@ -456,7 +447,6 @@ with tab2:
 
         hitters_df = hitters_df.loc[:, ~hitters_df.columns.duplicated()]
 
-        # --- PATCH: Robustly assign batter_name with fallback to index string ---
         hitters_df['batter_name'] = (
             hitters_df['player name']
                 .combine_first(hitters_df.get('player_name'))
@@ -464,7 +454,6 @@ with tab2:
         )
         hitters_df['batter_name'] = hitters_df['batter_name'].fillna(hitters_df.index.to_series().astype(str))
 
-        # 6. HR OUTCOME LOGIC
         progress.progress(40, "40%: Ensuring HR outcome logic and filtering events...")
         valid_events = [
             'single', 'double', 'triple', 'homerun', 'home_run', 'field_out',
@@ -481,7 +470,6 @@ with tab2:
                 st.stop()
         hitters_df = hitters_df.loc[:, ~hitters_df.columns.duplicated()]
 
-        # 7. Feature selection
         progress.progress(50, "50%: Model feature selection...")
         all_model_features = [f for f in logit_weights['feature'].values if f in hitters_df.columns and pd.api.types.is_numeric_dtype(hitters_df[f])]
         if not all_model_features or 'hr_outcome' not in hitters_df.columns:
@@ -491,17 +479,18 @@ with tab2:
         X = hitters_df[all_model_features].fillna(0)
         y = hitters_df['hr_outcome'].astype(int)
 
-        # 8. Train/test split
+        progress.progress(60, "60%: Train/test split complete.")
         from sklearn.model_selection import train_test_split
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-        progress.progress(60, "60%: Train/test split complete.")
 
-        # ---- FAST RFECV LOGISTIC REGRESSION ----
         from sklearn.linear_model import LogisticRegression
         from sklearn.feature_selection import RFECV
         from sklearn.metrics import classification_report, roc_auc_score
 
-        # Optionally cache selected features in session state for speed-up on rerun
+        # --- FAST RFECV with feature name selection and caching ---
+        def safe_feature_input(df, col_list):
+            return df.reindex(columns=col_list, fill_value=0)
+
         if 'selected_feature_names' not in st.session_state:
             st.session_state['selected_feature_names'] = None
 
@@ -514,7 +503,6 @@ with tab2:
 
         if run_rfecv:
             progress.progress(70, "70%: Fitting Logistic Regression with FAST RFECV (step=3, cv=2, max_iter=120)...")
-            # Use warm_start for some speed benefit if repeated
             lr = LogisticRegression(max_iter=120, solver='liblinear', warm_start=True)
             rfecv = RFECV(
                 estimator=lr,
@@ -523,7 +511,6 @@ with tab2:
                 scoring='roc_auc',
                 n_jobs=-1
             )
-            # Optionally run on a subsample for even more speed
             max_rows = 1500
             if len(X_train) > max_rows:
                 np.random.seed(42)
@@ -533,7 +520,7 @@ with tab2:
                 rfecv.fit(X_train, y_train)
             features_mask = rfecv.support_
             selected_feature_names = X_train.columns[features_mask].tolist()
-            st.session_state['selected_feature_names'] = selected_feature_names  # Cache for next rerun
+            st.session_state['selected_feature_names'] = selected_feature_names  # cache for next rerun
         else:
             progress.progress(70, "70%: Using cached selected features.")
 
@@ -548,10 +535,11 @@ with tab2:
         )
         grid.fit(X_train_sel, y_train)
         best_logit = grid.best_estimator_
-        hitters_df['logit_prob'] = best_logit.predict_proba(hitters_df[selected_feature_names].fillna(0))[:, 1]
+
+        X_hitters = safe_feature_input(hitters_df, selected_feature_names)
+        hitters_df['logit_prob'] = best_logit.predict_proba(X_hitters)[:, 1]
         hitters_df['logit_hr_pred'] = (hitters_df['logit_prob'] > threshold).astype(int)
 
-        # 10. XGBoost Model
         import xgboost as xgb
         xgb_params = {
             'max_depth': [3, 4, 5],
@@ -569,7 +557,6 @@ with tab2:
         hitters_df['xgb_prob'] = best_xgb.predict_proba(X)[:, 1]
         hitters_df['xgb_hr_pred'] = (hitters_df['xgb_prob'] > threshold).astype(int)
 
-        # 11. Leaderboards and Output
         progress.progress(95, "95%: Building leaderboards and preparing outputs...")
 
         st.markdown("## Side-by-Side HR Probability Leaderboards (Top 15 Hitters)")
@@ -604,7 +591,6 @@ with tab2:
         st.markdown("#### Download Full Event-Level Data with Model Scores:")
         st.download_button("⬇️ Download Scored Event CSV", data=hitters_df.to_csv(index=False), file_name="event_level_scored.csv")
 
-        # 12. Model Metrics/Reports
         progress.progress(100, "100%: Displaying model metrics!")
         st.markdown("### Logistic Regression Performance (Auto-tuned)")
         try:
