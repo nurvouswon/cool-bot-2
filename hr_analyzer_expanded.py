@@ -551,7 +551,9 @@ with tab2:
             xgb.XGBClassifier(n_estimators=100, eval_metric='logloss', n_jobs=-1),
             xgb_params, cv=2, scoring='roc_auc', n_jobs=-1
         )
-        xgb_grid.fit(X_train, y_train)
+        X_train_xgb = X_train.fillna(0).replace([np.inf, -np.inf], 0)
+        y_train_xgb = y_train.fillna(0)
+        xgb_grid.fit(X_train_xgb, y_train_xgb)
         best_xgb = xgb_grid.best_estimator_
         xgb_feature_names = best_xgb.feature_names_in_
         X_hitters_xgb = hitters_df.reindex(columns=xgb_feature_names, fill_value=0).fillna(0)
