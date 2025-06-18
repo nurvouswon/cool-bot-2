@@ -376,9 +376,8 @@ with tab2:
         matchups = pd.read_csv(uploaded_matchups)
         logit_weights = pd.read_csv(uploaded_logit)
 
-        # 2. Clean and standardize MLB ID columns (critical fix for float vs string!)
+        # 2. Clean and standardize MLB ID columns
         progress.progress(10, "10%: Cleaning MLB ID columns...")
-
         if 'batter_id' in event_df.columns:
             event_df['mlb_id'] = event_df['batter_id'].astype(str).str.strip()
         elif 'batter' in event_df.columns:
@@ -386,7 +385,6 @@ with tab2:
         else:
             st.error("Event-level data must have a 'batter_id' or 'batter' column for MLB ID.")
             st.stop()
-
         if 'mlb id' in matchups.columns:
             matchups['mlb_id'] = matchups['mlb id'].apply(lambda x: str(int(float(x))) if pd.notnull(x) else "").str.strip()
         elif 'mlb_id' in matchups.columns:
@@ -447,7 +445,6 @@ with tab2:
             st.stop()
 
         hitters_df = hitters_df.loc[:, ~hitters_df.columns.duplicated()]
-
         hitters_df['batter_name'] = (
             hitters_df['player name']
                 .combine_first(hitters_df.get('player_name'))
@@ -534,7 +531,6 @@ with tab2:
         grid.fit(X_train_sel, y_train)
         best_logit = grid.best_estimator_
 
-        # 🚨 KEY PATCH: Reindex and fillna to what the model expects
         model_feature_names = best_logit.feature_names_in_
         X_hitters = hitters_df.reindex(columns=model_feature_names, fill_value=0).fillna(0).replace([np.inf, -np.inf], 0).astype(float)
         hitters_df['logit_prob'] = best_logit.predict_proba(X_hitters)[:, 1]
@@ -550,20 +546,24 @@ with tab2:
         progress.progress(85, "85%: Fitting XGBoost model (hyperparameter grid search)...")
 
         # Defensive: ensure pure float, pure 1d y
-        X_train_xgb = X_train.fillna(0).replace([np.inf, -np.inf], 0).astype(float)
+        X_train_xgb = X_train.fillna(0).replace([np.inf, -np.inf], 0)
+        bad_cols = [col for col in X_train_xgb.columns if not pd.api.types.is_numeric_dtype(X_train_xgb[col])]
+        if bad_cols:
+            st.warning(f"Dropping non-numeric columns from XGBoost features: {bad_cols}")
+            X_train_xgb = X_train_xgb.drop(columns=bad_cols)
+        X_train_xgb = X_train_xgb.astype(float)
         y_train_xgb = y_train
         if isinstance(y_train_xgb, pd.DataFrame):
             y_train_xgb = y_train_xgb.iloc[:, 0]
         y_train_xgb = y_train_xgb.astype(int).values.ravel()
 
-        # SUPER DEBUG for all XGBoost fit failures:
         st.write("X_train_xgb shape:", X_train_xgb.shape)
         st.write("y_train_xgb shape:", y_train_xgb.shape)
         st.write("X_train_xgb dtypes:", X_train_xgb.dtypes.value_counts())
         st.write("Any NaN in X_train_xgb?", X_train_xgb.isna().any().any())
         st.write("Any inf in X_train_xgb?", np.isinf(X_train_xgb.to_numpy()).any())
-        st.write("y_train_xgb unique values:", np.unique(y_train_xgb))
         uniq, counts = np.unique(y_train_xgb, return_counts=True)
+        st.write("y_train_xgb unique values:", [int(u) for u in uniq])
         st.write("y_train_xgb value counts:", {int(k): int(v) for k, v in zip(uniq, counts)})
 
         xgb_grid = GridSearchCV(
@@ -635,5 +635,4 @@ with tab2:
             st.code(classification_report(y_test, (best_xgb.predict_proba(X_test.fillna(0))[:, 1] > threshold).astype(int)), language='text')
         except Exception as e:
             st.warning(f"XGBoost report failed: {e}")
-                
-            
+        
