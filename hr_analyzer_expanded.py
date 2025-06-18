@@ -699,3 +699,39 @@ with tab2:
             "All outputs above use only **auto-selected features** (lowest 10% by importance removed, balanced class weights). "
             "Move the HR probability threshold slider for instant leaderboard/metric updates—no rerun needed!"
         )
+import io
+
+def generate_audit_report(scored_df, model_name, y_test, y_pred_probs, y_pred_labels, k_list=[5,10,15,20]):
+    buf = io.StringIO()
+    buf.write(f"==== {model_name} MODEL AUDIT REPORT ====\n\n")
+    buf.write(f"Sample size: {len(scored_df)}\n")
+    buf.write("\nClassification Report:\n")
+    buf.write(classification_report(y_test, y_pred_labels, zero_division=0))
+    buf.write(f"\nROC-AUC: {roc_auc_score(y_test, y_pred_probs):.4f}\n")
+    for k in k_list:
+        hits, _, prec = get_precision_at_k(scored_df, model_name.lower()+'_prob', 'hr_outcome', k)
+        buf.write(f"Precision@{k}: {hits} / {k} ({prec:.1%})\n")
+    buf.write("\nTop False Positives:\n")
+    fp = scored_df[(scored_df[model_name.lower()+'_hr_pred'] == 1) & (scored_df['hr_outcome'] == 0)]
+    buf.write(fp[['batter_name', model_name.lower()+'_prob']].sort_values(model_name.lower()+'_prob', ascending=False).head(10).to_string())
+    buf.write("\n\nTop False Negatives:\n")
+    fn = scored_df[(scored_df[model_name.lower()+'_hr_pred'] == 0) & (scored_df['hr_outcome'] == 1)]
+    buf.write(fn[['batter_name', model_name.lower()+'_prob']].sort_values(model_name.lower()+'_prob', ascending=False).head(10).to_string())
+    return buf.getvalue()
+
+# Generate reports for both models
+logit_report = generate_audit_report(
+    scored_df, "Logit", st.session_state['y_test'],
+    st.session_state['best_logit'].predict_proba(st.session_state['X_test_lr'])[:,1],
+    (st.session_state['best_logit'].predict_proba(st.session_state['X_test_lr'])[:,1] > threshold).astype(int)
+)
+xgb_report = generate_audit_report(
+    scored_df, "XGB", st.session_state['y_test'],
+    st.session_state['best_xgb'].predict_proba(st.session_state['X_test_xgb'])[:,1],
+    (st.session_state['best_xgb'].predict_proba(st.session_state['X_test_xgb'])[:,1] > threshold).astype(int)
+)
+
+st.download_button("Download Logit Model Audit Report", logit_report, file_name="logit_audit_report.txt")
+st.download_button("Download XGBoost Model Audit Report", xgb_report, file_name="xgb_audit_report.txt")
+
+st.markdown("**Paste your audit report text back to ChatGPT for expert review and custom upgrade advice!**")
