@@ -356,7 +356,12 @@ with tab2:
     st.header("Upload Event, Matchup, and Logistic Weights to Analyze & Score")
     st.markdown("All 3 uploads required! CSVs must match feature sets generated from Tab 1.")
 
-    threshold = 0.13  # Fixed HR probability threshold
+    # --- Add back threshold slider ---
+    threshold = st.slider(
+        "Set HR Probability Threshold",
+        min_value=0.01, max_value=0.5, step=0.01, value=0.13,
+        help="Only events with HR probability above this are counted as HR predictions."
+    )
 
     uploaded_events = st.file_uploader("Upload Event-Level Features CSV", type="csv", key="evup")
     uploaded_matchups = st.file_uploader("Upload Matchups CSV", type="csv", key="mup")
@@ -444,6 +449,7 @@ with tab2:
             )
             st.stop()
 
+        # Drop duplicate columns (bugfix: context columns like park_hand_HR_* can get doubled!)
         hitters_df = hitters_df.loc[:, ~hitters_df.columns.duplicated()]
         hitters_df['batter_name'] = (
             hitters_df['player name']
@@ -545,7 +551,7 @@ with tab2:
         }
         progress.progress(85, "85%: Fitting XGBoost model (hyperparameter grid search)...")
 
-        # Defensive: ensure pure float, pure 1d y
+        # Defensive: ensure pure float, pure 1d y, drop non-numeric cols
         X_train_xgb = X_train.fillna(0).replace([np.inf, -np.inf], 0)
         bad_cols = [col for col in X_train_xgb.columns if not pd.api.types.is_numeric_dtype(X_train_xgb[col])]
         if bad_cols:
@@ -581,7 +587,15 @@ with tab2:
 
         best_xgb = xgb_grid.best_estimator_
         xgb_feature_names = best_xgb.feature_names_in_
-        X_hitters_xgb = hitters_df.reindex(columns=xgb_feature_names, fill_value=0).fillna(0).replace([np.inf, -np.inf], 0).astype(float)
+
+        # --- XGBoost Predict: Drop non-numeric, deduplicate ---
+        X_hitters_xgb = hitters_df.reindex(columns=xgb_feature_names, fill_value=0).fillna(0).replace([np.inf, -np.inf], 0)
+        X_hitters_xgb = X_hitters_xgb.loc[:, ~X_hitters_xgb.columns.duplicated()]
+        for col in X_hitters_xgb.columns:
+            if not pd.api.types.is_numeric_dtype(X_hitters_xgb[col]):
+                X_hitters_xgb = X_hitters_xgb.drop(columns=[col])
+        X_hitters_xgb = X_hitters_xgb.astype(float)
+
         hitters_df['xgb_prob'] = best_xgb.predict_proba(X_hitters_xgb)[:, 1]
         hitters_df['xgb_hr_pred'] = (hitters_df['xgb_prob'] > threshold).astype(int)
 
@@ -630,9 +644,14 @@ with tab2:
 
         st.markdown("### XGBoost Performance (Auto-tuned)")
         try:
-            auc = roc_auc_score(y_test, best_xgb.predict_proba(X_test.fillna(0))[:, 1])
+            X_test_xgb = X_test.reindex(columns=xgb_feature_names, fill_value=0).fillna(0).replace([np.inf, -np.inf], 0)
+            X_test_xgb = X_test_xgb.loc[:, ~X_test_xgb.columns.duplicated()]
+            for col in X_test_xgb.columns:
+                if not pd.api.types.is_numeric_dtype(X_test_xgb[col]):
+                    X_test_xgb = X_test_xgb.drop(columns=[col])
+            X_test_xgb = X_test_xgb.astype(float)
+            auc = roc_auc_score(y_test, best_xgb.predict_proba(X_test_xgb)[:, 1])
             st.metric("XGBoost ROC-AUC", round(auc, 4))
-            st.code(classification_report(y_test, (best_xgb.predict_proba(X_test.fillna(0))[:, 1] > threshold).astype(int)), language='text')
+            st.code(classification_report(y_test, (best_xgb.predict_proba(X_test_xgb)[:, 1] > threshold).astype(int)), language='text')
         except Exception as e:
             st.warning(f"XGBoost report failed: {e}")
-        
