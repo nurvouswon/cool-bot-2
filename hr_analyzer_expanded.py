@@ -655,8 +655,9 @@ with tab2:
 
         st.markdown("### XGBoost Performance (Auto-tuned)")
         try:
+        # Safe reindex and deduplicate!
             X_test_xgb = X_test.reindex(columns=xgb_feature_names, fill_value=0)
-            X_test_xgb = X_test_xgb.loc[:, ~X_test_xgb.columns.duplicated()]  # Fix duplicate labels!
+            X_test_xgb = X_test_xgb.loc[:, ~X_test_xgb.columns.duplicated()]
             X_test_xgb = X_test_xgb.fillna(0).replace([np.inf, -np.inf], 0)
             for col in X_test_xgb.columns:
                 if not pd.api.types.is_numeric_dtype(X_test_xgb[col]):
