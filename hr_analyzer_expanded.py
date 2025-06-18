@@ -352,6 +352,7 @@ with tab1:
                 st.download_button("⬇️ Download Logistic Weights CSV", data=weights.to_csv(index=False), file_name="logit_weights.csv")
 
 def fix_arrow_types(df):
+    # Arrow/table compatibility for weird extension dtypes
     for col in df.columns:
         if pd.api.types.is_extension_array_dtype(df[col]):
             df.loc[:, col] = df[col].astype("float64")
@@ -378,7 +379,6 @@ with tab2:
     uploaded_matchups = st.file_uploader("Upload Matchups CSV", type="csv", key="mup")
     uploaded_logit = st.file_uploader("Upload Logistic Weights CSV", type="csv", key="lup")
 
-    # HR probability threshold slider (live, always shown after files)
     threshold = st.slider(
         "Set HR Probability Threshold",
         min_value=0.01, max_value=0.5, step=0.01, value=0.13,
@@ -552,23 +552,30 @@ with tab2:
 
         # Save all model scores & metadata for instant slider updates
         scored_df = hitters_df.copy()
-        # Predict Logit
+
+        # LOGIT prediction
         X_hitters_lr = scored_df.reindex(columns=selected_lr_features, fill_value=0).fillna(0).replace([np.inf, -np.inf], 0).astype(float)
         scored_df['logit_prob'] = best_logit.predict_proba(X_hitters_lr)[:, 1]
-        # Predict XGB
-        X_hitters_xgb = scored_df.reindex(columns=selected_xgb_features, fill_value=0).fillna(0).replace([np.inf, -np.inf], 0).astype(float)
+
+        # XGBOOST prediction: always use exactly the feature set and order as XGB model expects
+        xgb_feat_names = np.array(best_xgb.feature_names_in_)
+        X_hitters_xgb = scored_df.reindex(columns=xgb_feat_names, fill_value=0)
+        X_hitters_xgb = X_hitters_xgb.loc[:, ~X_hitters_xgb.columns.duplicated()]
+        X_hitters_xgb = X_hitters_xgb[xgb_feat_names]
+        X_hitters_xgb = X_hitters_xgb.fillna(0).replace([np.inf, -np.inf], 0).astype(float)
         scored_df['xgb_prob'] = best_xgb.predict_proba(X_hitters_xgb)[:, 1]
+
         # Save in session state for instant leaderboards/metrics
         st.session_state['scored_df'] = scored_df
         st.session_state['selected_lr_features'] = selected_lr_features
-        st.session_state['selected_xgb_features'] = selected_xgb_features
+        st.session_state['selected_xgb_features'] = xgb_feat_names.tolist()
         st.session_state['best_logit'] = best_logit
         st.session_state['best_xgb'] = best_xgb
         st.session_state['X_hitters_lr'] = X_hitters_lr
         st.session_state['X_hitters_xgb'] = X_hitters_xgb
         st.session_state['y_test'] = y_test
         st.session_state['X_test_lr'] = X_test_lr
-        st.session_state['X_test_xgb'] = X_test.reindex(columns=selected_xgb_features, fill_value=0).fillna(0).replace([np.inf, -np.inf], 0).astype(float)
+        st.session_state['X_test_xgb'] = X_test.reindex(columns=xgb_feat_names, fill_value=0).fillna(0).replace([np.inf, -np.inf], 0).astype(float)
         st.session_state['threshold'] = threshold
 
     # Always display outputs if available
