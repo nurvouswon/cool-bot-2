@@ -355,7 +355,7 @@ with tab2:
     st.header("Upload Event, Matchup, and Logistic Weights to Analyze & Score")
     st.markdown("All 3 uploads required! CSVs must match feature sets generated from Tab 1.")
 
-    # Set your fixed HR probability threshold here:
+    # Fixed HR probability threshold
     threshold = 0.13
 
     uploaded_events = st.file_uploader("Upload Event-Level Features CSV", type="csv", key="evup")
@@ -376,22 +376,29 @@ with tab2:
         matchups = pd.read_csv(uploaded_matchups)
         logit_weights = pd.read_csv(uploaded_logit)
 
-        # 2. Standardize MLB ID columns
-        progress.progress(10, "10%: Standardizing MLB ID columns...")
+        # 2. Clean and standardize MLB ID columns
+        progress.progress(10, "10%: Cleaning MLB ID columns...")
+
+        # Event file MLB ID assignment
         if 'batter_id' in event_df.columns:
-            event_df['mlb_id'] = event_df['batter_id'].astype(str)
+            event_df['mlb_id'] = event_df['batter_id'].astype(str).str.strip()
         elif 'batter' in event_df.columns:
-            event_df['mlb_id'] = event_df['batter'].astype(str)
+            event_df['mlb_id'] = event_df['batter'].astype(str).str.strip()
         else:
             st.error("Event-level data must have a 'batter_id' or 'batter' column for MLB ID.")
             st.stop()
+        # Matchup file MLB ID assignment
         if 'mlb id' in matchups.columns:
-            matchups['mlb_id'] = matchups['mlb id'].astype(str)
+            matchups['mlb_id'] = matchups['mlb id'].astype(str).str.strip()
         elif 'mlb_id' in matchups.columns:
-            matchups['mlb_id'] = matchups['mlb_id'].astype(str)
+            matchups['mlb_id'] = matchups['mlb_id'].astype(str).str.strip()
         else:
             st.error("Matchup file must have a 'mlb id' or 'mlb_id' column.")
             st.stop()
+
+        # Show debug: print sample of MLB IDs for both files
+        st.write("Sample event file mlb_id values:", event_df['mlb_id'].unique()[:10])
+        st.write("Sample matchup file mlb_id values:", matchups['mlb_id'].unique()[:10])
 
         # 3. Detect batting order and position columns
         progress.progress(15, "15%: Detecting batting order and position columns...")
@@ -414,16 +421,18 @@ with tab2:
             st.write("Matchup columns available:", list(matchups.columns))
             st.stop()
 
-        # 4. Merge Data
-        progress.progress(20, "20%: Merging event & matchup files...")
+        # 4. Merge Data on Cleaned MLB ID
+        progress.progress(20, "20%: Merging event & matchup files on MLB ID...")
         merged = event_df.merge(
             matchups[['mlb_id', 'player name', batting_order_col, position_col]],
             on='mlb_id', how='left'
         )
 
-        # Show debug sample and unique value counts
+        # Show debug: merged columns and first few rows
         st.write("Merged sample (first 10 rows):")
         st.dataframe(merged.head(10))
+
+        # Show unique values in batting order and position columns after merge
         st.write("Unique batting order values:", merged[batting_order_col].unique())
         st.write("Unique position values:", merged[position_col].unique())
 
@@ -438,7 +447,11 @@ with tab2:
         hitters_df = merged[hitters_mask].copy()
 
         if hitters_df.empty:
-            st.error("No hitter data available for leaderboard! (Check sample, unique values, and uploaded file formats above.)")
+            st.error(
+                "No hitter data available for leaderboard! "
+                "Check the above debug output—if you see no values for batting order/position, "
+                "fix your matchup file to match IDs and fill those columns."
+            )
             st.stop()
 
         hitters_df = hitters_df.loc[:, ~hitters_df.columns.duplicated()]
@@ -466,7 +479,7 @@ with tab2:
                 st.stop()
         hitters_df = hitters_df.loc[:, ~hitters_df.columns.duplicated()]
 
-        # 7. Feature selection (robust)
+        # 7. Feature selection
         progress.progress(50, "50%: Model feature selection...")
         all_model_features = [f for f in logit_weights['feature'].values if f in hitters_df.columns and pd.api.types.is_numeric_dtype(hitters_df[f])]
         if not all_model_features or 'hr_outcome' not in hitters_df.columns:
