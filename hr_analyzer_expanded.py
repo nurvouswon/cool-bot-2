@@ -8,6 +8,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.metrics import classification_report, roc_auc_score
 import xgboost as xgb
+import warnings
 
 # ========== CONTEXT MAPS ==========
 park_hr_rate_map = {
