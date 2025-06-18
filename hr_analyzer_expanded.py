@@ -563,7 +563,8 @@ with tab2:
         st.write("Any NaN in X_train_xgb?", X_train_xgb.isna().any().any())
         st.write("Any inf in X_train_xgb?", np.isinf(X_train_xgb.to_numpy()).any())
         st.write("y_train_xgb unique values:", np.unique(y_train_xgb))
-        st.write("y_train_xgb value counts:", dict(zip(*np.unique(y_train_xgb, return_counts=True))))
+        uniq, counts = np.unique(y_train_xgb, return_counts=True)
+        st.write("y_train_xgb value counts:", {int(k): int(v) for k, v in zip(uniq, counts)})
 
         xgb_grid = GridSearchCV(
             xgb.XGBClassifier(n_estimators=100, eval_metric='logloss', n_jobs=-1),
