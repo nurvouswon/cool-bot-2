@@ -553,6 +553,14 @@ with tab2:
         )
         X_train_xgb = X_train.fillna(0).replace([np.inf, -np.inf], 0)
         y_train_xgb = y_train.fillna(0)
+        # ==== Debug for XGBoost fit ====
+        st.write("X_train_xgb shape:", X_train_xgb.shape)
+        st.write("y_train_xgb shape:", y_train_xgb.shape)
+        st.write("X_train_xgb dtypes:", X_train_xgb.dtypes.value_counts())
+        st.write("Any NaN in X_train_xgb?", X_train_xgb.isna().any().any())
+        st.write("Any inf in X_train_xgb?", np.isinf(X_train_xgb.to_numpy()).any())
+        st.write("y_train_xgb unique values:", y_train_xgb.unique())
+        st.write("y_train_xgb value counts:", y_train_xgb.value_counts())
         xgb_grid.fit(X_train_xgb, y_train_xgb)
         best_xgb = xgb_grid.best_estimator_
         xgb_feature_names = best_xgb.feature_names_in_
