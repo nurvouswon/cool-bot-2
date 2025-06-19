@@ -430,19 +430,17 @@ with tab2:
         st.write("Merged sample (first 10 rows):")
         st.write(merged.head(10))
 
-        bo = merged['batting order'].astype(str).str.strip().str.lower()
-        pos = merged['position'].astype(str).str.strip().str.upper()
+        bo = merged['batting order']
+        pos = merged['position']
 
-        st.write("Unique batting order values:")
-        st.write(list(bo.unique()))
-        st.write("Unique position values:")
-        st.write(list(pos.unique()))
-        
-        try:
-            hitter_mask = (bo.str.isdigit()) & (bo.astype(int).between(1, 9)) & (~pos.isin(['SP', 'P', 'RP', 'LHP', 'RHP', '', 'NAN']))
-        except Exception as e:
-            st.error(f"Batting order filtering error: {e}")
-            st.stop()
+        bo_num = pd.to_numeric(bo, errors='coerce')
+        pos_str = pos.astype(str).str.strip().str.upper().replace('NAN', '')
+
+        hitter_mask = (
+            bo_num.between(1, 9)
+            & (~pos_str.isin(['SP', 'P', 'RP', 'LHP', 'RHP', '', np.nan]))
+        )
+
         hitters_df = merged[hitter_mask].copy()
         st.write(f"Rows passing hitter filter: {len(hitters_df)} of {len(merged)}")
         progress.progress(30, "40%: Finalizing feature selection and filling missing...")
