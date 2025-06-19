@@ -10,6 +10,7 @@ from sklearn.metrics import classification_report, roc_auc_score
 import xgboost as xgb
 import warnings
 import matplotlib.pyplot as plt
+import io
 from sklearn.feature_selection import RFECV
 
 # ========== CONTEXT MAPS ==========
@@ -372,9 +373,7 @@ def get_precision_at_k(df, prob_col, label_col, k=15):
     return hits, k, hits / k if k > 0 else 0
 
 with tab2:
-    import io
-
-st.header("Upload Event, Matchup, and Logistic Weights to Analyze & Score")
+    st.header("Upload Event, Matchup, and Logistic Weights to Analyze & Score")
 st.markdown("All 3 uploads required! CSVs must match feature sets generated from Tab 1.")
 
 uploaded_events = st.file_uploader("Upload Event-Level Features CSV", type="csv", key="evup")
@@ -397,6 +396,10 @@ def get_precision_at_k(df, prob_col, outcome_col, k):
     precision = num_hits / k if k > 0 else 0
     return int(num_hits), top_k, precision
 
+def clean_id(series):
+    """Clean mlb_id columns to string, strip .0, and whitespace."""
+    return series.astype(str).str.replace('.0', '', regex=False).str.strip()
+
 if analyze_btn:
     progress = st.progress(0, "Starting analysis...")
 
@@ -410,15 +413,14 @@ if analyze_btn:
     matchups = pd.read_csv(uploaded_matchups)
     logit_weights = pd.read_csv(uploaded_logit)
 
-    # ---- MLB ID Columns and Merge ----
-    progress.progress(10, "10%: Preparing MLB ID merge...")
-
+    # ---- MLB ID Cleaning and Merge ----
+    progress.progress(10, "10%: Cleaning IDs and preparing merge...")
     event_id_col = 'batter_id' if 'batter_id' in event_df.columns else 'batter'
     batting_order_col = 'batting order' if 'batting order' in matchups.columns else 'batting_order'
     position_col = 'position'
 
-    event_df[event_id_col] = event_df[event_id_col].astype(str)
-    matchups['mlb id'] = matchups['mlb id'].astype(str)
+    event_df[event_id_col] = clean_id(event_df[event_id_col])
+    matchups['mlb id'] = clean_id(matchups['mlb id'])
 
     progress.progress(15, "15%: Merging matchup columns...")
 
@@ -429,7 +431,7 @@ if analyze_btn:
         how='left'
     )
 
-    # Debug outputs for troubleshooting
+    # ---- Debug outputs ----
     st.markdown("### Debug Info")
     st.write("Sample event file mlb_id values:", event_df[event_id_col].head().tolist())
     st.write("Sample matchup file mlb_id values:", matchups['mlb id'].head().tolist())
@@ -438,13 +440,22 @@ if analyze_btn:
     st.write("Unique batting order values:", merged[batting_order_col].unique())
     st.write("Unique position values:", merged[position_col].unique())
 
+    # Check for all-NaN after merge (means bad ID cleaning or file mismatch)
+    if merged[batting_order_col].isnull().all() or merged[position_col].isnull().all():
+        st.error("After merging, all batting order or position values are null! Check mlb_id formatting in both files.")
+        st.write("Event file mlb_id (first 10):", event_df[event_id_col].head(10).tolist())
+        st.write("Matchup file mlb_id (first 10):", matchups['mlb id'].head(10).tolist())
+        st.stop()
+
     # ---- Vectorized Hitter Filtering ----
     progress.progress(30, "30%: Filtering for hitters (batting order 1-9, not pitchers)...")
     bo = merged[batting_order_col].astype(str).str.strip()
     pos = merged[position_col].astype(str).str.upper().str.strip()
+    bo_numeric = pd.to_numeric(bo, errors='coerce')  # NaN for bad/missing
+
     hitters_mask = (
-        bo.str.isdigit() & 
-        (bo.astype(int).between(1, 9)) &
+        bo.str.isdigit() &
+        (bo_numeric.between(1, 9)) &
         (~pos.isin(['SP', 'P', 'RP', 'LHP', 'RHP']))
     )
     hitters_df = merged[hitters_mask].copy()
@@ -494,7 +505,6 @@ if analyze_btn:
     # ---- Train/Test Split ----
     progress.progress(60, "60%: Train/test split and auto feature selection...")
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
-    st.session_state['y_test'] = y_test
 
     # ---- Logistic Regression with Grid Search ----
     progress.progress(70, "70%: Fitting Logistic Regression with GridSearch...")
@@ -508,8 +518,6 @@ if analyze_btn:
     )
     grid.fit(X_train, y_train)
     best_logit = grid.best_estimator_
-    st.session_state['best_logit'] = best_logit
-    st.session_state['X_test_lr'] = X_test
 
     hitters_df['logit_prob'] = best_logit.predict_proba(X.fillna(0))[:, 1]
     hitters_df['logit_hr_pred'] = (hitters_df['logit_prob'] > threshold).astype(int)
@@ -523,12 +531,10 @@ if analyze_btn:
         'colsample_bytree': [0.8, 0.9]
     }
 
-    # Only numeric features (remove categorical if present)
     X_xgb = X.select_dtypes(include=[np.number]).copy()
     X_train_xgb, X_test_xgb, y_train_xgb, y_test_xgb = train_test_split(
         X_xgb, y, test_size=0.2, random_state=42, stratify=y
     )
-    st.session_state['X_test_xgb'] = X_test_xgb
 
     non_numeric_cols = [col for col in X.columns if col not in X_xgb.columns]
     if non_numeric_cols:
@@ -541,7 +547,6 @@ if analyze_btn:
         )
         xgb_grid.fit(X_train_xgb, y_train_xgb)
         best_xgb = xgb_grid.best_estimator_
-        st.session_state['best_xgb'] = best_xgb
         hitters_df['xgb_prob'] = best_xgb.predict_proba(X_xgb.fillna(0))[:, 1]
         hitters_df['xgb_hr_pred'] = (hitters_df['xgb_prob'] > threshold).astype(int)
     except Exception as e:
@@ -598,11 +603,10 @@ if analyze_btn:
     # ---- Model Performance Reports ----
     st.markdown("### Logistic Regression Performance (Auto-tuned)")
     try:
-        y_test_lr = y_test
         y_pred_probs = best_logit.predict_proba(X_test)[:, 1]
         y_pred_labels = (y_pred_probs > threshold).astype(int)
-        st.write(f"Logistic Regression ROC-AUC\n\n{roc_auc_score(y_test_lr, y_pred_probs):.4f}")
-        st.code(classification_report(y_test_lr, y_pred_labels, zero_division=0), language='text')
+        st.write(f"Logistic Regression ROC-AUC\n\n{roc_auc_score(y_test, y_pred_probs):.4f}")
+        st.code(classification_report(y_test, y_pred_labels, zero_division=0), language='text')
     except Exception as e:
         st.warning(f"Logit model report failed: {e}")
 
