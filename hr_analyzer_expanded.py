@@ -355,6 +355,10 @@ def robust_numeric_columns(df):
             continue
     return cols
 
+def dedup_columns(df):
+    # Remove duplicate columns, keeping the first occurrence
+    return df.loc[:, ~df.columns.duplicated()]
+
 with tab2:
     st.subheader("2️⃣ Upload & Analyze")
     st.markdown(
@@ -383,7 +387,6 @@ with tab2:
     if analyze_btn:
         progress = st.progress(0, "10%: Loading data...")
 
-        # --- LOAD FILES ---
         if not uploaded_events or not uploaded_matchups or not uploaded_logit:
             st.warning("Please upload all 3 files to continue.")
             st.stop()
@@ -393,12 +396,10 @@ with tab2:
         logit_weights = pd.read_csv(uploaded_logit)
         progress.progress(10, "20%: Cleaning and merging data...")
 
-        # --- CLEAN AND HARMONIZE ID COLUMNS ---
         event_df['batter_id'] = event_df.get('batter_id', event_df.get('batter', None))
         event_df['batter_id'] = event_df['batter_id'].apply(clean_id)
         matchup_df['mlb id'] = matchup_df['mlb id'].apply(clean_id)
 
-        # --- MERGE AND DIAGNOSE MERGE ---
         merged = event_df.merge(
             matchup_df[['mlb id', 'player name', 'batting order', 'position']],
             left_on='batter_id', right_on='mlb id', how='left', indicator=True
@@ -409,7 +410,6 @@ with tab2:
 
         progress.progress(20, "30%: Filtering for hitters (batting order 1-9, not pitchers)...")
 
-        # --- ROBUST HITTER FILTERING BLOCK ---
         bo_raw = merged['batting order'].astype(str).str.strip().str.upper()
         pos = merged['position'].astype(str).str.strip().str.upper()
         bo_int = pd.to_numeric(bo_raw, errors='coerce')
@@ -428,16 +428,15 @@ with tab2:
             st.error("All merged rows missing batting order/position! Check your IDs for formatting issues and upload new files.")
             st.stop()
         hitters_df = merged[hitter_mask].copy()
+        hitters_df = dedup_columns(hitters_df)
         progress.progress(40, "40%: Filtered for hitters.")
 
-        # --- ASSIGN BATTER NAME FOR LEADERBOARD ---
         hitters_df['batter_name'] = (
             hitters_df['player name']
             .fillna(hitters_df.get('player_name'))
             .fillna(hitters_df['batter_id'])
         )
 
-        # --- HR OUTCOME (IF MISSING) ---
         if 'hr_outcome' not in hitters_df.columns:
             if 'events' in hitters_df.columns:
                 hitters_df['hr_outcome'] = hitters_df['events'].astype(str).str.lower().str.replace(' ', '').isin(['homerun', 'home_run']).astype(int)
@@ -446,9 +445,8 @@ with tab2:
                 st.stop()
 
         hitters_df = hitters_df.loc[:, ~hitters_df.columns.duplicated()]
-
-        # --- FEATURE SELECTION FOR MODELING ---
         hitters_df.columns = [str(col).strip().lower() for col in hitters_df.columns]
+
         if 'feature' in logit_weights.columns:
             model_features = [str(f).strip().lower() for f in logit_weights['feature'].values if str(f).strip().lower() in hitters_df.columns and pd.api.types.is_numeric_dtype(hitters_df[str(f).strip().lower()])]
         else:
@@ -458,12 +456,14 @@ with tab2:
             st.stop()
 
         X = hitters_df[model_features].fillna(0)
+        X = dedup_columns(X)
         y = hitters_df['hr_outcome'].astype(int)
 
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        X_train = dedup_columns(X_train)
+        X_test = dedup_columns(X_test)
         progress.progress(50, "50%: Logistic Regression feature selection...")
 
-        # --- Logistic Regression RFECV ---
         try:
             lr = LogisticRegression(max_iter=120, solver='liblinear')
             rfecv = RFECV(
@@ -480,7 +480,6 @@ with tab2:
             st.error(f"RFECV feature selection failed: {e}")
             st.stop()
 
-        # --- Hyperparameter tuning for LR ---
         progress.progress(60, "60%: Logistic Regression grid search...")
         try:
             grid = GridSearchCV(LogisticRegression(max_iter=120, solver='liblinear'), param_grid={'C': [0.1, 1, 10]}, cv=2, scoring='roc_auc', n_jobs=-1)
@@ -490,10 +489,11 @@ with tab2:
             st.error(f"Logistic regression fitting failed: {e}")
             st.stop()
 
-        # --- Score entire hitters_df (ORDERED AND TYPE-ALIGNED, bulletproof) ---
+        # Logistic scoring (with deduplication)
         if hasattr(best_logit, "feature_names_in_"):
             selected_feature_names = [str(f).strip().lower() for f in best_logit.feature_names_in_]
         X_hitters = hitters_df.reindex(columns=selected_feature_names)
+        X_hitters = dedup_columns(X_hitters)
         X_hitters = X_hitters.fillna(0).astype(float)
         actual = list(X_hitters.columns)
         expected = list(selected_feature_names)
@@ -511,15 +511,18 @@ with tab2:
         # ========== XGBoost Block ==========
         progress.progress(70, "70%: XGBoost feature prep...")
         X_xgb = X.copy()
+        X_xgb = dedup_columns(X_xgb)
         X_xgb = X_xgb.select_dtypes(include=[np.number]).copy()
         X_xgb = X_xgb.dropna(axis=1, how='all')
-        X_xgb = X_xgb.fillna(0)
+        # Drop any non-numeric or object/nested columns
         for col in list(X_xgb.columns):
-            try:
-                X_xgb[col] = X_xgb[col].astype(float)
-            except Exception:
-                st.warning(f"Column {col} cannot be cast to float and will be dropped from XGBoost input.")
+            if not (np.issubdtype(X_xgb[col].dtype, np.floating) or np.issubdtype(X_xgb[col].dtype, np.integer)):
+                st.warning(f"Column '{col}' in XGBoost input is not purely numeric (dtype={X_xgb[col].dtype}). Dropping this column.")
                 X_xgb = X_xgb.drop(columns=[col])
+            elif X_xgb[col].apply(lambda x: isinstance(x, pd.DataFrame)).any():
+                st.warning(f"Column '{col}' in XGBoost input contains nested DataFrames. Dropping this column.")
+                X_xgb = X_xgb.drop(columns=[col])
+        X_xgb = X_xgb.fillna(0).astype(float)
         y_xgb = y
 
         X_train_xgb, X_test_xgb, y_train_xgb, y_test_xgb = train_test_split(X_xgb, y_xgb, test_size=0.2, random_state=42)
@@ -591,7 +594,9 @@ with tab2:
                 logit_feature_order = [str(f).strip().lower() for f in best_logit.feature_names_in_]
             else:
                 logit_feature_order = [str(f).strip().lower() for f in selected_feature_names]
-            X_test_logit = X_test.reindex(columns=logit_feature_order).fillna(0).astype(float)
+            X_test_logit = X_test.reindex(columns=logit_feature_order)
+            X_test_logit = dedup_columns(X_test_logit)
+            X_test_logit = X_test_logit.fillna(0).astype(float)
             if list(X_test_logit.columns) != list(logit_feature_order):
                 st.warning(f"Logit test feature names mismatch!\nExpected: {logit_feature_order}\nActual: {list(X_test_logit.columns)}")
             else:
@@ -604,8 +609,9 @@ with tab2:
         st.markdown("### XGBoost Performance (Auto-tuned)")
         try:
             if best_xgb is not None:
-                # Always use only columns X_xgb had during training!
-                X_test_xgb_eval = X_test[X_xgb.columns].fillna(0).astype(float)
+                X_test_xgb_eval = X_test[X_xgb.columns]
+                X_test_xgb_eval = dedup_columns(X_test_xgb_eval)
+                X_test_xgb_eval = X_test_xgb_eval.fillna(0).astype(float)
                 auc = roc_auc_score(y_test_xgb, best_xgb.predict_proba(X_test_xgb_eval)[:, 1])
                 st.metric("XGBoost ROC-AUC", round(auc, 4))
                 st.code(classification_report(y_test_xgb, (best_xgb.predict_proba(X_test_xgb_eval)[:, 1] > threshold).astype(int)), language='text')
