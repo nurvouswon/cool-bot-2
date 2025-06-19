@@ -11,6 +11,7 @@ import xgboost as xgb
 import matplotlib.pyplot as plt
 from sklearn.feature_selection import RFECV
 import warnings
+import RFECV
 
 # ========== CONTEXT MAPS ==========
 park_hr_rate_map = {
@@ -477,7 +478,7 @@ with tab2:
                 n_jobs=-1
             )
             rfecv.fit(X_train, y_train)
-            selected_feature_names = X_train.columns[rfecv.support_]
+            selected_feature_names = list(X_train.columns[rfecv.support_])
         except Exception as e:
             st.error(f"RFECV feature selection failed: {e}")
             st.stop()
@@ -492,8 +493,8 @@ with tab2:
             st.error(f"Logistic regression fitting failed: {e}")
             st.stop()
 
-        # --- Score entire hitters_df
-        X_hitters = hitters_df[selected_feature_names].fillna(0)
+        # --- Score entire hitters_df (ORDERED AND TYPE-ALIGNED) ---
+        X_hitters = hitters_df.reindex(columns=selected_feature_names).fillna(0).astype(float)
         hitters_df['logit_prob'] = best_logit.predict_proba(X_hitters)[:, 1]
         hitters_df['logit_hr_pred'] = (hitters_df['logit_prob'] > threshold).astype(int)
 
