@@ -448,7 +448,6 @@ with tab2:
         hitters_df = hitters_df.loc[:, ~hitters_df.columns.duplicated()]
 
         # --- FEATURE SELECTION FOR MODELING ---
-        # Lowercase all columns for robust matching
         hitters_df.columns = [str(col).strip().lower() for col in hitters_df.columns]
         if 'feature' in logit_weights.columns:
             model_features = [str(f).strip().lower() for f in logit_weights['feature'].values if str(f).strip().lower() in hitters_df.columns and pd.api.types.is_numeric_dtype(hitters_df[str(f).strip().lower()])]
@@ -492,7 +491,6 @@ with tab2:
             st.stop()
 
         # --- Score entire hitters_df (ORDERED AND TYPE-ALIGNED, bulletproof) ---
-        # Use model's internal feature names if available (scikit-learn >= 1.0)
         if hasattr(best_logit, "feature_names_in_"):
             selected_feature_names = [str(f).strip().lower() for f in best_logit.feature_names_in_]
         X_hitters = hitters_df.reindex(columns=selected_feature_names)
@@ -510,21 +508,30 @@ with tab2:
         hitters_df['logit_prob'] = best_logit.predict_proba(X_hitters)[:, 1]
         hitters_df['logit_hr_pred'] = (hitters_df['logit_prob'] > threshold).astype(int)
 
+        # ========== XGBoost Block ==========
         progress.progress(70, "70%: XGBoost feature prep...")
         X_xgb = X.copy()
-        X_xgb = X_xgb.select_dtypes(include=[np.number]).astype(float)
+        X_xgb = X_xgb.select_dtypes(include=[np.number]).copy()
+        X_xgb = X_xgb.dropna(axis=1, how='all')
+        X_xgb = X_xgb.fillna(0)
+        for col in list(X_xgb.columns):
+            try:
+                X_xgb[col] = X_xgb[col].astype(float)
+            except Exception:
+                st.warning(f"Column {col} cannot be cast to float and will be dropped from XGBoost input.")
+                X_xgb = X_xgb.drop(columns=[col])
         y_xgb = y
 
         X_train_xgb, X_test_xgb, y_train_xgb, y_test_xgb = train_test_split(X_xgb, y_xgb, test_size=0.2, random_state=42)
         progress.progress(80, "80%: Fitting XGBoost...")
 
-        # XGBoost grid search
         xgb_params = {
             'max_depth': [3, 4],
             'learning_rate': [0.05, 0.1],
             'subsample': [0.8],
             'colsample_bytree': [0.8]
         }
+        best_xgb = None
         try:
             xgb_grid = GridSearchCV(
                 xgb.XGBClassifier(n_estimators=50, eval_metric='logloss', n_jobs=-1, use_label_encoder=False),
@@ -574,23 +581,35 @@ with tab2:
         st.markdown("#### Download Full Event-Level Data with Model Scores:")
         st.download_button("⬇️ Download Scored Event CSV", data=hitters_df.to_csv(index=False), file_name="event_level_scored.csv")
 
-        # --- Audit report (basic) ---
         st.markdown("#### Download Model Audit Report CSV (top 200 rows, all features and predictions):")
         st.download_button("⬇️ Download Audit Report", data=hitters_df.head(200).to_csv(index=False), file_name="audit_report_top200.csv")
 
         # --- Model Performance ---
         st.markdown("### Logistic Regression Performance (Auto-tuned)")
         try:
-            auc = roc_auc_score(y_test, best_logit.predict_proba(X_test[selected_feature_names])[:, 1])
-            st.metric("Logistic Regression ROC-AUC", round(auc, 4))
-            st.code(classification_report(y_test, (best_logit.predict_proba(X_test[selected_feature_names])[:, 1] > threshold).astype(int)), language='text')
+            if hasattr(best_logit, "feature_names_in_"):
+                logit_feature_order = [str(f).strip().lower() for f in best_logit.feature_names_in_]
+            else:
+                logit_feature_order = [str(f).strip().lower() for f in selected_feature_names]
+            X_test_logit = X_test.reindex(columns=logit_feature_order).fillna(0).astype(float)
+            if list(X_test_logit.columns) != list(logit_feature_order):
+                st.warning(f"Logit test feature names mismatch!\nExpected: {logit_feature_order}\nActual: {list(X_test_logit.columns)}")
+            else:
+                auc = roc_auc_score(y_test, best_logit.predict_proba(X_test_logit)[:, 1])
+                st.metric("Logistic Regression ROC-AUC", round(auc, 4))
+                st.code(classification_report(y_test, (best_logit.predict_proba(X_test_logit)[:, 1] > threshold).astype(int)), language='text')
         except Exception as e:
             st.warning(f"Logit model report failed: {e}")
 
         st.markdown("### XGBoost Performance (Auto-tuned)")
         try:
-            auc = roc_auc_score(y_test_xgb, best_xgb.predict_proba(X_test_xgb)[:, 1])
-            st.metric("XGBoost ROC-AUC", round(auc, 4))
-            st.code(classification_report(y_test_xgb, (best_xgb.predict_proba(X_test_xgb)[:, 1] > threshold).astype(int)), language='text')
+            if best_xgb is not None:
+                # Always use only columns X_xgb had during training!
+                X_test_xgb_eval = X_test[X_xgb.columns].fillna(0).astype(float)
+                auc = roc_auc_score(y_test_xgb, best_xgb.predict_proba(X_test_xgb_eval)[:, 1])
+                st.metric("XGBoost ROC-AUC", round(auc, 4))
+                st.code(classification_report(y_test_xgb, (best_xgb.predict_proba(X_test_xgb_eval)[:, 1] > threshold).astype(int)), language='text')
+            else:
+                st.warning("XGBoost report failed: best_xgb is not defined.")
         except Exception as e:
             st.warning(f"XGBoost report failed: {e}")
