@@ -373,16 +373,6 @@ def get_precision_at_k(df, prob_col, label_col, k=15):
     return hits, k, hits / k if k > 0 else 0
 
 with tab2:
-    import pandas as pd
-    import numpy as np
-    import streamlit as st
-
-    from sklearn.model_selection import train_test_split, GridSearchCV
-    from sklearn.linear_model import LogisticRegression
-    from sklearn.feature_selection import RFECV
-    from sklearn.metrics import classification_report, roc_auc_score
-    import xgboost as xgb
-
     progress = st.progress(0, "10%: Loading data...")
 
     uploaded_events = st.file_uploader("Upload Event-Level Features CSV", type="csv", key="evup")
@@ -440,20 +430,21 @@ with tab2:
         bo = merged['batting order'].astype(str).str.strip().str.upper()
         pos = merged['position'].fillna("").astype(str).str.strip().str.upper()
 
+        # --- SAFE FILTER: Only convert valid digits to int, ignore "NAN"/""
+        bo_is_digit = bo.str.isdigit()
+        bo_num = pd.to_numeric(bo.where(bo_is_digit), errors='coerce')  # non-digits become NaN
+        hitter_mask = (
+            bo_is_digit &
+            bo_num.between(1, 9) &
+            (~pos.isin(['SP', 'P', 'RP', 'LHP', 'RHP']))
+        )
+
         # Debug: print unique values
         st.write("Unique batting order values:")
         st.write(bo.unique().tolist())
         st.write("Unique position values:")
         st.write(pos.unique().tolist())
 
-        # --- Hitter mask: Batting order 1-9, not pitcher types, skip blank/NaN safely ---
-        hitter_mask = (
-            bo.str.isdigit() & 
-            bo.notna() &
-            bo.replace("NAN", np.nan).notna() &
-            bo.astype(int).between(1, 9) &
-            (~pos.isin(['SP', 'P', 'RP', 'LHP', 'RHP']))
-        )
         hitters_df = merged[hitter_mask].copy()
         st.write(f"Rows passing hitter filter: {len(hitters_df)} of {len(merged)}")
 
@@ -547,8 +538,6 @@ with tab2:
         progress.progress(100, "100%: Done! See results below.")
 
         # --- Leaderboards, Metrics, Download, Audit, etc ---
-        # (Insert your leaderboard/table/metric/audit/report code here as before.)
-        # For example, output the leaderboards:
         st.markdown("## Side-by-Side HR Probability Leaderboards (Top 15 Hitters)")
         col1, col2 = st.columns(2)
         with col1:
@@ -600,6 +589,7 @@ with tab2:
         # --- Show basic model metrics (optional) ---
         st.markdown("### Logistic Regression Performance (Auto-tuned)")
         try:
+            # Only keep selected features in test set that exist (robust)
             X_test_rfecv = X_test_xgb[selected_feature_names.intersection(X_test_xgb.columns)]
             auc = roc_auc_score(y_test_xgb, best_logit.predict_proba(X_test_rfecv)[:, 1])
             st.metric("Logistic Regression ROC-AUC", round(auc, 4))
