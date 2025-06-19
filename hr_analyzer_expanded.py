@@ -388,7 +388,7 @@ with tab2:
     if analyze_btn:
         progress = st.progress(0, "10%: Loading data...")
 
-        # Step 1: Read files
+        # --- Step 1: Read CSVs ---
         if not uploaded_events or not uploaded_matchups or not uploaded_logit:
             st.warning("Please upload all required CSVs before running analysis.")
             st.stop()
@@ -397,7 +397,7 @@ with tab2:
         logit_weights = pd.read_csv(uploaded_logit)
         progress.progress(10, "20%: Cleaning and merging data...")
 
-        # Step 2: Normalize MLB IDs
+        # --- Step 2: Normalize MLB IDs ---
         def clean_id(val):
             if pd.isnull(val):
                 return ""
@@ -412,7 +412,7 @@ with tab2:
 
         merge_key = 'batter_id' if 'batter_id' in event_df.columns else 'batter'
 
-        # Step 3: Merge event and matchup files
+        # --- Step 3: Merge event and matchup files ---
         merged = event_df.merge(
             matchups[['mlb id', 'player name', 'batting order', 'position']],
             left_on=merge_key,
@@ -421,7 +421,7 @@ with tab2:
         )
         progress.progress(20, "30%: Filtering for hitters (batting order 1-9, not pitchers)...")
 
-        # Debug info
+        # --- Debug info ---
         st.write("Debug Info")
         st.write("Sample event file mlb_id values:")
         st.write(list(event_df[merge_key].unique()[:5]))
@@ -430,11 +430,16 @@ with tab2:
         st.write("Merged sample (first 10 rows):")
         st.write(merged.head(10))
 
+        # --- Robust batting order filter ---
         bo = merged['batting order']
         pos = merged['position']
-
         bo_num = pd.to_numeric(bo, errors='coerce')
         pos_str = pos.astype(str).str.strip().str.upper().replace('NAN', '')
+
+        st.write("Unique batting order values:")
+        st.write(list(pd.Series(bo_num).unique()))
+        st.write("Unique position values:")
+        st.write(list(pd.Series(pos_str).unique()))
 
         hitter_mask = (
             bo_num.between(1, 9)
@@ -448,6 +453,7 @@ with tab2:
         hitters_df['batter_name'] = hitters_df['player name'].fillna(hitters_df.get('player_name')).fillna(hitters_df[merge_key].astype(str))
         hitters_df = hitters_df.loc[:, ~hitters_df.columns.duplicated()]
 
+        # --- Model features ---
         model_features = [f for f in logit_weights['feature'].values if f in hitters_df.columns and pd.api.types.is_numeric_dtype(hitters_df[f])]
         if not model_features or 'hr_outcome' not in hitters_df.columns:
             st.error("Model features or hr_outcome missing from event-level data.")
@@ -466,8 +472,9 @@ with tab2:
 
         progress.progress(60, "65%: Fitting XGBoost and scoring...")
 
+        # --- XGBoost requires all float columns only ---
         X_xgb = X.copy()
-        non_float_cols = [col for col in X_xgb.columns if not np.issubdtype(X_xgb[col].dtype, np.floating)]
+        non_float_cols = [col for col in X_xgb.columns if not np.issubdtype(X_xgb.dtypes[col], np.floating)]
         if non_float_cols:
             st.write("Dropping non-numeric columns from XGBoost features:", non_float_cols)
             X_xgb = X_xgb.drop(columns=non_float_cols)
@@ -479,7 +486,7 @@ with tab2:
 
         progress.progress(85, "100%: Done! See results below.")
 
-        # Leaderboards
+        # --- Leaderboards ---
         st.markdown("### HR Probability Leaderboards (Top 15)")
         col1, col2 = st.columns(2)
         with col1:
