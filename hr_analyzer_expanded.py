@@ -1,17 +1,12 @@
 import streamlit as st
+import streamlit as st
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
-from pybaseball import statcast
-import requests
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.metrics import classification_report, roc_auc_score
-import xgboost as xgb
-import matplotlib.pyplot as plt
 from sklearn.feature_selection import RFECV
-import warnings
-import RFECV
+import xgboost as xgb
 
 # ========== CONTEXT MAPS ==========
 park_hr_rate_map = {
