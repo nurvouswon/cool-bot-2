@@ -8,10 +8,9 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.metrics import classification_report, roc_auc_score
 import xgboost as xgb
-import warnings
 import matplotlib.pyplot as plt
-import io
 from sklearn.feature_selection import RFECV
+import warnings
 
 # ========== CONTEXT MAPS ==========
 park_hr_rate_map = {
@@ -114,15 +113,16 @@ def robust_numeric_columns(df):
 def dedup_columns(df):
     return df.loc[:, ~df.columns.duplicated()]
 
-# Advanced wind relative angle for pull/oppo
-def relative_wind_angle(row):
-    try:
-        if row['stand'] == 'L':
-            return (row['wind_dir_angle'] - 45) % 360  # Approximate pull for L
-        else:
-            return (row['wind_dir_angle'] - 135) % 360 # Approximate pull for R
-    except Exception:
-        return np.nan
+# --- Rolling pitch type HR, robust index grouping ---
+def rolling_pitch_type_hr(df, id_col, pitch_col, window):
+    out = np.full(len(df), np.nan)
+    df = df.reset_index(drop=True)
+    grouped = df.groupby([id_col, pitch_col])
+    for _, group_idx in grouped.groups.items():
+        group_idx = list(group_idx)
+        vals = df.loc[group_idx, 'hr_outcome'].shift(1).rolling(window, min_periods=1).mean()
+        out[group_idx] = vals
+    return out
 
 # ========== APP MAIN UI ==========
 
@@ -132,6 +132,7 @@ st.caption("Statcast + Physics + Weather + Park + Hand Splits + Pitch Type + Con
 
 tab1, tab2 = st.tabs(["1️⃣ Fetch & Feature Engineer Data", "2️⃣ Upload & Analyze"])
 
+# --- TAB 1: FETCH DATA AND FEATURE ENGINEER ---
 with tab1:
     st.header("Fetch Statcast Data & Generate Features")
     col1, col2 = st.columns(2)
@@ -142,34 +143,6 @@ with tab1:
 
     fetch_btn = st.button("Fetch Statcast, Feature Engineer, and Download", type="primary")
     progress = st.empty()
-
-    # === Robust, correct rolling pitch type HR calculation ===
-    def rolling_pitch_type_hr(df, id_col, pitch_col, window):
-        """Returns a Series with rolling HR rates for each (id, pitch_type) group, by position index."""
-        out = np.full(len(df), np.nan)
-        df = df.reset_index(drop=True)  # ensure RangeIndex from 0..N-1
-        grouped = df.groupby([id_col, pitch_col])
-        for _, group_idx in grouped.groups.items():
-            group_idx = list(group_idx)
-            vals = df.loc[group_idx, 'hr_outcome'].shift(1).rolling(window, min_periods=1).mean()
-            out[group_idx] = vals
-        return out
-        # Rolling HR per (id, pitch_type) group, using this index for merge
-        roll_result = (
-            df_temp.groupby([id_col, pitch_col])['hr_outcome']
-            .apply(lambda x: x.shift(1).rolling(window, min_periods=1).mean())
-            .reset_index()
-            .rename(columns={'hr_outcome': f'rolling_hr_{window}'})
-        )
-
-        # Add a join key: row index in original, id_col, pitch_col
-        merged = pd.merge(
-            df_temp, roll_result,
-            left_on=[id_col, pitch_col, '_row_idx'],
-            right_on=[id_col, pitch_col, 'level_0'],
-            how='left'
-        )
-        return merged[f'rolling_hr_{window}'].values
 
     if fetch_btn:
         progress.progress(5, "Fetching Statcast data...")
@@ -183,7 +156,7 @@ with tab1:
         if 'game_date' in df.columns:
             df['game_date'] = pd.to_datetime(df['game_date'])
 
-        # --- Filter events ---
+        # Filter events
         valid_events = [
             'single', 'double', 'triple', 'homerun', 'home_run', 'field_out',
             'force_out', 'grounded_into_double_play', 'fielders_choice_out',
@@ -192,14 +165,14 @@ with tab1:
         if 'events' in df.columns:
             df = df[df['events'].str.lower().str.replace(' ', '').isin(valid_events)].copy()
 
-        # --- HR outcome ---
+        # HR outcome
         if 'hr_outcome' not in df.columns:
             if 'events' in df.columns:
                 df['hr_outcome'] = df['events'].astype(str).str.lower().str.replace(' ', '').isin(['homerun', 'home_run']).astype(int)
             else:
                 df['hr_outcome'] = np.nan
 
-        # --- Park/team mapping ---
+        # Park/team mapping
         if 'home_team_code' in df.columns:
             df['home_team_code'] = df['home_team_code'].astype(str).str.upper()
         if 'park' not in df.columns:
@@ -217,7 +190,7 @@ with tab1:
         df['roof_status'] = df['park'].map(roof_status_map).fillna("open")
         progress.progress(20, "Park/team context merged")
 
-        # --- Weather ---
+        # Weather
         weather_features = ['temp', 'wind_mph', 'wind_dir', 'humidity', 'condition']
         if 'home_team_code' in df.columns and 'game_date' in df.columns:
             df['weather_key'] = df['home_team_code'] + "_" + df['game_date'].dt.strftime("%Y%m%d")
@@ -239,7 +212,7 @@ with tab1:
         df['wind_dir_sin'] = np.sin(np.deg2rad(df['wind_dir_angle']))
         df['wind_dir_cos'] = np.cos(np.deg2rad(df['wind_dir_angle']))
 
-        # --- Advanced Statcast metrics ---
+        # Advanced Statcast metrics
         if 'batter_id' not in df.columns and 'batter' in df.columns:
             df['batter_id'] = df['batter']
         if 'pitcher_id' not in df.columns and 'pitcher' in df.columns:
@@ -252,7 +225,7 @@ with tab1:
         if 'launch_angle' in df.columns and 'batter_id' in df.columns:
             df['sweet_spot_rate_20'] = df.groupby('batter_id')['launch_angle'].transform(lambda x: x.shift(1).between(8, 32).rolling(20, min_periods=5).mean())
 
-        # --- Directional wind context ---
+        # Directional wind context
         if 'stand' in df.columns and 'wind_dir_angle' in df.columns:
             def relative_wind_angle(row):
                 try:
@@ -266,18 +239,17 @@ with tab1:
             df['relative_wind_sin'] = np.sin(np.deg2rad(df['relative_wind_angle']))
             df['relative_wind_cos'] = np.cos(np.deg2rad(df['relative_wind_angle']))
 
-        # --- Rolling park/handedness HR rates (from your data) ---
+        # Rolling park/handedness HR rates
         if 'park' in df.columns and 'stand' in df.columns:
             for w in [7, 14, 30]:
                 col_name = f'park_hand_HR_{w}'
                 df[col_name] = df.groupby(['park', 'stand'])['hr_outcome'].transform(lambda x: x.shift(1).rolling(w, min_periods=5).mean())
 
-        # --- Rolling advanced splits, physics, pitch type, hand splits ---
+        # Rolling advanced splits, physics, pitch type, hand splits
         roll_windows = [3, 5, 7, 14]
         batter_cols = ['launch_speed', 'launch_angle', 'hit_distance_sc', 'woba_value',
                        'release_speed', 'release_spin_rate', 'spin_axis', 'pfx_x', 'pfx_z']
-        pitcher_cols = ['launch_speed', 'launch_angle', 'hit_distance_sc', 'woba_value',
-                        'release_speed', 'release_spin_rate', 'spin_axis', 'pfx_x', 'pfx_z']
+        pitcher_cols = ['launch_speed', 'launch_angle', 'hit_distance_sc', 'woba_value','release_speed', 'release_spin_rate', 'spin_axis', 'pfx_x', 'pfx_z']
 
         batter_feat_dict = {}
         pitcher_feat_dict = {}
@@ -298,7 +270,7 @@ with tab1:
                 df[f'B_vsP_hand_HR_{w}'] = df.groupby(['batter_id', 'p_throws'])['hr_outcome'].transform(lambda x: x.shift(1).rolling(w, min_periods=1).mean())
                 df[f'P_vsB_hand_HR_{w}'] = df.groupby(['pitcher_id', 'stand'])['hr_outcome'].transform(lambda x: x.shift(1).rolling(w, min_periods=1).mean())
 
-        # --- Rolling pitch type splits (robust fix) ---
+        # Rolling pitch type splits (robust fix)
         if 'pitch_type' in df.columns:
             for w in roll_windows:
                 df[f'B_pitchtype_HR_{w}'] = rolling_pitch_type_hr(df, 'batter_id', 'pitch_type', w)
@@ -319,11 +291,11 @@ with tab1:
         st.download_button("⬇️ Download Event-Level CSV", data=df.to_csv(index=False), file_name="event_level_hr_features.csv")
         progress.empty()
 
-        # === LOGISTIC WEIGHTS DOWNLOAD (train logit on this window for quick weights export) ===
+        # === LOGISTIC WEIGHTS DOWNLOAD (quick fit for weighting export) ===
         if 'hr_outcome' in df.columns and df['hr_outcome'].nunique() > 1:
             model_features = robust_numeric_columns(df)
             cat_context = [c for c in [
-                'park_hr_rate', 'park_altitude', 'temp', 'humidity', 'wind_mph', 
+                'park_hr_rate', 'park_altitude', 'temp', 'humidity', 'wind_mph',
                 'wind_dir_angle', 'wind_dir_sin', 'wind_dir_cos', 'relative_wind_angle', 'relative_wind_sin', 'relative_wind_cos'
             ] if c in df.columns]
             for c in df.columns:
@@ -331,7 +303,6 @@ with tab1:
                     cat_context.append(c)
             model_features = [c for c in model_features + cat_context if c != 'hr_outcome']
 
-            # Only drop NAs on model features, not all columns!
             feature_na_fracs = {c: df[c].isna().mean() for c in model_features}
             model_features = [c for c in model_features if feature_na_fracs[c] < 0.3]
             model_df = df.dropna(subset=model_features + ['hr_outcome'], how='any')
@@ -340,7 +311,6 @@ with tab1:
             else:
                 X = model_df[model_features].fillna(0)
                 y = model_df['hr_outcome'].astype(int)
-                # Quick grid search for regularization
                 grid = GridSearchCV(LogisticRegression(max_iter=200, solver='liblinear'), param_grid={'C': [0.1, 1, 10]}, cv=3, scoring='roc_auc')
                 grid.fit(X, y)
                 logit = grid.best_estimator_
@@ -351,6 +321,8 @@ with tab1:
                 })
                 st.dataframe(weights.sort_values('weight', ascending=False))
                 st.download_button("⬇️ Download Logistic Weights CSV", data=weights.to_csv(index=False), file_name="logit_weights.csv")
+
+# ========== TAB 2: UPLOAD & ANALYZE ==========
 
 def fix_arrow_types(df):
     # Arrow/table compatibility for weird extension dtypes
@@ -366,11 +338,6 @@ def fix_arrow_types(df):
                 except Exception:
                     pass
     return df
-
-def get_precision_at_k(df, prob_col, label_col, k=15):
-    topk = df.sort_values(prob_col, ascending=False).head(k)
-    hits = topk[label_col].sum()
-    return hits, k, hits / k if k > 0 else 0
 
 with tab2:
     st.subheader("2️⃣ Upload & Analyze")
@@ -494,7 +461,6 @@ with tab2:
 
         progress.progress(70, "70%: XGBoost feature prep...")
         X_xgb = X.copy()
-        # Only use numeric float columns for XGBoost
         float_cols = [col for col in X_xgb.columns if np.issubdtype(X_xgb[col].dtype, np.floating) or np.issubdtype(X_xgb[col].dtype, np.integer)]
         X_xgb = X_xgb[float_cols].astype(float)
         y_xgb = y
