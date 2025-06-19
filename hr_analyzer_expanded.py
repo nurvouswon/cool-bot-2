@@ -448,8 +448,10 @@ with tab2:
         hitters_df = hitters_df.loc[:, ~hitters_df.columns.duplicated()]
 
         # --- FEATURE SELECTION FOR MODELING ---
+        # Lowercase all columns for robust matching
+        hitters_df.columns = [str(col).strip().lower() for col in hitters_df.columns]
         if 'feature' in logit_weights.columns:
-            model_features = [f for f in logit_weights['feature'].values if f in hitters_df.columns and pd.api.types.is_numeric_dtype(hitters_df[f])]
+            model_features = [str(f).strip().lower() for f in logit_weights['feature'].values if str(f).strip().lower() in hitters_df.columns and pd.api.types.is_numeric_dtype(hitters_df[str(f).strip().lower()])]
         else:
             model_features = robust_numeric_columns(hitters_df)
         if not model_features or 'hr_outcome' not in hitters_df.columns:
@@ -474,7 +476,7 @@ with tab2:
                 n_jobs=-1
             )
             rfecv.fit(X_train, y_train)
-            selected_feature_names = [str(f).strip() for f in X_train.columns[rfecv.support_]]
+            selected_feature_names = [str(f).strip().lower() for f in X_train.columns[rfecv.support_]]
         except Exception as e:
             st.error(f"RFECV feature selection failed: {e}")
             st.stop()
@@ -490,13 +492,19 @@ with tab2:
             st.stop()
 
         # --- Score entire hitters_df (ORDERED AND TYPE-ALIGNED, bulletproof) ---
+        # Use model's internal feature names if available (scikit-learn >= 1.0)
+        if hasattr(best_logit, "feature_names_in_"):
+            selected_feature_names = [str(f).strip().lower() for f in best_logit.feature_names_in_]
         X_hitters = hitters_df.reindex(columns=selected_feature_names)
-        X_hitters.columns = [str(col).strip() for col in X_hitters.columns]
         X_hitters = X_hitters.fillna(0).astype(float)
-
-        # Defensive: halt with a readable error if the feature names mismatch
-        if list(X_hitters.columns) != list(selected_feature_names):
-            st.error(f"Feature names mismatch!\nExpected: {selected_feature_names}\nActual: {list(X_hitters.columns)}")
+        actual = list(X_hitters.columns)
+        expected = list(selected_feature_names)
+        if expected != actual:
+            st.error(f"""
+            🚨 Feature names mismatch!
+            \nExpected (model was trained with):\n{expected}
+            \nActual (provided to predict_proba):\n{actual}
+            """)
             st.stop()
 
         hitters_df['logit_prob'] = best_logit.predict_proba(X_hitters)[:, 1]
