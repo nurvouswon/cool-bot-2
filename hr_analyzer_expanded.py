@@ -512,8 +512,7 @@ with tab2:
 
         progress.progress(70, "70%: XGBoost feature prep...")
         X_xgb = X.copy()
-        float_cols = [col for col in X_xgb.columns if np.issubdtype(X_xgb[col].dtype, np.floating) or np.issubdtype(X_xgb[col].dtype, np.integer)]
-        X_xgb = X_xgb[float_cols].astype(float)
+        X_xgb = X_xgb.select_dtypes(include=[np.number]).astype(float)
         y_xgb = y
 
         X_train_xgb, X_test_xgb, y_train_xgb, y_test_xgb = train_test_split(X_xgb, y_xgb, test_size=0.2, random_state=42)
