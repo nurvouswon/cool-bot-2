@@ -474,7 +474,7 @@ with tab2:
                 n_jobs=-1
             )
             rfecv.fit(X_train, y_train)
-            selected_feature_names = list(X_train.columns[rfecv.support_])
+            selected_feature_names = [str(f).strip() for f in X_train.columns[rfecv.support_]]
         except Exception as e:
             st.error(f"RFECV feature selection failed: {e}")
             st.stop()
@@ -489,8 +489,16 @@ with tab2:
             st.error(f"Logistic regression fitting failed: {e}")
             st.stop()
 
-        # --- Score entire hitters_df (ORDERED AND TYPE-ALIGNED) ---
-        X_hitters = hitters_df.reindex(columns=selected_feature_names).fillna(0).astype(float)
+        # --- Score entire hitters_df (ORDERED AND TYPE-ALIGNED, bulletproof) ---
+        X_hitters = hitters_df.reindex(columns=selected_feature_names)
+        X_hitters.columns = [str(col).strip() for col in X_hitters.columns]
+        X_hitters = X_hitters.fillna(0).astype(float)
+
+        # Defensive: halt with a readable error if the feature names mismatch
+        if list(X_hitters.columns) != list(selected_feature_names):
+            st.error(f"Feature names mismatch!\nExpected: {selected_feature_names}\nActual: {list(X_hitters.columns)}")
+            st.stop()
+
         hitters_df['logit_prob'] = best_logit.predict_proba(X_hitters)[:, 1]
         hitters_df['logit_hr_pred'] = (hitters_df['logit_prob'] > threshold).astype(int)
 
