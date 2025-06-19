@@ -339,9 +339,34 @@ def fix_arrow_types(df):
                     pass
     return df
 
+def clean_id(x):
+    """Standardizes IDs for merging: handles str/float/int/.0/leading/trailing whitespace."""
+    try:
+        if pd.isna(x): return None
+        return str(int(float(str(x).strip())))
+    except Exception:
+        return str(x).strip()
+
+def robust_numeric_columns(df):
+    cols = []
+    for c in df.columns:
+        try:
+            dt = pd.api.types.pandas_dtype(df[c].dtype)
+            if (np.issubdtype(dt, np.number) or pd.api.types.is_numeric_dtype(df[c])) and not pd.api.types.is_bool_dtype(df[c]) and df[c].nunique() > 1:
+                cols.append(c)
+        except Exception:
+            continue
+    return cols
+
 with tab2:
     st.subheader("2️⃣ Upload & Analyze")
-    st.markdown("Upload event-level, matchup, and logistic weights CSVs. Use the threshold slider to adjust HR probability cutoff for predictions. Audit report downloads available below.")
+    st.markdown(
+        """
+        Upload event-level, matchup, and logistic weights CSVs.  
+        Use the threshold slider to adjust HR probability cutoff for predictions.  
+        Audit report downloads available below.
+        """
+    )
 
     uploaded_events = st.file_uploader("Upload Event-Level Features CSV", type="csv", key="evup")
     uploaded_matchups = st.file_uploader("Upload Matchups CSV", type="csv", key="mup")
@@ -361,6 +386,7 @@ with tab2:
     if analyze_btn:
         progress = st.progress(0, "10%: Loading data...")
 
+        # --- LOAD FILES ---
         if not uploaded_events or not uploaded_matchups or not uploaded_logit:
             st.warning("Please upload all 3 files to continue.")
             st.stop()
@@ -370,50 +396,51 @@ with tab2:
         logit_weights = pd.read_csv(uploaded_logit)
         progress.progress(10, "20%: Cleaning and merging data...")
 
-        # Clean ID columns
-        for col in ['mlb id', 'batter_id', 'batter']:
-            if col in event_df.columns:
-                event_df[col] = event_df[col].astype(str).str.replace('.0$', '', regex=True)
-        if 'mlb id' in matchup_df.columns:
-            matchup_df['mlb id'] = matchup_df['mlb id'].astype(str).str.replace('.0$', '', regex=True)
+        # --- CLEAN AND HARMONIZE ID COLUMNS ---
+        event_df['batter_id'] = event_df.get('batter_id', event_df.get('batter', None))
+        event_df['batter_id'] = event_df['batter_id'].apply(clean_id)
+        matchup_df['mlb id'] = matchup_df['mlb id'].apply(clean_id)
 
-        merge_col_event = 'batter_id' if 'batter_id' in event_df.columns else 'batter'
+        # --- MERGE AND DIAGNOSE MERGE ---
         merged = event_df.merge(
             matchup_df[['mlb id', 'player name', 'batting order', 'position']],
-            left_on=merge_col_event, right_on='mlb id', how='left'
+            left_on='batter_id', right_on='mlb id', how='left', indicator=True
         )
+        st.write("Merge results:", merged['_merge'].value_counts())
+        st.write(f"Total merged rows: {len(merged)}")
+        st.write("Rows missing matchup:", (merged['_merge'] == 'left_only').sum())
 
         progress.progress(20, "30%: Filtering for hitters (batting order 1-9, not pitchers)...")
 
-        # --- Robust Hitter Filtering Block ---
+        # --- ROBUST HITTER FILTERING BLOCK ---
         bo_raw = merged['batting order'].astype(str).str.strip().str.upper()
         pos = merged['position'].astype(str).str.strip().str.upper()
         bo_int = pd.to_numeric(bo_raw, errors='coerce')
 
-        st.write("Unique batting order values:")
-        st.write(sorted(bo_raw.unique().tolist()))
-        st.write("Unique position values:")
-        st.write(sorted(pos.unique().tolist()))
+        st.write("Unique batting order values:", sorted(bo_raw.unique()))
+        st.write("Unique position values:", sorted(pos.unique()))
 
         hitter_mask = (
             bo_int.between(1, 9) &
             (~pos.fillna("").isin(['SP', 'P', 'RP', 'LHP', 'RHP']))
         )
-        st.write(f"Rows passing hitter filter: {hitter_mask.sum()} of {len(merged)}")
-        if hitter_mask.sum() == 0:
+
+        n_pass = hitter_mask.sum()
+        st.write(f"Rows passing hitter filter: {n_pass} of {len(merged)} ({n_pass/len(merged)*100:.1f}%)")
+        if n_pass == 0:
             st.error("All merged rows missing batting order/position! Check your IDs for formatting issues and upload new files.")
             st.stop()
         hitters_df = merged[hitter_mask].copy()
         progress.progress(40, "40%: Filtered for hitters.")
 
-        # --- Assign batter name for leaderboard ---
+        # --- ASSIGN BATTER NAME FOR LEADERBOARD ---
         hitters_df['batter_name'] = (
             hitters_df['player name']
             .fillna(hitters_df.get('player_name'))
-            .fillna(hitters_df[merge_col_event])
+            .fillna(hitters_df['batter_id'])
         )
 
-        # --- HR Outcome (if missing) ---
+        # --- HR OUTCOME (IF MISSING) ---
         if 'hr_outcome' not in hitters_df.columns:
             if 'events' in hitters_df.columns:
                 hitters_df['hr_outcome'] = hitters_df['events'].astype(str).str.lower().str.replace(' ', '').isin(['homerun', 'home_run']).astype(int)
@@ -423,36 +450,47 @@ with tab2:
 
         hitters_df = hitters_df.loc[:, ~hitters_df.columns.duplicated()]
 
-        # --- Feature selection for modeling ---
-        all_model_features = [f for f in logit_weights['feature'].values if f in hitters_df.columns and pd.api.types.is_numeric_dtype(hitters_df[f])]
-        if not all_model_features or 'hr_outcome' not in hitters_df.columns:
+        # --- FEATURE SELECTION FOR MODELING ---
+        if 'feature' in logit_weights.columns:
+            model_features = [f for f in logit_weights['feature'].values if f in hitters_df.columns and pd.api.types.is_numeric_dtype(hitters_df[f])]
+        else:
+            model_features = robust_numeric_columns(hitters_df)
+        if not model_features or 'hr_outcome' not in hitters_df.columns:
             st.error("Model features or hr_outcome missing from event-level data.")
             st.stop()
 
-        X = hitters_df[all_model_features].fillna(0)
+        X = hitters_df[model_features].fillna(0)
         y = hitters_df['hr_outcome'].astype(int)
 
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
         progress.progress(50, "50%: Logistic Regression feature selection...")
 
         # --- Logistic Regression RFECV ---
-        lr = LogisticRegression(max_iter=120, solver='liblinear')
-        rfecv = RFECV(
-            estimator=lr,
-            step=3,
-            cv=2,
-            min_features_to_select=max(5, int(0.1*X_train.shape[1])),
-            scoring='roc_auc',
-            n_jobs=-1
-        )
-        rfecv.fit(X_train, y_train)
-        selected_feature_names = X_train.columns[rfecv.support_]
+        try:
+            lr = LogisticRegression(max_iter=120, solver='liblinear')
+            rfecv = RFECV(
+                estimator=lr,
+                step=3,
+                cv=2,
+                min_features_to_select=max(5, int(0.1*X_train.shape[1])),
+                scoring='roc_auc',
+                n_jobs=-1
+            )
+            rfecv.fit(X_train, y_train)
+            selected_feature_names = X_train.columns[rfecv.support_]
+        except Exception as e:
+            st.error(f"RFECV feature selection failed: {e}")
+            st.stop()
 
         # --- Hyperparameter tuning for LR ---
         progress.progress(60, "60%: Logistic Regression grid search...")
-        grid = GridSearchCV(LogisticRegression(max_iter=120, solver='liblinear'), param_grid={'C': [0.1, 1, 10]}, cv=2, scoring='roc_auc', n_jobs=-1)
-        grid.fit(X_train[selected_feature_names], y_train)
-        best_logit = grid.best_estimator_
+        try:
+            grid = GridSearchCV(LogisticRegression(max_iter=120, solver='liblinear'), param_grid={'C': [0.1, 1, 10]}, cv=2, scoring='roc_auc', n_jobs=-1)
+            grid.fit(X_train[selected_feature_names], y_train)
+            best_logit = grid.best_estimator_
+        except Exception as e:
+            st.error(f"Logistic regression fitting failed: {e}")
+            st.stop()
 
         # --- Score entire hitters_df
         X_hitters = hitters_df[selected_feature_names].fillna(0)
