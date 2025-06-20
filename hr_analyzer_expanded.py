@@ -476,9 +476,10 @@ if generate_btn:
     st.success(f"Created today's event-level file: {len(today_batters)} batters.")
     st.download_button(
         "⬇️ Download Today's Event-Level CSV (for Prediction App)",
-        data=today_batters[out_cols].to_csv(index=False),
-        file_name=f"event_level_today_{datetime.now().strftime('%Y_%m_%d')}.csv"
-    )
+        data=today_batters.to_csv(index=False),
+        file_name=f"event_level_today_{datetime.now().strftime('%Y_%m_%d')}.csv",
+        key="download_today_event_level_csv"
+        )
 # ==== UPGRADE: ROLLING FEATURE ALIGNMENT & DIAGNOSTICS ====
 def get_all_stat_rolling_cols():
     # This is the full superset of stat/rolling columns seen in your historical event-level CSVs
