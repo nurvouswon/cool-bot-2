@@ -441,10 +441,6 @@ with tab1:
             merged = merged.reindex(columns=hist_cols + extra_cols)
 
         merged_out_cols = [c for c in merged.columns if not c.startswith("unnamed")]
-        st.success(f"Created today's event-level file: {len(merged)} batters. All rolling/stat columns now present (where available).") = [c for c in merged.columns if c not in hist_cols]
-            merged = merged.reindex(columns=hist_cols + extra_cols)
-
-        merged_out_cols = [c for c in merged.columns if not c.startswith("unnamed")]
         st.success(f"Created today's event-level file: {len(merged)} batters. All rolling/stat columns now present (where available).")
         st.download_button(
             "⬇️ Download Today's Event-Level CSV (for Prediction App, with merged features)",
