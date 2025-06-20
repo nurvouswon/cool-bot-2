@@ -61,6 +61,28 @@ mlb_team_city_map = {
 }
 
 # ---------- UTILITY FUNCTIONS ----------
+def get_all_stat_rolling_cols():
+    roll_base = ['launch_speed', 'launch_angle', 'hit_distance_sc', 'woba_value',
+                 'release_speed', 'release_spin_rate', 'spin_axis', 'pfx_x', 'pfx_z']
+    windows = [3, 5, 7, 14]
+    cols = []
+    for prefix in ['B_', 'P_']:
+        for base in roll_base:
+            for w in windows:
+                cols.append(f"{prefix}{base}_{w}")
+    # Handedness, pitchtype HR rolling windows
+    for typ in ['B_vsP_hand_HR_', 'P_vsB_hand_HR_', 'B_pitchtype_HR_', 'P_pitchtype_HR_']:
+        for w in windows:
+            cols.append(f"{typ}{w}")
+    # Park/stand splits
+    for w in [7, 14, 30]:
+        cols.append(f"park_hand_HR_{w}")
+    # Other
+    cols += [
+        'hard_hit_rate_20', 'sweet_spot_rate_20', 'relative_wind_angle',
+        'relative_wind_sin', 'relative_wind_cos'
+    ]
+    return cols
 def wind_dir_to_angle(wind_dir):
     directions = {
         'N': 0, 'NNE': 22.5, 'NE': 45, 'ENE': 67.5, 'E': 90, 'ESE': 112.5,
