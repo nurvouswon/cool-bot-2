@@ -61,8 +61,18 @@ mlb_team_city_map = {
 
 # ---------- UTILITY FUNCTIONS ----------
 def wind_dir_to_angle(wind_dir):
-    # (same as before)
-    ...
+    directions = {
+        'N': 0, 'NNE': 22.5, 'NE': 45, 'ENE': 67.5, 'E': 90, 'ESE': 112.5,
+        'SE': 135, 'SSE': 157.5, 'S': 180, 'SSW': 202.5, 'SW': 225, 'WSW': 247.5,
+        'W': 270, 'WNW': 292.5, 'NW': 315, 'NNW': 337.5
+    }
+    if pd.isna(wind_dir):
+        return np.nan
+    wind_dir = str(wind_dir).upper()
+    for d, angle in directions.items():
+        if d in wind_dir:
+            return angle
+    return np.nan
 
 @st.cache_data(show_spinner=False)
 def get_weather(city, date):
