@@ -406,6 +406,78 @@ def robust_numeric_columns(df):
 def dedup_columns(df):
     # Remove duplicate columns, keeping the first occurrence
     return df.loc[:, ~df.columns.duplicated()]
+# --- (NEW) Generate One-Row-Per-Batter Event-Level CSV for Today's Slate ---
+
+st.markdown("---")
+st.subheader("🔮 Generate Today's Batter Event-Level CSV (one row per batter, for live HR picks)")
+
+uploaded_today_lineups = st.file_uploader(
+    "Upload Today's Lineups/Matchups CSV (Required for One-Row-Per-Batter Export)",
+    type="csv", key="todaylineup"
+)
+generate_btn = st.button("Generate One-Row-Per-Batter Event-Level CSV")
+
+if generate_btn:
+    if not uploaded_today_lineups:
+        st.warning("Please upload a matchups/lineups CSV for today (with columns like 'team code', 'player name', etc).")
+        st.stop()
+    today_lineups = pd.read_csv(uploaded_today_lineups)
+    # Clean/normalize player and team columns
+    lineup_cols = [c.strip().lower().replace(" ", "_") for c in today_lineups.columns]
+    today_lineups.columns = lineup_cols
+
+    # Basic checks
+    required_cols = {'player_name', 'mlb_id', 'team_code', 'game_date'}
+    if not required_cols.issubset(set(today_lineups.columns)):
+        st.error(f"Missing columns: {required_cols - set(today_lineups.columns)}")
+        st.stop()
+    # Drop duplicate players (shouldn't happen but just in case)
+    today_batters = today_lineups.drop_duplicates(subset=['mlb_id'])
+
+    # Add context columns (stadium, city, time, park, etc)
+    today_batters['park'] = today_batters.get('stadium', today_batters.get('team_code', '')).str.lower().str.replace(' ', '_')
+    today_batters['city'] = today_batters.get('city', '')
+    today_batters['game_date'] = pd.to_datetime(today_batters['game_date']).dt.strftime("%Y-%m-%d")
+    today_batters['park_hr_rate'] = today_batters['park'].map(park_hr_rate_map).fillna(1.0)
+    today_batters['park_altitude'] = today_batters['park'].map(park_altitude_map).fillna(0)
+    today_batters['roof_status'] = today_batters['park'].map(roof_status_map).fillna("open")
+    today_batters['batter_id'] = today_batters['mlb_id'].astype(str)
+    # Weather API or static weather values
+    for feat in ['temp', 'wind_mph', 'wind_dir', 'humidity', 'condition']:
+        today_batters[feat] = None
+    unique_keys = today_batters['city'] + "_" + today_batters['game_date']
+    for key in unique_keys.unique():
+        city, date = key.split("_", 1)
+        weather = get_weather(city, date)
+        idx = (today_batters['city'] + "_" + today_batters['game_date']) == key
+        for feat in ['temp', 'wind_mph', 'wind_dir', 'humidity', 'condition']:
+            today_batters.loc[idx, feat] = weather[feat]
+    today_batters['wind_dir_angle'] = today_batters['wind_dir'].apply(wind_dir_to_angle)
+    today_batters['wind_dir_sin'] = np.sin(np.deg2rad(today_batters['wind_dir_angle']))
+    today_batters['wind_dir_cos'] = np.cos(np.deg2rad(today_batters['wind_dir_angle']))
+
+    # Fill with zeros/nans for advanced rolling features (will be computed during prediction, not in this single-row file)
+    rolling_fill_cols = [
+        'hard_hit_rate_20', 'sweet_spot_rate_20', 'relative_wind_angle', 'relative_wind_sin', 'relative_wind_cos',
+        'park_hand_HR_7', 'park_hand_HR_14', 'park_hand_HR_30'
+    ]
+    for col in rolling_fill_cols:
+        today_batters[col] = np.nan
+
+    # Nulls for all stats/rolling window features (the scoring app will match/join using batter_id for stats history)
+    for c in today_batters.columns:
+        if "b_" in c or "p_" in c:
+            today_batters[c] = np.nan
+
+    # Output: save/download CSV, one row per batter
+    out_cols = [c for c in today_batters.columns if not c.startswith("unnamed")]
+    st.dataframe(today_batters[out_cols].head(25))
+    st.success(f"Created today's event-level file: {len(today_batters)} batters.")
+    st.download_button(
+        "⬇️ Download Today's Event-Level CSV (for Prediction App)",
+        data=today_batters[out_cols].to_csv(index=False),
+        file_name=f"event_level_today_{datetime.now().strftime('%Y_%m_%d')}.csv"
+    )
 
 with tab2:
     st.subheader("2️⃣ Upload & Analyze")
