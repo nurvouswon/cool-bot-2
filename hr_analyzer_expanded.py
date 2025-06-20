@@ -548,6 +548,88 @@ if generate_btn:
     st.markdown("#### Weather/context columns in output:")
     context_cols = ['city', 'park', 'stadium', 'time', 'temp', 'wind_mph', 'wind_dir', 'humidity', 'condition']
     st.dataframe(today_batters[context_cols].drop_duplicates())
+    st.markdown("---")
+    st.subheader("🔄 Merge Rolling/Stat Features Into Today's Batter CSV")
+
+    uploaded_today_lineups_v2 = st.file_uploader(
+        "Upload Today's Lineups/Matchups CSV (again, for full feature merge)", type="csv", key="todaylineup_v2"
+    )
+    uploaded_sample_hist = st.file_uploader(
+        "Upload Sample Historical Event-Level CSV (for diagnostics/column order)", type="csv", key="samplehist"
+    )
+
+    merge_btn = st.button("🔗 Generate Today's Batter Event-Level CSV (with merged rolling/stat features)")
+
+    if merge_btn:
+        if not uploaded_today_lineups_v2 or not uploaded_sample_hist:
+            st.warning("Please upload BOTH today’s lineup/matchups and a sample historical event-level CSV.")
+            st.stop()
+        # Load data
+        today_lineups = pd.read_csv(uploaded_today_lineups_v2)
+        hist = pd.read_csv(uploaded_sample_hist)
+        st.info(f"Loaded {len(today_lineups)} batters for today, {len(hist)} historical batted ball events.")
+
+        # Normalize col names
+        tcols = [c.strip().lower().replace(" ", "_") for c in today_lineups.columns]
+        today_lineups.columns = tcols
+
+        # Key for join is MLB ID (batter_id, mlb_id, etc)
+        id_col = None
+        if "mlb_id" in today_lineups.columns:
+            id_col = "mlb_id"
+        elif "batter_id" in today_lineups.columns:
+            id_col = "batter_id"
+        else:
+            st.error("Could not find mlb_id/batter_id in lineups file.")
+            st.stop()
+
+        # Key for hist = 'batter_id'
+        if 'batter_id' not in hist.columns:
+            st.error("No 'batter_id' column in historical CSV.")
+            st.stop()
+        # Normalize for join
+        today_lineups[id_col] = today_lineups[id_col].astype(str)
+        hist['batter_id'] = hist['batter_id'].astype(str)
+
+        # --- Grab latest features for each batter
+        # Only use historical rows with a non-missing game_date and rolling/stat features
+        if 'game_date' in hist.columns:
+            hist['game_date'] = pd.to_datetime(hist['game_date'], errors='coerce')
+        rolling_cols = [c for c in hist.columns if (
+            c.startswith('B_') or c.startswith('P_') or 
+            c.startswith('park_hand_HR_') or 
+            c.endswith('_rate_20') or 
+            c.startswith('B_vsP_hand_HR_') or 
+            c.startswith('P_vsB_hand_HR_') or 
+            c.startswith('B_pitchtype_HR_') or 
+            c.startswith('P_pitchtype_HR_')
+        )]
+        # plus the handful of others you want (add to this list if you want more)
+
+        # Get latest event per batter by date
+        last_feats = hist.sort_values('game_date').groupby('batter_id').tail(1)
+        # Select just the rolling/stat columns and batter_id
+        last_feats = last_feats[['batter_id'] + rolling_cols].copy()
+        st.info(f"Found {len(last_feats)} batters with latest rolling/stat features.")
+
+        # Merge to today's lineups
+        merged = today_lineups.merge(last_feats, left_on=id_col, right_on='batter_id', how='left', suffixes=('', '_roll'))
+
+        # Diagnostics
+        st.write("Sample of Today's One-Row-Per-Batter DataFrame (with features):")
+        st.dataframe(merged.head(10))
+        null_report = merged[rolling_cols].isna().sum().sort_values(ascending=False)
+        st.write("Null report for rolling/stat features in output:")
+        st.write(null_report[null_report > 0])
+
+        # Download merged output
+        merged_out_cols = [c for c in merged.columns if not c.startswith("unnamed")]
+        st.success(f"Created today's event-level file: {len(merged)} batters. All rolling/stat columns now present (where available).")
+        st.download_button(
+            "⬇️ Download Today's Event-Level CSV (for Prediction App, with merged features)",
+            data=merged[merged_out_cols].to_csv(index=False),
+            file_name=f"event_level_today_full_{datetime.now().strftime('%Y_%m_%d')}.csv"
+        )
 
 with tab2:
     st.subheader("2️⃣ Upload & Analyze")
