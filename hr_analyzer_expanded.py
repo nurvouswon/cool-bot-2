@@ -514,7 +514,6 @@ with tab2:
         X_xgb = dedup_columns(X_xgb)
         X_xgb = X_xgb.select_dtypes(include=[np.number]).copy()
         X_xgb = X_xgb.dropna(axis=1, how='all')
-        # Drop any non-numeric or object/nested columns
         for col in list(X_xgb.columns):
             if not (np.issubdtype(X_xgb[col].dtype, np.floating) or np.issubdtype(X_xgb[col].dtype, np.integer)):
                 st.warning(f"Column '{col}' in XGBoost input is not purely numeric (dtype={X_xgb[col].dtype}). Dropping this column.")
@@ -583,47 +582,24 @@ with tab2:
 
         st.markdown("#### Download Full Event-Level Data with Model Scores:")
         st.download_button("⬇️ Download Scored Event CSV", data=hitters_df.to_csv(index=False), file_name="event_level_scored.csv")
-        st.markdown("#### Blind HR outcomes for recent dates to generate future-unbiased predictions?")
-        blind = st.checkbox("Omit `hr_outcome` for the last 3 days", value=True)
 
-    if blind:
-        omit_dates = ["2025-06-17", "2025-06-18", "2025-06-19"]
-        df_blind = df.copy()
-        df_blind['game_date'] = df_blind['game_date'].astype(str)
-        df_blind.loc[df_blind['game_date'].isin(omit_dates), 'hr_outcome'] = np.nan
-        st.download_button("⬇️ Download Blinded Event-Level CSV", data=df_blind.to_csv(index=False), file_name="event_level_hr_features_blind.csv")
-        st.markdown("#### Download Model Audit Report CSV (top 200 rows, all features and predictions):")
-        st.download_button("⬇️ Download Audit Report", data=hitters_df.head(200).to_csv(index=False), file_name="audit_report_top200.csv")
-
-        # --- Model Performance ---
-        st.markdown("### Logistic Regression Performance (Auto-tuned)")
-        try:
-            if hasattr(best_logit, "feature_names_in_"):
-                logit_feature_order = [str(f).strip().lower() for f in best_logit.feature_names_in_]
-            else:
-                logit_feature_order = [str(f).strip().lower() for f in selected_feature_names]
-            X_test_logit = X_test.reindex(columns=logit_feature_order)
-            X_test_logit = dedup_columns(X_test_logit)
-            X_test_logit = X_test_logit.fillna(0).astype(float)
-            if list(X_test_logit.columns) != list(logit_feature_order):
-                st.warning(f"Logit test feature names mismatch!\nExpected: {logit_feature_order}\nActual: {list(X_test_logit.columns)}")
-            else:
-                auc = roc_auc_score(y_test, best_logit.predict_proba(X_test_logit)[:, 1])
-                st.metric("Logistic Regression ROC-AUC", round(auc, 4))
-                st.code(classification_report(y_test, (best_logit.predict_proba(X_test_logit)[:, 1] > threshold).astype(int)), language='text')
-        except Exception as e:
-            st.warning(f"Logit model report failed: {e}")
-
-        st.markdown("### XGBoost Performance (Auto-tuned)")
-        try:
-            if best_xgb is not None:
-                X_test_xgb_eval = X_test[X_xgb.columns]
-                X_test_xgb_eval = dedup_columns(X_test_xgb_eval)
-                X_test_xgb_eval = X_test_xgb_eval.fillna(0).astype(float)
-                auc = roc_auc_score(y_test_xgb, best_xgb.predict_proba(X_test_xgb_eval)[:, 1])
-                st.metric("XGBoost ROC-AUC", round(auc, 4))
-                st.code(classification_report(y_test_xgb, (best_xgb.predict_proba(X_test_xgb_eval)[:, 1] > threshold).astype(int)), language='text')
-            else:
-                st.warning("XGBoost report failed: best_xgb is not defined.")
-        except Exception as e:
-            st.warning(f"XGBoost report failed: {e}")
+        # ========== BLIND DATES TOGGLE - INSERTION POINT ==========
+        st.markdown("#### Blind HR outcomes for selected dates to generate future-unbiased predictions?")
+        if 'game_date' in hitters_df.columns:
+            all_dates = sorted(hitters_df['game_date'].astype(str).unique())
+            default_blind = [d for d in all_dates if d >= '2025-06-17']
+            blind_dates = st.multiselect(
+                "Omit `hr_outcome` for which dates? (for backtest/future prediction)",
+                options=all_dates,
+                default=default_blind,
+                help="Select one or more dates to omit actual HR outcomes (for unbiased prediction)"
+            )
+            if blind_dates:
+                df_blind = hitters_df.copy()
+                df_blind['game_date'] = df_blind['game_date'].astype(str)
+                df_blind.loc[df_blind['game_date'].isin(blind_dates), 'hr_outcome'] = np.nan
+                st.download_button(
+                    "⬇️ Download Blinded Event-Level CSV",
+                    data=df_blind.to_csv(index=False),
+                    file_name="event_level_hr_features_blind.csv"
+                )
