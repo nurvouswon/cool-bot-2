@@ -479,6 +479,74 @@ if generate_btn:
         data=today_batters[out_cols].to_csv(index=False),
         file_name=f"event_level_today_{datetime.now().strftime('%Y_%m_%d')}.csv"
     )
+# ==== UPGRADE: ROLLING FEATURE ALIGNMENT & DIAGNOSTICS ====
+def get_all_stat_rolling_cols():
+    # This is the full superset of stat/rolling columns seen in your historical event-level CSVs
+    roll_base = ['launch_speed', 'launch_angle', 'hit_distance_sc', 'woba_value', 'release_speed',
+                 'release_spin_rate', 'spin_axis', 'pfx_x', 'pfx_z']
+    windows = [3, 5, 7, 14]
+    cols = []
+    for prefix in ['B_', 'P_']:
+        for base in roll_base:
+            for w in windows:
+                cols.append(f"{prefix}{base}_{w}")
+    # Handedness, pitchtype HR rolling windows
+    for typ in ['B_vsP_hand_HR_', 'P_vsB_hand_HR_', 'B_pitchtype_HR_', 'P_pitchtype_HR_']:
+        for w in windows:
+            cols.append(f"{typ}{w}")
+    # Park/stand splits
+    for w in [7, 14, 30]:
+        cols.append(f"park_hand_HR_{w}")
+    # Other
+    cols += ['hard_hit_rate_20', 'sweet_spot_rate_20', 'relative_wind_angle', 'relative_wind_sin', 'relative_wind_cos']
+    return cols
+
+# ========== (AFTER rolling_fill_cols etc in your generate_btn block) ==========
+
+if generate_btn:
+    # ... [all your existing generate_btn logic up to here, unchanged] ...
+
+    # --- Add ALL rolling/stat columns used by the backtest CSVs ---
+    full_stat_cols = get_all_stat_rolling_cols()
+    for col in full_stat_cols:
+        if col not in today_batters.columns:
+            today_batters[col] = np.nan
+
+    # --- Diagnostics: compare columns to historical event-level files ---
+    # Optionally: upload a sample event-level historical CSV to get perfect column order match
+    sample_ev_file = st.file_uploader("Upload Sample Historical Event-Level CSV (for diagnostics/column order)", type="csv", key="colalign")
+    hist_cols = None
+    if sample_ev_file:
+        ev = pd.read_csv(sample_ev_file, nrows=1)
+        hist_cols = [c for c in ev.columns if not c.startswith("unnamed")]
+        # Report missing and extra columns
+        missing_cols = [c for c in hist_cols if c not in today_batters.columns]
+        extra_cols = [c for c in today_batters.columns if c not in hist_cols]
+        st.info(f"Columns in history but missing in today's export: {missing_cols}")
+        st.info(f"Columns in today's export but not in history: {extra_cols}")
+        # Force column order to match historical CSV
+        today_batters = today_batters.reindex(columns=hist_cols + [c for c in today_batters.columns if c not in hist_cols])
+
+    # --- Diagnostics: show filled context, rolling features ---
+    st.markdown("#### Sample of Today's One-Row-Per-Batter DataFrame:")
+    st.dataframe(today_batters.head(25))
+    st.success(f"Created today's event-level file: {len(today_batters)} batters. All rolling/stat columns now present.")
+
+    st.download_button(
+        "⬇️ Download Today's Event-Level CSV (for Prediction App)",
+        data=today_batters.to_csv(index=False),
+        file_name=f"event_level_today_{datetime.now().strftime('%Y_%m_%d')}.csv"
+    )
+
+    # Show null report for each rolling/stat col
+    st.markdown("#### Null report for rolling/stat features in output:")
+    roll_diag = today_batters[full_stat_cols].isnull().sum().sort_values(ascending=False)
+    st.text(roll_diag.to_string())
+
+    # Show weather/context diagnostics for output
+    st.markdown("#### Weather/context columns in output:")
+    context_cols = ['city', 'park', 'stadium', 'time', 'temp', 'wind_mph', 'wind_dir', 'humidity', 'condition']
+    st.dataframe(today_batters[context_cols].drop_duplicates())
 
 with tab2:
     st.subheader("2️⃣ Upload & Analyze")
