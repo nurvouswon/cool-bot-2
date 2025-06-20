@@ -9,6 +9,7 @@ from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.metrics import classification_report, roc_auc_score
 from sklearn.feature_selection import RFECV
 import xgboost as xgb
+import requests
 
 # ========== CONTEXT MAPS ==========
 park_hr_rate_map = {
