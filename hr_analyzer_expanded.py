@@ -185,10 +185,8 @@ with tab1:
             lineups = pd.read_csv(uploaded_lineups)
             # Try to merge by date/team
             if 'game_date' in df.columns and 'team code' in lineups.columns:
-                # Ensure date is string
                 df['game_date'] = df['game_date'].astype(str)
                 lineups['game_date'] = lineups['game_date'].astype(str)
-                # For home team only mapping:
                 if 'home_team_code' in df.columns:
                     merged = df.merge(
                         lineups[['team code', 'game_date', 'city', 'stadium', 'time', 'weather']],
@@ -200,11 +198,8 @@ with tab1:
                     df['stadium'] = merged['stadium']
                     df['time'] = merged['time']
                     df['weather'] = merged['weather']
-            # If you want to override park with stadium, you can do:
             if 'stadium' in df.columns:
                 df['park'] = df['stadium'].str.lower().str.replace(' ', '_')
-            # Optionally: Override city for weather API pull
-            # If your weather is already present, you could fill temp/wind/etc here
 
         if 'park' not in df.columns:
             st.error("Could not determine ballpark from your data (missing 'park', 'home_team_code', and 'home_team').")
@@ -223,7 +218,6 @@ with tab1:
                 if '_' not in key: continue
                 city, date = key.split('_', 1)
                 if not city or not date: continue
-                # If user-supplied weather, use that!
                 if 'weather' in df.columns and pd.notnull(df.loc[df['weather_key'] == key, 'weather']).any():
                     continue  # Assume weather already filled
                 weather = get_weather(city, date)
@@ -232,7 +226,6 @@ with tab1:
                 progress.progress(20 + int(30 * (i+1) / len(unique_keys)), text=f"Weather {i+1}/{len(unique_keys)}")
             progress.progress(50, "Weather merged (city/date).")
         else:
-            # Legacy fallback by home_team_code
             if 'home_team_code' in df.columns and 'game_date' in df.columns:
                 df['weather_key'] = df['home_team_code'] + "_" + df['game_date'].astype(str)
                 unique_keys = df['weather_key'].unique()
@@ -266,27 +259,24 @@ with tab1:
         if 'launch_angle' in df.columns and 'batter_id' in df.columns:
             df['sweet_spot_rate_20'] = df.groupby('batter_id')['launch_angle'].transform(lambda x: x.shift(1).between(8, 32).rolling(20, min_periods=5).mean())
 
-        # Directional wind context
         if 'stand' in df.columns and 'wind_dir_angle' in df.columns:
             def relative_wind_angle(row):
                 try:
                     if row['stand'] == 'L':
-                        return (row['wind_dir_angle'] - 45) % 360  # LHH pull
+                        return (row['wind_dir_angle'] - 45) % 360
                     else:
-                        return (row['wind_dir_angle'] - 135) % 360  # RHH pull
+                        return (row['wind_dir_angle'] - 135) % 360
                 except Exception:
                     return np.nan
             df['relative_wind_angle'] = df.apply(relative_wind_angle, axis=1)
             df['relative_wind_sin'] = np.sin(np.deg2rad(df['relative_wind_angle']))
             df['relative_wind_cos'] = np.cos(np.deg2rad(df['relative_wind_angle']))
 
-        # Rolling park/handedness HR rates
         if 'park' in df.columns and 'stand' in df.columns:
             for w in [7, 14, 30]:
                 col_name = f'park_hand_HR_{w}'
                 df[col_name] = df.groupby(['park', 'stand'])['hr_outcome'].transform(lambda x: x.shift(1).rolling(w, min_periods=5).mean())
 
-        # Rolling advanced splits, physics, pitch type, hand splits
         roll_windows = [3, 5, 7, 14]
         batter_cols = ['launch_speed', 'launch_angle', 'hit_distance_sc', 'woba_value',
                        'release_speed', 'release_spin_rate', 'spin_axis', 'pfx_x', 'pfx_z']
@@ -305,32 +295,24 @@ with tab1:
                     cname = f'P_{col}_{w}'
                     pitcher_feat_dict[cname] = df.groupby('pitcher_id')[col].transform(lambda x: x.shift(1).rolling(w, min_periods=1).mean())
 
-        # Hand matchup splits (batter vs pitcher hand HR rolling mean)
         if 'stand' in df.columns and 'p_throws' in df.columns:
             for w in roll_windows:
                 df[f'B_vsP_hand_HR_{w}'] = df.groupby(['batter_id', 'p_throws'])['hr_outcome'].transform(lambda x: x.shift(1).rolling(w, min_periods=1).mean())
                 df[f'P_vsB_hand_HR_{w}'] = df.groupby(['pitcher_id', 'stand'])['hr_outcome'].transform(lambda x: x.shift(1).rolling(w, min_periods=1).mean())
 
-        # Rolling pitch type splits (robust fix)
         if 'pitch_type' in df.columns:
             for w in roll_windows:
                 df[f'B_pitchtype_HR_{w}'] = rolling_pitch_type_hr(df, 'batter_id', 'pitch_type', w)
                 df[f'P_pitchtype_HR_{w}'] = rolling_pitch_type_hr(df, 'pitcher_id', 'pitch_type', w)
 
-        # Combine features
         df = pd.concat([df, pd.DataFrame(batter_feat_dict), pd.DataFrame(pitcher_feat_dict)], axis=1)
         df = df.copy()
         progress.progress(80, "Advanced Statcast & context features done")
-
-        # Remove duplicate columns before output
         df = dedup_columns(df)
-
-        # ========== DOWNLOAD ==========
         st.success(f"Feature engineering complete! {len(df)} batted ball events.")
         st.markdown("#### Download Event-Level CSV (all features, 1 row per batted ball event):")
         st.dataframe(df.head(20))
-        st.download_button("⬇️ Download Event-Level CSV", data=df.to_csv(index=False), file_name="event_level_hr_features.csv")
-        progress.empty()
+        st.download_button("⬇️ Download Event-Level CSV", data=df.to_csv(index=False), file_name="event_level_hr_features.csv", key="download_statcast_event_level")
 
         # === LOGISTIC WEIGHTS DOWNLOAD (quick fit for weighting export) ===
         if 'hr_outcome' in df.columns and df['hr_outcome'].nunique() > 1:
@@ -368,47 +350,8 @@ with tab1:
                     data=weights.to_csv(index=False),
                     file_name="logit_weights.csv"
                 )
-                # ========== TAB 2: UPLOAD & ANALYZE ==========
 
-def fix_arrow_types(df):
-    # Arrow/table compatibility for weird extension dtypes
-    for col in df.columns:
-        if pd.api.types.is_extension_array_dtype(df[col]):
-            df.loc[:, col] = df[col].astype("float64")
-        elif df[col].dtype == object:
-            try:
-                df.loc[:, col] = df[col].astype("float64")
-            except Exception:
-                try:
-                    df.loc[:, col] = df[col].astype(str)
-                except Exception:
-                    pass
-    return df
-
-def clean_id(x):
-    """Standardizes IDs for merging: handles str/float/int/.0/leading/trailing whitespace."""
-    try:
-        if pd.isna(x): return None
-        return str(int(float(str(x).strip())))
-    except Exception:
-        return str(x).strip()
-
-def robust_numeric_columns(df):
-    cols = []
-    for c in df.columns:
-        try:
-            dt = pd.api.types.pandas_dtype(df[c].dtype)
-            if (np.issubdtype(dt, np.number) or pd.api.types.is_numeric_dtype(df[c])) and not pd.api.types.is_bool_dtype(df[c]) and df[c].nunique() > 1:
-                cols.append(c)
-        except Exception:
-            continue
-    return cols
-
-def dedup_columns(df):
-    # Remove duplicate columns, keeping the first occurrence
-    return df.loc[:, ~df.columns.duplicated()]
 # --- (NEW) Generate One-Row-Per-Batter Event-Level CSV for Today's Slate ---
-
 st.markdown("---")
 st.subheader("🔮 Generate Today's Batter Event-Level CSV (one row per batter, for live HR picks)")
 
@@ -416,26 +359,25 @@ uploaded_today_lineups = st.file_uploader(
     "Upload Today's Lineups/Matchups CSV (Required for One-Row-Per-Batter Export)",
     type="csv", key="todaylineup"
 )
-generate_btn = st.button("Generate One-Row-Per-Batter Event-Level CSV")
+sample_ev_file = st.file_uploader(
+    "Upload Sample Historical Event-Level CSV (for diagnostics/column order)", type="csv", key="colalign"
+)
 
+generate_btn = st.button("Generate One-Row-Per-Batter Event-Level CSV")
 if generate_btn:
     if not uploaded_today_lineups:
         st.warning("Please upload a matchups/lineups CSV for today (with columns like 'team code', 'player name', etc).")
         st.stop()
     today_lineups = pd.read_csv(uploaded_today_lineups)
-    # Clean/normalize player and team columns
     lineup_cols = [c.strip().lower().replace(" ", "_") for c in today_lineups.columns]
     today_lineups.columns = lineup_cols
 
-    # Basic checks
     required_cols = {'player_name', 'mlb_id', 'team_code', 'game_date'}
     if not required_cols.issubset(set(today_lineups.columns)):
         st.error(f"Missing columns: {required_cols - set(today_lineups.columns)}")
         st.stop()
-    # Drop duplicate players (shouldn't happen but just in case)
     today_batters = today_lineups.drop_duplicates(subset=['mlb_id'])
 
-    # Add context columns (stadium, city, time, park, etc)
     today_batters['park'] = today_batters.get('stadium', today_batters.get('team_code', '')).str.lower().str.replace(' ', '_')
     today_batters['city'] = today_batters.get('city', '')
     today_batters['game_date'] = pd.to_datetime(today_batters['game_date']).dt.strftime("%Y-%m-%d")
@@ -443,7 +385,6 @@ if generate_btn:
     today_batters['park_altitude'] = today_batters['park'].map(park_altitude_map).fillna(0)
     today_batters['roof_status'] = today_batters['park'].map(roof_status_map).fillna("open")
     today_batters['batter_id'] = today_batters['mlb_id'].astype(str)
-    # Weather API or static weather values
     for feat in ['temp', 'wind_mph', 'wind_dir', 'humidity', 'condition']:
         today_batters[feat] = None
     unique_keys = today_batters['city'] + "_" + today_batters['game_date']
@@ -457,179 +398,16 @@ if generate_btn:
     today_batters['wind_dir_sin'] = np.sin(np.deg2rad(today_batters['wind_dir_angle']))
     today_batters['wind_dir_cos'] = np.cos(np.deg2rad(today_batters['wind_dir_angle']))
 
-    # Fill with zeros/nans for advanced rolling features (will be computed during prediction, not in this single-row file)
-    rolling_fill_cols = [
-        'hard_hit_rate_20', 'sweet_spot_rate_20', 'relative_wind_angle', 'relative_wind_sin', 'relative_wind_cos',
-        'park_hand_HR_7', 'park_hand_HR_14', 'park_hand_HR_30'
-    ]
-    for col in rolling_fill_cols:
-        today_batters[col] = np.nan
-
-    # Nulls for all stats/rolling window features (the scoring app will match/join using batter_id for stats history)
-    for c in today_batters.columns:
-        if "b_" in c or "p_" in c:
-            today_batters[c] = np.nan
-
-    # Output: save/download CSV, one row per batter
-    out_cols = [c for c in today_batters.columns if not c.startswith("unnamed")]
-    st.dataframe(today_batters[out_cols].head(25))
-    st.success(f"Created today's event-level file: {len(today_batters)} batters.")
-    st.download_button(
-        "⬇️ Download Today's Event-Level CSV (for Prediction App)",
-        data=today_batters.to_csv(index=False),
-        file_name=f"event_level_today_{datetime.now().strftime('%Y_%m_%d')}.csv",
-        key="download_today_event_level_csv"
-        )
-# ==== UPGRADE: ROLLING FEATURE ALIGNMENT & DIAGNOSTICS ====
-def get_all_stat_rolling_cols():
-    # This is the full superset of stat/rolling columns seen in your historical event-level CSVs
-    roll_base = ['launch_speed', 'launch_angle', 'hit_distance_sc', 'woba_value', 'release_speed',
-                 'release_spin_rate', 'spin_axis', 'pfx_x', 'pfx_z']
-    windows = [3, 5, 7, 14]
-    cols = []
-    for prefix in ['B_', 'P_']:
-        for base in roll_base:
-            for w in windows:
-                cols.append(f"{prefix}{base}_{w}")
-    # Handedness, pitchtype HR rolling windows
-    for typ in ['B_vsP_hand_HR_', 'P_vsB_hand_HR_', 'B_pitchtype_HR_', 'P_pitchtype_HR_']:
-        for w in windows:
-            cols.append(f"{typ}{w}")
-    # Park/stand splits
-    for w in [7, 14, 30]:
-        cols.append(f"park_hand_HR_{w}")
-    # Other
-    cols += ['hard_hit_rate_20', 'sweet_spot_rate_20', 'relative_wind_angle', 'relative_wind_sin', 'relative_wind_cos']
-    return cols
-
-# ========== (AFTER rolling_fill_cols etc in your generate_btn block) ==========
-
-if generate_btn:
-    # ... [all your existing generate_btn logic up to here, unchanged] ...
-
-    # --- Add ALL rolling/stat columns used by the backtest CSVs ---
-    full_stat_cols = get_all_stat_rolling_cols()
-    for col in full_stat_cols:
-        if col not in today_batters.columns:
-            today_batters[col] = np.nan
-
-    # --- Diagnostics: compare columns to historical event-level files ---
-    # Optionally: upload a sample event-level historical CSV to get perfect column order match
-    sample_ev_file = st.file_uploader("Upload Sample Historical Event-Level CSV (for diagnostics/column order)", type="csv", key="colalign")
-    hist_cols = None
-    if sample_ev_file:
-        ev = pd.read_csv(sample_ev_file, nrows=1)
-        hist_cols = [c for c in ev.columns if not c.startswith("unnamed")]
-        # Report missing and extra columns
-        missing_cols = [c for c in hist_cols if c not in today_batters.columns]
-        extra_cols = [c for c in today_batters.columns if c not in hist_cols]
-        st.info(f"Columns in history but missing in today's export: {missing_cols}")
-        st.info(f"Columns in today's export but not in history: {extra_cols}")
-        # Force column order to match historical CSV
-        today_batters = today_batters.reindex(columns=hist_cols + [c for c in today_batters.columns if c not in hist_cols])
-
-    # --- Diagnostics: show filled context, rolling features ---
-    st.markdown("#### Sample of Today's One-Row-Per-Batter DataFrame:")
-    st.dataframe(today_batters.head(25))
-    st.success(f"Created today's event-level file: {len(today_batters)} batters. All rolling/stat columns now present.")
-
-    st.download_button(
-        "⬇️ Download Today's Event-Level CSV (for Prediction App)",
-        data=today_batters.to_csv(index=False),
-        file_name=f"event_level_today_{datetime.now().strftime('%Y_%m_%d')}.csv"
-    )
-
-    # Show null report for each rolling/stat col
-    st.markdown("#### Null report for rolling/stat features in output:")
-    roll_diag = today_batters[full_stat_cols].isnull().sum().sort_values(ascending=False)
-    st.text(roll_diag.to_string())
-
-    # Show weather/context diagnostics for output
-    st.markdown("#### Weather/context columns in output:")
-    context_cols = ['city', 'park', 'stadium', 'time', 'temp', 'wind_mph', 'wind_dir', 'humidity', 'condition']
-    st.dataframe(today_batters[context_cols].drop_duplicates())
-    st.markdown("---")
-    st.subheader("🔄 Merge Rolling/Stat Features Into Today's Batter CSV")
-
-    uploaded_today_lineups_v2 = st.file_uploader(
-        "Upload Today's Lineups/Matchups CSV (again, for full feature merge)", type="csv", key="todaylineup_v2"
-    )
-    uploaded_sample_hist = st.file_uploader(
-        "Upload Sample Historical Event-Level CSV (for diagnostics/column order)", type="csv", key="samplehist"
-    )
-
-    merge_btn = st.button("🔗 Generate Today's Batter Event-Level CSV (with merged rolling/stat features)")
-
-    if merge_btn:
-        if not uploaded_today_lineups_v2 or not uploaded_sample_hist:
-            st.warning("Please upload BOTH today’s lineup/matchups and a sample historical event-level CSV.")
-            st.stop()
-        # Load data
-        today_lineups = pd.read_csv(uploaded_today_lineups_v2)
-        hist = pd.read_csv(uploaded_sample_hist)
-        st.info(f"Loaded {len(today_lineups)} batters for today, {len(hist)} historical batted ball events.")
-
-        # Normalize col names
-        tcols = [c.strip().lower().replace(" ", "_") for c in today_lineups.columns]
-        today_lineups.columns = tcols
-
-        # Key for join is MLB ID (batter_id, mlb_id, etc)
-        id_col = None
-        if "mlb_id" in today_lineups.columns:
-            id_col = "mlb_id"
-        elif "batter_id" in today_lineups.columns:
-            id_col = "batter_id"
-        else:
-            st.error("Could not find mlb_id/batter_id in lineups file.")
-            st.stop()
-
-        # Key for hist = 'batter_id'
-        if 'batter_id' not in hist.columns:
-            st.error("No 'batter_id' column in historical CSV.")
-            st.stop()
-        # Normalize for join
-        today_lineups[id_col] = today_lineups[id_col].astype(str)
-        hist['batter_id'] = hist['batter_id'].astype(str)
-
-        # --- Grab latest features for each batter
-        # Only use historical rows with a non-missing game_date and rolling/stat features
-        if 'game_date' in hist.columns:
-            hist['game_date'] = pd.to_datetime(hist['game_date'], errors='coerce')
-        rolling_cols = [c for c in hist.columns if (
-            c.startswith('B_') or c.startswith('P_') or 
-            c.startswith('park_hand_HR_') or 
-            c.endswith('_rate_20') or 
-            c.startswith('B_vsP_hand_HR_') or 
-            c.startswith('P_vsB_hand_HR_') or 
-            c.startswith('B_pitchtype_HR_') or 
-            c.startswith('P_pitchtype_HR_')
-        )]
-        # plus the handful of others you want (add to this list if you want more)
-
-        # Get latest event per batter by date
-        last_feats = hist.sort_values('game_date').groupby('batter_id').tail(1)
-        # Select just the rolling/stat columns and batter_id
-        last_feats = last_feats[['batter_id'] + rolling_cols].copy()
-        st.info(f"Found {len(last_feats)} batters with latest rolling/stat features.")
-
-        # Merge to today's lineups
-        merged = today_lineups.merge(last_feats, left_on=id_col, right_on='batter_id', how='left', suffixes=('', '_roll'))
-
-        # Diagnostics
-        st.write("Sample of Today's One-Row-Per-Batter DataFrame (with features):")
-        st.dataframe(merged.head(10))
-        null_report = merged[rolling_cols].isna().sum().sort_values(ascending=False)
-        st.write("Null report for rolling/stat features in output:")
-        st.write(null_report[null_report > 0])
-
-        # Download merged output
-        merged_out_cols = [c for c in merged.columns if not c.startswith("unnamed")]
-        st.success(f"Created today's event-level file: {len(merged)} batters. All rolling/stat columns now present (where available).")
-        st.download_button(
-            "⬇️ Download Today's Event-Level CSV (for Prediction App, with merged features)",
-            data=merged[merged_out_cols].to_csv(index=False),
-            file_name=f"event_level_today_full_{datetime.now().strftime('%Y_%m_%d')}.csv"
-        )
+    # --- Fill stat/rolling columns using full superset for model ---
+    def get_all_stat_rolling_cols():
+        roll_base = ['launch_speed', 'launch_angle', 'hit_distance_sc', 'woba_value', 'release_speed',
+                    'release_spin_rate', 'spin_axis', 'pfx_x', 'pfx_z']
+        windows = [3, 5, 7, 14]
+        cols = []
+        for prefix in ['B_', 'P_']:
+            for base in roll_base:
+                for w in windows:
+                    cols.append(f"{prefix}{base}_{
 
 with tab2:
     st.subheader("2️⃣ Upload & Analyze")
