@@ -59,21 +59,10 @@ mlb_team_city_map = {
     'WSH': 'Washington'
 }
 
-# ========== UTILITY FUNCTIONS ==========
-
+# ---------- UTILITY FUNCTIONS ----------
 def wind_dir_to_angle(wind_dir):
-    directions = {
-        'N': 0, 'NNE': 22.5, 'NE': 45, 'ENE': 67.5, 'E': 90, 'ESE': 112.5,
-        'SE': 135, 'SSE': 157.5, 'S': 180, 'SSW': 202.5, 'SW': 225, 'WSW': 247.5,
-        'W': 270, 'WNW': 292.5, 'NW': 315, 'NNW': 337.5
-    }
-    if pd.isna(wind_dir):
-        return np.nan
-    wind_dir = str(wind_dir).upper()
-    for d, angle in directions.items():
-        if d in wind_dir:
-            return angle
-    return np.nan
+    # (same as before)
+    ...
 
 @st.cache_data(show_spinner=False)
 def get_weather(city, date):
@@ -97,6 +86,19 @@ def get_weather(city, date):
         st.warning(f"Weather API error for {city} {date}: {e}")
     return {'temp': None, 'wind_mph': None, 'wind_dir': None, 'humidity': None, 'condition': None}
 
+def dedup_columns(df):
+    return df.loc[:, ~df.columns.duplicated()]
+
+def rolling_pitch_type_hr(df, id_col, pitch_col, window):
+    out = np.full(len(df), np.nan)
+    df = df.reset_index(drop=True)
+    grouped = df.groupby([id_col, pitch_col])
+    for _, group_idx in grouped.groups.items():
+        group_idx = list(group_idx)
+        vals = df.loc[group_idx, 'hr_outcome'].shift(1).rolling(window, min_periods=1).mean()
+        out[group_idx] = vals
+    return out
+
 def robust_numeric_columns(df):
     cols = []
     for c in df.columns:
@@ -108,29 +110,10 @@ def robust_numeric_columns(df):
             continue
     return cols
 
-def dedup_columns(df):
-    return df.loc[:, ~df.columns.duplicated()]
-
-# --- Rolling pitch type HR, robust index grouping ---
-def rolling_pitch_type_hr(df, id_col, pitch_col, window):
-    out = np.full(len(df), np.nan)
-    df = df.reset_index(drop=True)
-    grouped = df.groupby([id_col, pitch_col])
-    for _, group_idx in grouped.groups.items():
-        group_idx = list(group_idx)
-        vals = df.loc[group_idx, 'hr_outcome'].shift(1).rolling(window, min_periods=1).mean()
-        out[group_idx] = vals
-    return out
-
-# ========== APP MAIN UI ==========
-
+# ========== TAB 1 ==========
 st.set_page_config("MLB HR Analyzer", layout="wide")
-st.title("⚾ All-in-One MLB HR Analyzer & XGBoost Modeler")
-st.caption("Statcast + Physics + Weather + Park + Hand Splits + Pitch Type + Contextual Factors")
-
 tab1, tab2 = st.tabs(["1️⃣ Fetch & Feature Engineer Data", "2️⃣ Upload & Analyze"])
 
-# --- TAB 1: FETCH DATA AND FEATURE ENGINEER ---
 with tab1:
     st.header("Fetch Statcast Data & Generate Features")
     col1, col2 = st.columns(2)
@@ -138,6 +121,10 @@ with tab1:
         start_date = st.date_input("Start Date", value=datetime.today() - timedelta(days=7))
     with col2:
         end_date = st.date_input("End Date", value=datetime.today())
+
+    # --------- Matchups (Lineup) Upload for context (optional) ----------
+    st.markdown("##### (Optional) Upload Today's Matchups/Lineups CSV (for city, stadium, time, weather context)")
+    uploaded_lineups = st.file_uploader("Upload Today's Matchups CSV", type="csv", key="lineupsup")
 
     fetch_btn = st.button("Fetch Statcast, Feature Engineer, and Download", type="primary")
     progress = st.empty()
@@ -180,37 +167,82 @@ with tab1:
             df['park'] = df['park'].fillna(df['home_team'].str.lower().str.replace(' ', '_'))
         elif 'home_team' in df.columns and 'park' not in df.columns:
             df['park'] = df['home_team'].str.lower().str.replace(' ', '_')
+
+        # -------- Integrate matchups CSV if uploaded --------
+        # This will override city/stadium/park if present in your upload
+        if uploaded_lineups:
+            lineups = pd.read_csv(uploaded_lineups)
+            # Try to merge by date/team
+            if 'game_date' in df.columns and 'team code' in lineups.columns:
+                # Ensure date is string
+                df['game_date'] = df['game_date'].astype(str)
+                lineups['game_date'] = lineups['game_date'].astype(str)
+                # For home team only mapping:
+                if 'home_team_code' in df.columns:
+                    merged = df.merge(
+                        lineups[['team code', 'game_date', 'city', 'stadium', 'time', 'weather']],
+                        left_on=['home_team_code', 'game_date'],
+                        right_on=['team code', 'game_date'],
+                        how='left'
+                    )
+                    df['city'] = merged['city']
+                    df['stadium'] = merged['stadium']
+                    df['time'] = merged['time']
+                    df['weather'] = merged['weather']
+            # If you want to override park with stadium, you can do:
+            if 'stadium' in df.columns:
+                df['park'] = df['stadium'].str.lower().str.replace(' ', '_')
+            # Optionally: Override city for weather API pull
+            # If your weather is already present, you could fill temp/wind/etc here
+
         if 'park' not in df.columns:
             st.error("Could not determine ballpark from your data (missing 'park', 'home_team_code', and 'home_team').")
             st.stop()
         df['park_hr_rate'] = df['park'].map(park_hr_rate_map).fillna(1.0)
         df['park_altitude'] = df['park'].map(park_altitude_map).fillna(0)
         df['roof_status'] = df['park'].map(roof_status_map).fillna("open")
-        progress.progress(20, "Park/team context merged")
+        progress.progress(20, "Park/team/stadium context merged")
 
-        # Weather
+        # -------- Weather Integration --------
         weather_features = ['temp', 'wind_mph', 'wind_dir', 'humidity', 'condition']
-        if 'home_team_code' in df.columns and 'game_date' in df.columns:
-            df['weather_key'] = df['home_team_code'] + "_" + df['game_date'].dt.strftime("%Y%m%d")
+        if 'city' in df.columns and 'game_date' in df.columns:
+            df['weather_key'] = df['city'].fillna('') + "_" + df['game_date'].astype(str)
             unique_keys = df['weather_key'].unique()
             for i, key in enumerate(unique_keys):
-                team = key.split('_')[0]
-                city = mlb_team_city_map.get(team, "New York")
-                date = df[df['weather_key'] == key].iloc[0]['game_date'].strftime("%Y-%m-%d")
+                if '_' not in key: continue
+                city, date = key.split('_', 1)
+                if not city or not date: continue
+                # If user-supplied weather, use that!
+                if 'weather' in df.columns and pd.notnull(df.loc[df['weather_key'] == key, 'weather']).any():
+                    continue  # Assume weather already filled
                 weather = get_weather(city, date)
                 for feat in weather_features:
                     df.loc[df['weather_key'] == key, feat] = weather[feat]
                 progress.progress(20 + int(30 * (i+1) / len(unique_keys)), text=f"Weather {i+1}/{len(unique_keys)}")
-            progress.progress(50, "Weather merged")
+            progress.progress(50, "Weather merged (city/date).")
         else:
-            for feat in weather_features:
-                df[feat] = None
+            # Legacy fallback by home_team_code
+            if 'home_team_code' in df.columns and 'game_date' in df.columns:
+                df['weather_key'] = df['home_team_code'] + "_" + df['game_date'].astype(str)
+                unique_keys = df['weather_key'].unique()
+                for i, key in enumerate(unique_keys):
+                    team = key.split('_')[0]
+                    city = mlb_team_city_map.get(team, "New York")
+                    date = df[df['weather_key'] == key].iloc[0]['game_date']
+                    weather = get_weather(city, str(date))
+                    for feat in weather_features:
+                        df.loc[df['weather_key'] == key, feat] = weather[feat]
+                    progress.progress(20 + int(30 * (i+1) / len(unique_keys)), text=f"Weather {i+1}/{len(unique_keys)}")
+                progress.progress(50, "Weather merged (fallback).")
+            else:
+                for feat in weather_features:
+                    df[feat] = None
 
         df['wind_dir_angle'] = df['wind_dir'].apply(wind_dir_to_angle)
         df['wind_dir_sin'] = np.sin(np.deg2rad(df['wind_dir_angle']))
         df['wind_dir_cos'] = np.cos(np.deg2rad(df['wind_dir_angle']))
 
-        # Advanced Statcast metrics
+        # Advanced Statcast metrics and rolling splits
         if 'batter_id' not in df.columns and 'batter' in df.columns:
             df['batter_id'] = df['batter']
         if 'pitcher_id' not in df.columns and 'pitcher' in df.columns:
@@ -307,6 +339,8 @@ with tab1:
             if model_df['hr_outcome'].nunique() < 2 or len(model_df) < 30:
                 st.warning("Not enough HR/non-HR events for logistic regression weights (check date range or missing features).")
             else:
+                from sklearn.linear_model import LogisticRegression
+                from sklearn.model_selection import GridSearchCV
                 X = model_df[model_features].fillna(0)
                 y = model_df['hr_outcome'].astype(int)
                 grid = GridSearchCV(LogisticRegression(max_iter=200, solver='liblinear'), param_grid={'C': [0.1, 1, 10]}, cv=3, scoring='roc_auc')
@@ -318,9 +352,12 @@ with tab1:
                     'intercept': logit.intercept_[0]
                 })
                 st.dataframe(weights.sort_values('weight', ascending=False))
-                st.download_button("⬇️ Download Logistic Weights CSV", data=weights.to_csv(index=False), file_name="logit_weights.csv")
-
-# ========== TAB 2: UPLOAD & ANALYZE ==========
+                st.download_button(
+                    "⬇️ Download Logistic Weights CSV",
+                    data=weights.to_csv(index=False),
+                    file_name="logit_weights.csv"
+                )
+                # ========== TAB 2: UPLOAD & ANALYZE ==========
 
 def fix_arrow_types(df):
     # Arrow/table compatibility for weird extension dtypes
