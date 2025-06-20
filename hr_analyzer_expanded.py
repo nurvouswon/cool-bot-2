@@ -583,7 +583,15 @@ with tab2:
 
         st.markdown("#### Download Full Event-Level Data with Model Scores:")
         st.download_button("⬇️ Download Scored Event CSV", data=hitters_df.to_csv(index=False), file_name="event_level_scored.csv")
+        st.markdown("#### Blind HR outcomes for recent dates to generate future-unbiased predictions?")
+        blind = st.checkbox("Omit `hr_outcome` for the last 3 days", value=True)
 
+    if blind:
+        omit_dates = ["2025-06-17", "2025-06-18", "2025-06-19"]
+        df_blind = df.copy()
+        df_blind['game_date'] = df_blind['game_date'].astype(str)
+        df_blind.loc[df_blind['game_date'].isin(omit_dates), 'hr_outcome'] = np.nan
+        st.download_button("⬇️ Download Blinded Event-Level CSV", data=df_blind.to_csv(index=False), file_name="event_level_hr_features_blind.csv")
         st.markdown("#### Download Model Audit Report CSV (top 200 rows, all features and predictions):")
         st.download_button("⬇️ Download Audit Report", data=hitters_df.head(200).to_csv(index=False), file_name="audit_report_top200.csv")
 
