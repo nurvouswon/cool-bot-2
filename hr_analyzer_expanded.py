@@ -10,11 +10,43 @@ st.markdown("""
 - Upload Today's Lineups/Matchups CSV (must have `batter_id` or `mlb_id`, `player_name`, etc).
 - Upload Historical Event-Level CSV (must have `batter_id`, `game_date`, and all stat columns).
 - Output: ONE row per batter with all rolling/stat features, calculated from their event history.
+- Output columns will match the format needed for prediction.
 - All numeric columns are auto-corrected for string/decimal mix issues.
 """)
 
 today_file = st.file_uploader("Upload Today's Matchups/Lineups CSV", type=["csv"], key="today_csv")
 hist_file = st.file_uploader("Upload Historical Event-Level CSV", type=["csv"], key="hist_csv")
+
+# -- Paste your target columns here (edit as needed) --
+output_columns = [
+    "team_code","game_date","game_number","mlb_id","player_name","batting_order","position","weather","time","stadium","city",
+    "batter_id","p_throws",
+    "hard_hit_rate_20","sweet_spot_rate_20",
+    "park_hand_hr_7","park_hand_hr_14","park_hand_hr_30",
+    "b_vsp_hand_hr_3","p_vsb_hand_hr_3","b_vsp_hand_hr_5","p_vsb_hand_hr_5","b_vsp_hand_hr_7","p_vsb_hand_hr_7",
+    "b_vsp_hand_hr_14","p_vsb_hand_hr_14",
+    "b_pitchtype_hr_3","p_pitchtype_hr_3","b_pitchtype_hr_5","p_pitchtype_hr_5","b_pitchtype_hr_7","p_pitchtype_hr_7",
+    "b_pitchtype_hr_14","p_pitchtype_hr_14",
+    "b_launch_speed_3","b_launch_speed_5","b_launch_speed_7","b_launch_speed_14",
+    "b_launch_angle_3","b_launch_angle_5","b_launch_angle_7","b_launch_angle_14",
+    "b_hit_distance_sc_3","b_hit_distance_sc_5","b_hit_distance_sc_7","b_hit_distance_sc_14",
+    "b_woba_value_3","b_woba_value_5","b_woba_value_7","b_woba_value_14",
+    "b_release_speed_3","b_release_speed_5","b_release_speed_7","b_release_speed_14",
+    "b_release_spin_rate_3","b_release_spin_rate_5","b_release_spin_rate_7","b_release_spin_rate_14",
+    "b_spin_axis_3","b_spin_axis_5","b_spin_axis_7","b_spin_axis_14",
+    "b_pfx_x_3","b_pfx_x_5","b_pfx_x_7","b_pfx_x_14",
+    "b_pfx_z_3","b_pfx_z_5","b_pfx_z_7","b_pfx_z_14",
+    "p_launch_speed_3","p_launch_speed_5","p_launch_speed_7","p_launch_speed_14",
+    "p_launch_angle_3","p_launch_angle_5","p_launch_angle_7","p_launch_angle_14",
+    "p_hit_distance_sc_3","p_hit_distance_sc_5","p_hit_distance_sc_7","p_hit_distance_sc_14",
+    "p_woba_value_3","p_woba_value_5","p_woba_value_7","p_woba_value_14",
+    "p_release_speed_3","p_release_speed_5","p_release_speed_7","p_release_speed_14",
+    "p_release_spin_rate_3","p_release_spin_rate_5","p_release_spin_rate_7","p_release_spin_rate_14",
+    "p_spin_axis_3","p_spin_axis_5","p_spin_axis_7","p_spin_axis_14",
+    "p_pfx_x_3","p_pfx_x_5","p_pfx_x_7","p_pfx_x_14",
+    "p_pfx_z_3","p_pfx_z_5","p_pfx_z_7","p_pfx_z_14",
+    "park","temp","wind_mph","wind_dir","humidity","condition"
+]
 
 if today_file and hist_file:
     df_today = pd.read_csv(today_file)
@@ -46,7 +78,6 @@ if today_file and hist_file:
 
     # ---- Get the *latest* event row for each batter from history ----
     if 'game_date' in df_hist.columns:
-        # Coerce date
         df_hist['game_date'] = pd.to_datetime(df_hist['game_date'], errors='coerce')
         latest_feats = (
             df_hist.sort_values('game_date')
@@ -59,37 +90,31 @@ if today_file and hist_file:
     # ---- Remove duplicated batter_ids in latest_feats (keep last, safest) ----
     latest_feats = latest_feats.drop_duplicates(subset=['batter_id'], keep='last')
 
-    # ---- Handle any column dtype (auto-correct numerics for all rolling/stat features) ----
-    rolling_stat_cols = [
-        c for c in latest_feats.columns
-        if c.startswith('b_') or c.startswith('p_') or c.endswith('_rate_20') or 'rolling' in c or
-           c.startswith('park_hand_hr_') or c.startswith('b_vsp_hand_hr_') or c.startswith('p_vsb_hand_hr_') or
-           c.startswith('b_pitchtype_hr_') or c.startswith('p_pitchtype_hr_')
-    ]
-    # Try to convert rolling stat columns to numeric if possible
-    for c in rolling_stat_cols:
-        if c in latest_feats.columns:
-            latest_feats[c] = pd.to_numeric(latest_feats[c], errors='coerce')
+    # ---- Force all relevant stats to numeric (auto-fix float/string mix) ----
+    for c in latest_feats.columns:
+        if c not in ["batter_id", "player_name", "player_name_hist"]:
+            latest_feats[c] = pd.to_numeric(latest_feats[c], errors='ignore')
 
-    # ---- Merge (left join) today's lineups with latest event stats ----
+    # ---- Merge today's lineups with latest event stats ----
     merged = df_today.merge(latest_feats, on="batter_id", how="left", suffixes=('', '_hist'))
 
     # ---- Deduplicate after merge, just in case ----
     merged = merged.drop_duplicates(subset=['batter_id'], keep='first')
+
+    # ---- Reindex to exact output column order (add missing cols as NaN, keep order) ----
+    for col in output_columns:
+        if col not in merged.columns:
+            merged[col] = np.nan
+    merged = merged.reindex(columns=output_columns)
 
     st.success(f"🟢 Generated file: {merged.shape[0]} unique batters, {merged.shape[1]} columns (features).")
 
     # ---- Preview output ----
     st.dataframe(merged.head(10))
 
-    # ---- Null report on rolling/stat features ----
-    st.markdown("#### Null Report (rolling/stat features only):")
-    null_report = merged[rolling_stat_cols].isnull().sum().sort_values(ascending=False)
-    st.code(null_report.to_string())
-
     # ---- Download button ----
     st.download_button(
-        "⬇️ Download Today's Event-Level CSV",
+        "⬇️ Download Today's Event-Level CSV (Exact Format)",
         data=merged.to_csv(index=False),
         file_name="event_level_today_full.csv"
     )
