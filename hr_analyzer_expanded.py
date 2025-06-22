@@ -1,131 +1,163 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+from sklearn.preprocessing import LabelEncoder
+from xgboost import XGBClassifier  # ← NEW import
+import matplotlib.pyplot as plt  # for feature importance plot
 
-st.set_page_config("🟦 Generate Today's Event-Level CSV", layout="wide")
-st.title("🟦 Generate Today's Event-Level CSV (All Rolling Stats, 1 Row Per Batter)")
+st.header("2️⃣ Upload Event-Level CSVs & Run Model")
 
-st.markdown("""
-**Instructions:**
-- Upload Today's Lineups/Matchups CSV (must have `batter_id` or `mlb_id`, `player_name`, etc).
-- Upload Historical Event-Level CSV (must have `batter_id`, `game_date`, and all stat columns).
-- Output: ONE row per batter with all rolling/stat features, calculated from their event history.
-- Output columns will match the format needed for prediction.
-- All numeric columns are auto-corrected for string/decimal mix issues.
-""")
+# Uploaders
+train_file = st.file_uploader(
+    "Upload Training Event-Level CSV (with hr_outcome)", type=["csv"], key="train_csv"
+)
+live_file = st.file_uploader(
+    "Upload Today's Event-Level CSV (with merged features, NO hr_outcome)", type=["csv"], key="live_csv"
+)
 
-today_file = st.file_uploader("Upload Today's Matchups/Lineups CSV", type=["csv"], key="today_csv")
-hist_file = st.file_uploader("Upload Historical Event-Level CSV", type=["csv"], key="hist_csv")
+# Threshold controls
+min_thr = st.number_input("Min HR Prob Threshold", min_value=0.0, max_value=1.0, value=0.05, step=0.01)
+max_thr = st.number_input("Max HR Prob Threshold", min_value=0.0, max_value=1.0, value=0.20, step=0.01)
+step = st.number_input("Threshold Step", min_value=0.001, max_value=0.2, value=0.01, step=0.01)
 
-# -- Paste your target columns here (edit as needed) --
-output_columns = [
-    "team_code","game_date","game_number","mlb_id","player_name","batting_order","position","weather","time","stadium","city",
-    "batter_id","p_throws",
-    "hard_hit_rate_20","sweet_spot_rate_20",
-    "park_hand_hr_7","park_hand_hr_14","park_hand_hr_30",
-    "b_vsp_hand_hr_3","p_vsb_hand_hr_3","b_vsp_hand_hr_5","p_vsb_hand_hr_5","b_vsp_hand_hr_7","p_vsb_hand_hr_7",
-    "b_vsp_hand_hr_14","p_vsb_hand_hr_14",
-    "b_pitchtype_hr_3","p_pitchtype_hr_3","b_pitchtype_hr_5","p_pitchtype_hr_5","b_pitchtype_hr_7","p_pitchtype_hr_7",
-    "b_pitchtype_hr_14","p_pitchtype_hr_14",
-    "b_launch_speed_3","b_launch_speed_5","b_launch_speed_7","b_launch_speed_14",
-    "b_launch_angle_3","b_launch_angle_5","b_launch_angle_7","b_launch_angle_14",
-    "b_hit_distance_sc_3","b_hit_distance_sc_5","b_hit_distance_sc_7","b_hit_distance_sc_14",
-    "b_woba_value_3","b_woba_value_5","b_woba_value_7","b_woba_value_14",
-    "b_release_speed_3","b_release_speed_5","b_release_speed_7","b_release_speed_14",
-    "b_release_spin_rate_3","b_release_spin_rate_5","b_release_spin_rate_7","b_release_spin_rate_14",
-    "b_spin_axis_3","b_spin_axis_5","b_spin_axis_7","b_spin_axis_14",
-    "b_pfx_x_3","b_pfx_x_5","b_pfx_x_7","b_pfx_x_14",
-    "b_pfx_z_3","b_pfx_z_5","b_pfx_z_7","b_pfx_z_14",
-    "p_launch_speed_3","p_launch_speed_5","p_launch_speed_7","p_launch_speed_14",
-    "p_launch_angle_3","p_launch_angle_5","p_launch_angle_7","p_launch_angle_14",
-    "p_hit_distance_sc_3","p_hit_distance_sc_5","p_hit_distance_sc_7","p_hit_distance_sc_14",
-    "p_woba_value_3","p_woba_value_5","p_woba_value_7","p_woba_value_14",
-    "p_release_speed_3","p_release_speed_5","p_release_speed_7","p_release_speed_14",
-    "p_release_spin_rate_3","p_release_spin_rate_5","p_release_spin_rate_7","p_release_spin_rate_14",
-    "p_spin_axis_3","p_spin_axis_5","p_spin_axis_7","p_spin_axis_14",
-    "p_pfx_x_3","p_pfx_x_5","p_pfx_x_7","p_pfx_x_14",
-    "p_pfx_z_3","p_pfx_z_5","p_pfx_z_7","p_pfx_z_14",
-    "park","temp","wind_mph","wind_dir","humidity","condition"
-]
+if train_file and live_file:
+    df_train = pd.read_csv(train_file)
+    df_live = pd.read_csv(live_file)
+    st.success(f"Training file loaded! {df_train.shape[0]:,} rows, {df_train.shape[1]} columns.")
+    st.success(f"Today's file loaded! {df_live.shape[0]:,} rows, {df_live.shape[1]} columns.")
 
-# These are the rolling stat columns you want to be always non-null if possible
-rolling_stat_cols = ["hard_hit_rate_20", "sweet_spot_rate_20"]
+    # Display feature diagnostics
+    st.markdown("### 🩺 Feature Diagnostics Table (train/live overlap)")
+    train_cols = set(df_train.columns.str.lower())
+    live_cols = set(df_live.columns.str.lower())
+    missing_in_live = sorted([c for c in train_cols if c not in live_cols])
+    missing_in_train = sorted([c for c in live_cols if c not in train_cols])
+    st.write("**Features in train missing from live:**")
+    st.write(missing_in_live if missing_in_live else "None")
+    st.write("**Features in live missing from train:**")
+    st.write(missing_in_train if missing_in_train else "None")
 
-if today_file and hist_file:
-    df_today = pd.read_csv(today_file)
-    df_hist = pd.read_csv(hist_file)
+    # Standardize column names to lower case for easier matching
+    df_train.columns = [c.lower() for c in df_train.columns]
+    df_live.columns = [c.lower() for c in df_live.columns]
 
-    st.success(f"Today's Matchups file loaded: {df_today.shape[0]} rows, {df_today.shape[1]} columns.")
-    st.success(f"Historical Event-Level file loaded: {df_hist.shape[0]} rows, {df_hist.shape[1]} columns.")
+    # Get intersection for modeling
+    candidate_feats = [c for c in df_train.columns if c in df_live.columns and c not in ("hr_outcome",)]
+    # Drop columns that are all null or all constant in either
+    features_to_use = []
+    for c in candidate_feats:
+        if (df_train[c].notnull().sum() > 0) and (df_live[c].notnull().sum() > 0):
+            if df_train[c].nunique(dropna=True) > 1 or df_live[c].nunique(dropna=True) > 1:
+                features_to_use.append(c)
 
-    # ---- Clean/standardize column names ----
-    df_today.columns = [str(c).strip().lower().replace(" ", "_") for c in df_today.columns]
-    df_hist.columns = [str(c).strip().lower().replace(" ", "_") for c in df_hist.columns]
+    # Show dtype mismatches
+    dtype_problems = []
+    for c in features_to_use:
+        if c in df_train.columns and c in df_live.columns:
+            if str(df_train[c].dtype) != str(df_live[c].dtype):
+                dtype_problems.append(f"{c}: train={df_train[c].dtype}, live={df_live[c].dtype}")
+    if dtype_problems:
+        st.warning("⚠️ Dtype mismatches detected! " + "; ".join(dtype_problems))
 
-    # ---- Get batter_id ----
-    id_cols_today = ['batter_id', 'mlb_id']
-    id_col_today = next((c for c in id_cols_today if c in df_today.columns), None)
-    if id_col_today is None:
-        st.error("Today's file must have 'batter_id' or 'mlb_id' column.")
+    st.write(f"**Final features used ({len(features_to_use)}):**")
+    st.write(features_to_use)
+
+    # Show null fraction
+    st.write("Null Fraction (train):")
+    st.write(df_train[features_to_use].isnull().mean())
+    st.write("Null Fraction (live):")
+    st.write(df_live[features_to_use].isnull().mean())
+
+    # Preprocess for model
+    X_train = df_train[features_to_use].copy()
+    X_live = df_live[features_to_use].copy()
+
+    # Find categorical features (object or string)
+    cat_feats = [c for c in features_to_use if str(X_train[c].dtype) in ("object", "category", "string")]
+
+    # Impute missing numerics with mean; categorical with "NA"
+    for c in features_to_use:
+        if c in cat_feats:
+            X_train[c] = X_train[c].astype(str).fillna("NA")
+            X_live[c] = X_live[c].astype(str).fillna("NA")
+        else:
+            X_train[c] = pd.to_numeric(X_train[c], errors="coerce")
+            X_train[c] = X_train[c].fillna(X_train[c].mean())
+            X_live[c] = pd.to_numeric(X_live[c], errors="coerce")
+            X_live[c] = X_live[c].fillna(X_train[c].mean())  # use train mean
+
+    # Encode categorical
+    encoders = {}
+    for c in cat_feats:
+        le = LabelEncoder()
+        X_train[c] = le.fit_transform(X_train[c])
+        # If live has unseen values, assign them a special code
+        live_vals = pd.Series(X_live[c].unique())
+        new_vals = live_vals[~live_vals.isin(le.classes_)]
+        if not new_vals.empty:
+            le_classes = np.concatenate([le.classes_, new_vals])
+            le.classes_ = le_classes
+        X_live[c] = le.transform(X_live[c])
+        encoders[c] = le
+
+    # Fit XGBoost model
+    try:
+        y_train = df_train["hr_outcome"].astype(int)
+        model = XGBClassifier(
+            n_estimators=100,
+            max_depth=5,
+            learning_rate=0.1,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            use_label_encoder=False,
+            eval_metric="logloss",
+            verbosity=0
+        )
+        model.fit(X_train, y_train)
+        y_pred_proba = model.predict_proba(X_live)[:, 1]
+        df_live_out = df_live.copy()
+        df_live_out["hr_prob"] = y_pred_proba
+        st.success(f"Model fit OK with {len(features_to_use)} features (XGBoost).")
+
+        # --------- FEATURE IMPORTANCE SECTION ---------
+        st.subheader("Feature Importance (Top 20)")
+        importances = model.feature_importances_
+        feat_imp = pd.Series(importances, index=features_to_use)
+        top_feats = feat_imp.sort_values(ascending=False).head(20)
+        st.bar_chart(top_feats)
+        # Show table version too
+        st.dataframe(top_feats.reset_index().rename(columns={"index": "Feature", 0: "Importance"}))
+        # ---------------------------------------------
+
+    except Exception as e:
+        st.error(f"Model fitting or prediction failed: {e}")
         st.stop()
-    if 'batter_id' not in df_hist.columns:
-        st.error("Historical file must have 'batter_id' column.")
-        st.stop()
 
-    # --- Fix decimal/string/integer mix for batter_id ---
-    df_today['batter_id'] = df_today[id_col_today].astype(str).str.strip().str.replace('.0', '', regex=False)
-    df_hist['batter_id'] = df_hist['batter_id'].astype(str).str.strip().str.replace('.0', '', regex=False)
+    # Show threshold controls and picks
+    st.markdown("### Threshold Controls")
+    st.write(f"Min HR Prob Threshold: {min_thr}")
+    st.write(f"Max HR Prob Threshold: {max_thr}")
+    st.write(f"Threshold Step: {step}")
 
-    # ---- Deduplicate today's batters (if duplicate batters in lineups) ----
-    df_today = df_today.drop_duplicates(subset=["batter_id"])
-
-    # ---- Get the latest event row WITH non-null rolling stats for each batter ----
-    if 'game_date' in df_hist.columns:
-        df_hist['game_date'] = pd.to_datetime(df_hist['game_date'], errors='coerce')
-        latest_non_null = []
-        for batter_id, group in df_hist.sort_values('game_date').groupby('batter_id'):
-            # Try to get last row where all rolling stats are present (not null)
-            non_null_row = group.dropna(subset=rolling_stat_cols)
-            if not non_null_row.empty:
-                latest_non_null.append(non_null_row.iloc[-1])
-            else:
-                # If all are null, just take last row (old behavior)
-                latest_non_null.append(group.iloc[-1])
-        latest_feats = pd.DataFrame(latest_non_null)
+    st.header("🔎 Bot Picks by Threshold")
+    if 'player_name' in df_live_out.columns:
+        player_col = 'player_name'
+    elif 'batter' in df_live_out.columns:
+        player_col = 'batter'
     else:
-        # No game_date column—fallback
-        latest_feats = df_hist.drop_duplicates(subset=['batter_id'], keep='last')
+        player_col = features_to_use[0]  # fallback
 
-    # ---- Remove duplicated batter_ids in latest_feats (keep last, safest) ----
-    latest_feats = latest_feats.drop_duplicates(subset=['batter_id'], keep='last')
+    # Show bot picks for each threshold
+    for thr in np.arange(min_thr, max_thr + step, step):
+        picks = df_live_out[df_live_out["hr_prob"] >= thr].copy()
+        if not picks.empty:
+            st.subheader(f"Players with HR Prob ≥ {thr:.2f} ({len(picks)} picks)")
+            st.dataframe(
+                picks[[player_col, "batter_id"] + [c for c in picks.columns if c not in [player_col, "batter_id", "hr_prob"]] + ["hr_prob"]]
+                .sort_values("hr_prob", ascending=False).reset_index(drop=True)
+            )
+        else:
+            st.write(f"No players at threshold ≥ {thr:.2f}")
 
-    # ---- Force all relevant stats to numeric (auto-fix float/string mix) ----
-    for c in latest_feats.columns:
-        if c not in ["batter_id", "player_name", "player_name_hist"]:
-            latest_feats[c] = pd.to_numeric(latest_feats[c], errors='ignore')
-
-    # ---- Merge today's lineups with latest event stats ----
-    merged = df_today.merge(latest_feats, on="batter_id", how="left", suffixes=('', '_hist'))
-
-    # ---- Deduplicate after merge, just in case ----
-    merged = merged.drop_duplicates(subset=['batter_id'], keep='first')
-
-    # ---- Reindex to exact output column order (add missing cols as NaN, keep order) ----
-    for col in output_columns:
-        if col not in merged.columns:
-            merged[col] = np.nan
-    merged = merged.reindex(columns=output_columns)
-
-    st.success(f"🟢 Generated file: {merged.shape[0]} unique batters, {merged.shape[1]} columns (features).")
-
-    # ---- Preview output ----
-    st.dataframe(merged.head(10))
-
-    # ---- Download button ----
-    st.download_button(
-        "⬇️ Download Today's Event-Level CSV (Exact Format)",
-        data=merged.to_csv(index=False),
-        file_name="event_level_today_full.csv"
-    )
 else:
-    st.info("Please upload BOTH today's matchups/lineups and historical event-level CSV.")
+    st.info("Please upload both training and today's event-level CSVs to continue.")
