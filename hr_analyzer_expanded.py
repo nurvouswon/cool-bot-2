@@ -1,70 +1,76 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
-from datetime import datetime
 
-st.set_page_config("Today's Event-Level CSV Generator", layout="wide")
-st.header("🟦 Generate Today's Event-Level CSV (w/ all historical features)")
+st.set_page_config("MLB HR Feature Merger", layout="centered")
 
-uploaded_today = st.file_uploader(
+st.title("🟦 Generate Today's Event-Level CSV (w/ all historical features)")
+
+# 1. Uploaders
+today_file = st.file_uploader(
     "Upload Today's Matchups/Lineups CSV (must have batter_id or mlb_id, player_name, etc)",
-    type="csv", key="today_csv"
+    type=["csv"], key="today"
 )
-uploaded_hist = st.file_uploader(
+hist_file = st.file_uploader(
     "Upload Historical Event-Level CSV (must have batter_id, game_date, and all features you want to carry forward)",
-    type="csv", key="hist_csv"
+    type=["csv"], key="hist"
 )
 
-if uploaded_today and uploaded_hist:
-    df_today = pd.read_csv(uploaded_today)
-    df_hist = pd.read_csv(uploaded_hist)
+if today_file and hist_file:
+    df_today = pd.read_csv(today_file)
+    df_hist = pd.read_csv(hist_file)
 
-    # --- Normalize columns ---
+    # Normalize column names for easy matching
     df_today.columns = [c.strip().lower().replace(" ", "_") for c in df_today.columns]
     df_hist.columns = [c.strip().lower().replace(" ", "_") for c in df_hist.columns]
 
-    # Use 'batter_id' everywhere if possible
-    if 'mlb_id' in df_today.columns and 'batter_id' not in df_today.columns:
-        df_today['batter_id'] = df_today['mlb_id'].astype(str)
-    elif 'batter_id' in df_today.columns:
-        df_today['batter_id'] = df_today['batter_id'].astype(str)
-    if 'batter_id' in df_hist.columns:
-        df_hist['batter_id'] = df_hist['batter_id'].astype(str)
+    # Find ID columns
+    id_col = None
+    for col in ["batter_id", "mlb_id"]:
+        if col in df_today.columns:
+            id_col = col
+            break
+    if not id_col or "batter_id" not in df_hist.columns:
+        st.error("Both files must have a batter_id or mlb_id column for merge (and batter_id in historical data).")
+        st.stop()
 
-    # Ensure date column is datetime
-    if 'game_date' in df_hist.columns:
-        df_hist['game_date'] = pd.to_datetime(df_hist['game_date'], errors='coerce')
+    # Ensure IDs are string for merge safety
+    df_today[id_col] = df_today[id_col].astype(str)
+    df_hist["batter_id"] = df_hist["batter_id"].astype(str)
 
-    # --- For each batter in today's file, grab latest (by game_date) historical row ---
-    last_feats = (
-        df_hist.sort_values('game_date')
-        .groupby('batter_id')
-        .tail(1)
-        .reset_index(drop=True)
-    )
+    # Use all columns from event-level CSV
+    hist_cols = [c for c in df_hist.columns if not c.startswith("unnamed")]
 
-    # --- Merge: today's batters + ALL latest historical features for each batter ---
-    # If today file has columns overlapping hist, only keep "today" version of things like player name, team, position, etc.
-    merge_on = 'batter_id'
-    today_cols = set(df_today.columns)
-    # Don't duplicate these columns from history; they are in today's matchups already
-    skip_cols = ['player_name', 'team_code', 'game_date', 'position', 'batting_order', 'team', 'mlb_id']
-    hist_cols = [c for c in last_feats.columns if c not in today_cols or c not in skip_cols]
-    merged = df_today.merge(last_feats[["batter_id"] + hist_cols], on="batter_id", how="left")
+    # Get latest row per batter_id (by game_date if available)
+    if "game_date" in df_hist.columns:
+        df_hist["game_date"] = pd.to_datetime(df_hist["game_date"], errors="coerce")
+        last_feats = (
+            df_hist.sort_values("game_date")
+                   .drop_duplicates("batter_id", keep="last")
+        )
+    else:
+        last_feats = df_hist.drop_duplicates("batter_id", keep="last")
 
-    st.subheader("Preview of Today's Event-Level CSV (with *all* historical features):")
+    # Safety check
+    assert last_feats["batter_id"].is_unique, "Internal error: duplicate batter_ids in last_feats!"
+
+    # Merge! Use all available columns
+    merged = df_today.merge(last_feats[["batter_id"] + [c for c in hist_cols if c != "batter_id"]],
+                            left_on=id_col, right_on="batter_id", how="left")
+
+    # Diagnostics
+    st.success(f"Created merged file: {len(merged)} rows, {merged.shape[1]} columns. All historical features carried forward.")
     st.dataframe(merged.head(20))
 
-    st.success(f"Created merged file for {len(merged)} batters. All columns from historical event-level data included.")
+    # Null report for historical columns
+    rolling_stat_cols = [c for c in hist_cols if c not in df_today.columns and c != "batter_id"]
+    st.markdown("#### Null count for historical features in merged output:")
+    st.write(merged[rolling_stat_cols].isnull().sum().sort_values(ascending=False))
 
+    # Download
     st.download_button(
-        "⬇️ Download Today's Event-Level CSV",
+        "⬇️ Download Today's Event-Level CSV (merged)",
         data=merged.to_csv(index=False),
-        file_name=f"event_level_today_full_{datetime.now().strftime('%Y_%m_%d')}.csv"
+        file_name="event_level_today_full.csv"
     )
-
-    st.markdown("#### Null count for features pulled from historical:")
-    hist_feature_cols = [c for c in merged.columns if c in df_hist.columns and c != 'batter_id']
-    st.dataframe(merged[hist_feature_cols].isnull().sum().sort_values(ascending=False).to_frame("null_count"))
 else:
-    st.info("Upload both historical event-level and today's matchups/lineups CSVs to begin.")
+    st.info("Please upload both Today's Matchups/Lineups CSV and Historical Event-Level CSV.")
