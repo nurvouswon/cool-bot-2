@@ -90,16 +90,16 @@ if today_file and hist_file:
     # ---- Remove duplicated batter_ids in latest_feats (keep last, safest) ----
     latest_feats = latest_feats.drop_duplicates(subset=['batter_id'], keep='last')
 
-    # ---- Force all relevant stats to numeric (auto-fix float/string mix) ----
-    for c in latest_feats.columns:
-        if c not in ["batter_id", "player_name", "player_name_hist"]:
-            latest_feats[c] = pd.to_numeric(latest_feats[c], errors='ignore')
-
     # ---- Merge today's lineups with latest event stats ----
     merged = df_today.merge(latest_feats, on="batter_id", how="left", suffixes=('', '_hist'))
 
     # ---- Deduplicate after merge, just in case ----
     merged = merged.drop_duplicates(subset=['batter_id'], keep='first')
+
+    # ---- Force all rolling/stat columns to numeric if they're in output_columns ----
+    for c in output_columns:
+        if c in merged.columns and c not in ['batter_id', 'player_name']:
+            merged[c] = pd.to_numeric(merged[c], errors='coerce')
 
     # ---- Reindex to exact output column order (add missing cols as NaN, keep order) ----
     for col in output_columns:
