@@ -17,6 +17,7 @@ st.markdown("""
 today_file = st.file_uploader("Upload Today's Matchups/Lineups CSV", type=["csv"], key="today_csv")
 hist_file = st.file_uploader("Upload Historical Event-Level CSV", type=["csv"], key="hist_csv")
 
+# -- Paste your target columns here (edit as needed) --
 output_columns = [
     "team_code","game_date","game_number","mlb_id","player_name","batting_order","position","weather","time","stadium","city",
     "batter_id","p_throws",
@@ -47,6 +48,9 @@ output_columns = [
     "park","temp","wind_mph","wind_dir","humidity","condition"
 ]
 
+# These are the rolling stat columns you want to be always non-null if possible
+rolling_stat_cols = ["hard_hit_rate_20", "sweet_spot_rate_20"]
+
 if today_file and hist_file:
     df_today = pd.read_csv(today_file)
     df_hist = pd.read_csv(hist_file)
@@ -75,39 +79,33 @@ if today_file and hist_file:
     # ---- Deduplicate today's batters (if duplicate batters in lineups) ----
     df_today = df_today.drop_duplicates(subset=["batter_id"])
 
-    # ---- Get the *latest* event row for each batter from history ----
+    # ---- Get the latest event row WITH non-null rolling stats for each batter ----
     if 'game_date' in df_hist.columns:
         df_hist['game_date'] = pd.to_datetime(df_hist['game_date'], errors='coerce')
-        latest_feats = (
-            df_hist.sort_values('game_date')
-            .groupby('batter_id', as_index=False)
-            .tail(1)
-        )
+        latest_non_null = []
+        for batter_id, group in df_hist.sort_values('game_date').groupby('batter_id'):
+            # Try to get last row where all rolling stats are present (not null)
+            non_null_row = group.dropna(subset=rolling_stat_cols)
+            if not non_null_row.empty:
+                latest_non_null.append(non_null_row.iloc[-1])
+            else:
+                # If all are null, just take last row (old behavior)
+                latest_non_null.append(group.iloc[-1])
+        latest_feats = pd.DataFrame(latest_non_null)
     else:
+        # No game_date column—fallback
         latest_feats = df_hist.drop_duplicates(subset=['batter_id'], keep='last')
 
     # ---- Remove duplicated batter_ids in latest_feats (keep last, safest) ----
     latest_feats = latest_feats.drop_duplicates(subset=['batter_id'], keep='last')
 
-    # --- Diagnostic: show hard_hit_rate_20 and sweet_spot_rate_20 in history ---
-    st.write("Sample from event-level history (latest_feats):")
-    if "hard_hit_rate_20" in latest_feats.columns and "sweet_spot_rate_20" in latest_feats.columns:
-        st.dataframe(latest_feats[["batter_id", "hard_hit_rate_20", "sweet_spot_rate_20"]].head(10))
-    else:
-        st.warning("hard_hit_rate_20 and/or sweet_spot_rate_20 missing from event-level file.")
-
     # ---- Force all relevant stats to numeric (auto-fix float/string mix) ----
-    for c in ["hard_hit_rate_20", "sweet_spot_rate_20"]:
-        if c in latest_feats.columns:
-            latest_feats[c] = pd.to_numeric(latest_feats[c], errors='coerce')
+    for c in latest_feats.columns:
+        if c not in ["batter_id", "player_name", "player_name_hist"]:
+            latest_feats[c] = pd.to_numeric(latest_feats[c], errors='ignore')
 
     # ---- Merge today's lineups with latest event stats ----
     merged = df_today.merge(latest_feats, on="batter_id", how="left", suffixes=('', '_hist'))
-
-    # --- Diagnostic: show merged columns after join ---
-    st.write("Sample after merge (output):")
-    if "hard_hit_rate_20" in merged.columns and "sweet_spot_rate_20" in merged.columns:
-        st.dataframe(merged[["batter_id", "hard_hit_rate_20", "sweet_spot_rate_20"]].head(10))
 
     # ---- Deduplicate after merge, just in case ----
     merged = merged.drop_duplicates(subset=['batter_id'], keep='first')
@@ -117,11 +115,6 @@ if today_file and hist_file:
         if col not in merged.columns:
             merged[col] = np.nan
     merged = merged.reindex(columns=output_columns)
-
-    # ---- OPTIONAL: Fill NAs with 0 for these two columns (comment out if not wanted) ----
-    # for col in ["hard_hit_rate_20", "sweet_spot_rate_20"]:
-    #     if col in merged.columns:
-    #         merged[col] = merged[col].fillna(0)
 
     st.success(f"🟢 Generated file: {merged.shape[0]} unique batters, {merged.shape[1]} columns (features).")
 
