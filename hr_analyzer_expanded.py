@@ -89,22 +89,25 @@ if today_file and hist_file:
     # ---- Remove duplicated batter_ids in latest_feats (keep last, safest) ----
     latest_feats = latest_feats.drop_duplicates(subset=['batter_id'], keep='last')
 
+    # --- Diagnostic: show hard_hit_rate_20 and sweet_spot_rate_20 in history ---
+    st.write("Sample from event-level history (latest_feats):")
+    if "hard_hit_rate_20" in latest_feats.columns and "sweet_spot_rate_20" in latest_feats.columns:
+        st.dataframe(latest_feats[["batter_id", "hard_hit_rate_20", "sweet_spot_rate_20"]].head(10))
+    else:
+        st.warning("hard_hit_rate_20 and/or sweet_spot_rate_20 missing from event-level file.")
+
     # ---- Force all relevant stats to numeric (auto-fix float/string mix) ----
-    for c in latest_feats.columns:
-        if c not in ["batter_id", "player_name", "player_name_hist"]:
-            latest_feats[c] = pd.to_numeric(latest_feats[c], errors='ignore')
+    for c in ["hard_hit_rate_20", "sweet_spot_rate_20"]:
+        if c in latest_feats.columns:
+            latest_feats[c] = pd.to_numeric(latest_feats[c], errors='coerce')
 
     # ---- Merge today's lineups with latest event stats ----
     merged = df_today.merge(latest_feats, on="batter_id", how="left", suffixes=('', '_hist'))
 
-    # ---- Restore info columns from today file if they exist ----
-    info_cols = [
-        "team_code","game_date","game_number","mlb_id","player_name","batting_order","position",
-        "weather","time","stadium","city"
-    ]
-    for col in info_cols:
-        if col in df_today.columns:
-            merged[col] = merged[col].combine_first(df_today[col])
+    # --- Diagnostic: show merged columns after join ---
+    st.write("Sample after merge (output):")
+    if "hard_hit_rate_20" in merged.columns and "sweet_spot_rate_20" in merged.columns:
+        st.dataframe(merged[["batter_id", "hard_hit_rate_20", "sweet_spot_rate_20"]].head(10))
 
     # ---- Deduplicate after merge, just in case ----
     merged = merged.drop_duplicates(subset=['batter_id'], keep='first')
@@ -114,6 +117,11 @@ if today_file and hist_file:
         if col not in merged.columns:
             merged[col] = np.nan
     merged = merged.reindex(columns=output_columns)
+
+    # ---- OPTIONAL: Fill NAs with 0 for these two columns (comment out if not wanted) ----
+    # for col in ["hard_hit_rate_20", "sweet_spot_rate_20"]:
+    #     if col in merged.columns:
+    #         merged[col] = merged[col].fillna(0)
 
     st.success(f"🟢 Generated file: {merged.shape[0]} unique batters, {merged.shape[1]} columns (features).")
 
