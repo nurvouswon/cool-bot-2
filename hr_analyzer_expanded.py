@@ -2,84 +2,102 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 
-st.title("🟦 Generate Today's Event-Level CSV (with All Historical Features, One Row Per Batter)")
+st.title("🟦 Generate Today's Event-Level CSV (All Rolling Stats, 1 Row Per Batter)")
 
 st.markdown("""
 **Instructions:**
-1. Upload your *Today’s Matchups/Lineups* CSV (must have `batter_id` or `mlb_id`, `player_name`, etc).
-2. Upload your *Historical Event-Level* CSV (must have `batter_id`, `game_date`, and all features you want to carry forward).
-3. App will match each batter to their latest stats. Output is ONE row per batter (no duplicates).
+- Upload *Today's Lineups/Matchups* CSV (must have `batter_id` or `mlb_id`, `player_name`, etc).
+- Upload *Historical Event-Level* CSV (must have `batter_id`, `game_date`, and all stat columns).
+- Output: **ONE row per batter** with all rolling/stat features, calculated from their event history.  
+- All numeric columns are auto-corrected for string/decimal mix issues.
 """)
 
-# --- Uploaders
 today_file = st.file_uploader("Upload Today's Matchups/Lineups CSV", type=["csv"], key="today_csv")
 hist_file = st.file_uploader("Upload Historical Event-Level CSV", type=["csv"], key="hist_csv")
 
+ROLLING_WINDOWS = [3, 5, 7, 14]
+ROLL_COLS = [
+    'launch_speed', 'launch_angle', 'hit_distance_sc', 'woba_value',
+    'release_speed', 'release_spin_rate', 'spin_axis', 'pfx_x', 'pfx_z'
+]
+
+def to_numeric_df(df):
+    """Attempt to fix decimal-string issue by converting columns with numeric content."""
+    for col in df.columns:
+        # Try only on object columns
+        if df[col].dtype == "object":
+            try:
+                df[col] = pd.to_numeric(df[col], errors="ignore")
+            except Exception:
+                pass
+    return df
+
+def rolling_stats(hist_df, id_col, date_col):
+    df = hist_df.copy()
+    results = []
+    for batter_id, group in df.groupby(id_col):
+        group = group.sort_values(date_col)
+        for w in ROLLING_WINDOWS:
+            for col in ROLL_COLS:
+                cname = f'b_{col}_{w}'
+                if col in group.columns:
+                    group[cname] = pd.to_numeric(group[col], errors='coerce').shift(1).rolling(w, min_periods=1).mean()
+        results.append(group)
+    return pd.concat(results, ignore_index=True)
+
 if today_file and hist_file:
-    # Read CSVs
     df_today = pd.read_csv(today_file)
     df_hist = pd.read_csv(hist_file)
 
-    st.success(f"Today's Matchups file loaded: {df_today.shape[0]} rows, {df_today.shape[1]} columns.")
-    st.success(f"Historical Event-Level file loaded: {df_hist.shape[0]} rows, {df_hist.shape[1]} columns.")
-
-    # Standardize column names
+    # Normalize columns for join
     df_today.columns = [c.strip().lower().replace(" ", "_") for c in df_today.columns]
     df_hist.columns = [c.strip().lower().replace(" ", "_") for c in df_hist.columns]
-
-    # --- Normalize batter IDs (fix decimals, type mismatches)
-    def norm_id(x):
-        try:
-            return str(int(float(x)))
-        except:
-            if pd.isnull(x):
-                return ""
-            s = str(x)
-            if "." in s:
-                return s.split(".")[0]
-            return s
-
-    # Use mlb_id or batter_id
-    if 'mlb_id' in df_today.columns:
-        df_today['batter_id'] = df_today['mlb_id'].apply(norm_id)
-    elif 'batter_id' in df_today.columns:
-        df_today['batter_id'] = df_today['batter_id'].apply(norm_id)
+    if "mlb_id" in df_today.columns:
+        df_today["batter_id"] = df_today["mlb_id"].astype(str)
+    elif "batter_id" in df_today.columns:
+        df_today["batter_id"] = df_today["batter_id"].astype(str)
     else:
-        st.error("Today's CSV must have a 'batter_id' or 'mlb_id' column!")
+        st.error("Today's file must have mlb_id or batter_id column.")
         st.stop()
-    df_hist['batter_id'] = df_hist['batter_id'].apply(norm_id)
-
-    # --- Make sure game_date is datetime
-    if 'game_date' not in df_hist.columns:
-        st.error("Historical file must have a 'game_date' column.")
+    df_hist["batter_id"] = df_hist["batter_id"].astype(str)
+    if "game_date" in df_hist.columns:
+        df_hist["game_date"] = pd.to_datetime(df_hist["game_date"])
+    else:
+        st.error("Historical file must have game_date column.")
         st.stop()
-    df_hist['game_date'] = pd.to_datetime(df_hist['game_date'], errors='coerce')
 
-    # --- For each batter, get ONLY their latest event (row) by game_date
-    hist_latest = df_hist.sort_values('game_date').groupby('batter_id', as_index=False).tail(1)
+    # --- Fix decimal/string issues for all columns in both files ---
+    df_today = to_numeric_df(df_today)
+    df_hist = to_numeric_df(df_hist)
 
-    # --- Merge: today's lineup info + latest hist features
-    merged = df_today.merge(hist_latest, on='batter_id', how='left', suffixes=('', '_hist'))
+    # --- Compute rolling stats ---
+    progress = st.empty()
+    progress.info("Calculating rolling stats...")
+    df_hist_rolled = rolling_stats(df_hist, "batter_id", "game_date")
+    progress.success("Rolling stats calculated.")
 
-    # --- Deduplicate just in case
-    merged = merged.drop_duplicates(subset=['batter_id'], keep='first')
+    # --- Get latest event row per batter, with rolling stats ---
+    idx = df_hist_rolled.groupby("batter_id")["game_date"].idxmax()
+    latest_feats = df_hist_rolled.loc[idx].copy()
+    latest_feats = latest_feats.drop_duplicates(subset=["batter_id"])
 
-    st.info(f"🟢 Generated file: {merged.shape[0]} unique batters, {merged.shape[1]} columns (features).")
-    st.write("Preview of merged result (first 10 rows):")
+    # --- Merge to today's file, only one row per batter ---
+    merged = df_today.merge(latest_feats, on="batter_id", how="left", suffixes=('', '_hist'))
+    merged = merged.drop_duplicates(subset=["batter_id"], keep="first")
+
+    st.success(f"🟢 Generated file: {len(merged)} unique batters, {merged.shape[1]} columns.")
+
+    st.markdown("**Preview of merged result (first 10 rows):**")
     st.dataframe(merged.head(10))
 
-    # --- Download button
-    st.download_button(
-        "⬇️ Download Today's Event-Level CSV (1 row per batter, all features)",
-        data=merged.to_csv(index=False),
-        file_name="event_level_today_full_merged.csv"
-    )
-
-    # --- Diagnostics
-    st.markdown("### Null Report (rolling/stat features only):")
-    stat_cols = [c for c in hist_latest.columns if c not in df_today.columns and c != 'batter_id']
-    null_report = merged[stat_cols].isnull().sum().sort_values(ascending=False)
+    # Show null report for rolling/stat features only
+    roll_stat_cols = [c for c in merged.columns if c.startswith("b_")]
+    null_report = merged[roll_stat_cols].isnull().sum().sort_values(ascending=False)
+    st.markdown("**Null Report (rolling/stat features only):**")
     st.text(null_report.to_string())
 
-else:
-    st.info("Please upload both today's matchups/lineups and historical event-level CSVs to generate the file.")
+    st.download_button(
+        "⬇️ Download Today's Event-Level CSV (with all rolling features)",
+        data=merged.to_csv(index=False),
+        file_name="event_level_today_full.csv"
+    )
