@@ -3,6 +3,3 @@ pandas
 numpy
 scikit-learn
 xgboost
-requests
-pybaseball
-python-dateutil
