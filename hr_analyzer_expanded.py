@@ -88,8 +88,14 @@ if today_file and hist_file:
         df_today["temp"] = weather_str.str.extract(r'(\d+)', expand=False)
         df_today["temp"] = pd.to_numeric(df_today["temp"], errors='coerce')
         # Wind mph (after CF/LF/RF/etc)
-        df_today["wind_mph"] = weather_str.str.extract(r'(\d+)\s*-\s*(\d+)', expand=False)
-        df_today["wind_mph"] = df_today["wind_mph"].apply(lambda x: np.mean([int(i) for i in x if pd.notna(i)]) if isinstance(x, (list, np.ndarray)) else np.nan)
+        # Try to extract wind range (min-max)
+        wind_range = weather_str.str.extract(r'(\d+)\s*-\s*(\d+)', expand=True)
+        wind_range = wind_range.apply(pd.to_numeric, errors='coerce')
+        df_today["wind_mph"] = wind_range.mean(axis=1)
+
+        # Fallback: if not present, try single wind speed (e.g. "13" in "92 O CF 12-14 30% outdoor")
+        no_wind = df_today["wind_mph"].isnull()
+        df_today.loc[no_wind, "wind_mph"] = weather_str.str.extract(r'(\d+)', expand=False).astype(float)
         # Wind direction (e.g. "CF", "LF", "RF", "N", "E", etc)
         df_today["wind_dir"] = weather_str.str.extract(r'([A-Z]{1,2})\s*', flags=re.I, expand=False)
         # Condition
