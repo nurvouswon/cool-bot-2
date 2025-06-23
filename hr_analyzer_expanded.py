@@ -194,6 +194,11 @@ if today_file and hist_file:
 
     st.success(f"🟢 Generated file: {merged.shape[0]} unique batters, {merged.shape[1]} columns (features).")
 
+    # ---- DEDUPLICATE COLUMNS: Keep only the first occurrence ----
+    merged = merged.loc[:, ~merged.columns.duplicated()]
+
+    st.success(f"🟢 Generated file: {merged.shape[0]} unique batters, {merged.shape[1]} columns (features).")
+
     # ---- Preview output ----
     st.dataframe(merged.head(10))
 
