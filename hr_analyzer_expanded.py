@@ -4,106 +4,21 @@ import numpy as np
 import re
 
 st.set_page_config("🟦 Generate Today's Event-Level CSV", layout="wide")
-st.title("🟦 Generate Today's Event-Level CSV (All Rolling Stats, Pitcher+Batter, Pitch Type, All Windows)")
+st.title("🟦 Generate Today's Event-Level CSV (FAST, Optimized for Large Data)")
 
 st.markdown("""
 **Instructions:**
 - Upload Today's Lineups/Matchups CSV (must have `batter_id` or `mlb_id`, `player_name`, etc).
 - Upload Historical Event-Level CSV (must have `batter_id`, `pitcher_id`, `pitch_type`, `game_date`, and all stat columns).
 - Output: ONE row per batter with ALL rolling/stat features (3/7/14/20, batter & pitcher, per pitch type and overall).
-- All numeric columns are auto-corrected for string/decimal mix issues.
 """)
 
 today_file = st.file_uploader("Upload Today's Matchups/Lineups CSV", type=["csv"], key="today_csv")
 hist_file = st.file_uploader("Upload Historical Event-Level CSV", type=["csv"], key="hist_csv")
 
-output_columns = [
-    "team_code","game_date","game_number","mlb_id","player_name","batting_order","position",
-    "weather","temp","wind_mph","wind_dir","condition","stadium","city","batter_id","p_throws",
-    # Overall Batting
-    "hard_hit_rate_3","hard_hit_rate_7","hard_hit_rate_14","hard_hit_rate_20",
-    "barrel_rate_3","barrel_rate_7","barrel_rate_14","barrel_rate_20",
-    "fb_rate_3","fb_rate_7","fb_rate_14","fb_rate_20",
-    "avg_exit_velo_3","avg_exit_velo_7","avg_exit_velo_14","avg_exit_velo_20",
-    "sweet_spot_rate_3","sweet_spot_rate_7","sweet_spot_rate_14","sweet_spot_rate_20",
-    # Overall Pitching
-    "p_hard_hit_rate_3","p_hard_hit_rate_7","p_hard_hit_rate_14","p_hard_hit_rate_20",
-    "p_barrel_rate_3","p_barrel_rate_7","p_barrel_rate_14","p_barrel_rate_20",
-    "p_fb_rate_3","p_fb_rate_7","p_fb_rate_14","p_fb_rate_20",
-    "p_avg_exit_velo_3","p_avg_exit_velo_7","p_avg_exit_velo_14","p_avg_exit_velo_20",
-    "p_sweet_spot_rate_3","p_sweet_spot_rate_7","p_sweet_spot_rate_14","p_sweet_spot_rate_20",
-    # Add pitch-type columns (dynamically added below)
-    # Add all your other HR model features here...
-]
-
 event_windows = [3, 7, 14, 20]
-main_pitch_types = ["ff", "sl", "cu", "ch", "si", "fc", "fs", "st", "sinker", "splitter", "sweeper"]  # common pitch codes (expand as needed)
+main_pitch_types = ["ff", "sl", "cu", "ch", "si", "fc", "fs", "st", "sinker", "splitter", "sweeper"]  # expand if needed
 
-# ---- Robust stat helpers ----
-def safe_mean(arr):
-    arr = pd.to_numeric(arr, errors='coerce').dropna()
-    return np.mean(arr) if not arr.empty else np.nan
-
-def safe_nanmean(arr):
-    arr = pd.to_numeric(arr, errors='coerce').dropna()
-    return np.nanmean(arr) if not arr.empty else np.nan
-
-def safe_frac(arr, cond):
-    arr = pd.to_numeric(arr, errors='coerce')
-    mask = cond(arr)
-    denom = mask.size if mask is not None else 0
-    return np.nan if denom == 0 else np.mean(mask)
-
-# ---- Custom stat functions (fully protected) ----
-batter_custom_stats = {
-    "hard_hit_rate": lambda df: safe_frac(df['launch_speed'], lambda s: s >= 95),
-    "barrel_rate": lambda df: (
-        safe_frac(df[['launch_speed', 'launch_angle']].dropna(how='any'), 
-                  lambda d: (d['launch_speed'] >= 98) & (d['launch_angle'] >= 26) & (d['launch_angle'] <= 30))
-        if 'launch_speed' in df and 'launch_angle' in df and not df[['launch_speed', 'launch_angle']].dropna(how='any').empty
-        else np.nan
-    ),
-    "fb_rate": lambda df: safe_frac(df['launch_angle'], lambda s: s >= 25),
-    "avg_exit_velo": lambda df: safe_nanmean(df['launch_speed']),
-    "sweet_spot_rate": lambda df: safe_frac(df['launch_angle'], lambda s: (s >= 8) & (s <= 32)),
-}
-pitcher_custom_stats = {f"p_{k}": v for k, v in batter_custom_stats.items()}
-
-# ---- Compute rolling stats (fully robust) ----
-def compute_event_rolling(df, id_col, date_col, stat_fns, windows, pitch_types=None, prefix=""):
-    out = []
-    df = df.sort_values([id_col, date_col])
-    for pid, group in df.groupby(id_col):
-        group = group.sort_values(date_col)
-        for idx in range(len(group)):
-            row = group.iloc[idx]
-            stats = {id_col: row[id_col], date_col: row[date_col]}
-            # Overall
-            for stat, func in stat_fns.items():
-                for w in windows:
-                    wgroup = group.iloc[max(0, idx-w+1):idx+1]
-                    try:
-                        val = func(wgroup)
-                        stats[f"{prefix}{stat}_{w}"] = val
-                    except Exception as e:
-                        stats[f"{prefix}{stat}_{w}"] = np.nan
-            # Per pitch type
-            if pitch_types is not None and "pitch_type" in group:
-                for pt in pitch_types:
-                    pt_mask = (group["pitch_type"].str.lower() == pt)
-                    pt_group = group[pt_mask]
-                    for stat, func in stat_fns.items():
-                        for w in windows:
-                            wgroup = pt_group.iloc[max(0, idx-w+1):idx+1]
-                            try:
-                                val = func(wgroup)
-                                stats[f"{prefix}{stat}_{pt}_{w}"] = val
-                            except Exception as e:
-                                stats[f"{prefix}{stat}_{pt}_{w}"] = np.nan
-            out.append(stats)
-    return pd.DataFrame(out)
-
-# ---- Weather parsing ----
 def parse_weather_fields(df):
     if "weather" in df.columns:
         weather_str = df["weather"].astype(str)
@@ -120,6 +35,98 @@ def parse_weather_fields(df):
         df["condition"] = weather_str.str.extract(r'(indoor|outdoor)', flags=re.I, expand=False)
     return df
 
+def batter_pitcher_rolling(df, id_col, stat_cols, event_windows, pitch_types=None, prefix=''):
+    df = df.copy()
+    df = df.sort_values([id_col, 'game_date'])
+    result = df[[id_col, 'game_date']].drop_duplicates().copy().set_index([id_col])
+    # Overall stats (no pitch_type split)
+    for stat, func in stat_cols.items():
+        for w in event_windows:
+            # Use rolling within groupby
+            colname = f"{prefix}{stat}_{w}"
+            grouped = df.groupby(id_col)[stat_cols[stat]['base']]
+            if func == 'mean':
+                stat_result = grouped.transform(lambda x: x.rolling(w, min_periods=1).mean())
+            elif func == 'hard_hit':
+                stat_result = grouped.transform(lambda x: (x >= 95).rolling(w, min_periods=1).mean())
+            elif func == 'barrel':
+                stat_result = grouped.transform(lambda x: (
+                    ((df['launch_speed'] >= 98) & (df['launch_angle'] >= 26) & (df['launch_angle'] <= 30))
+                    .rolling(w, min_periods=1).mean()
+                ))
+            elif func == 'fb_rate':
+                stat_result = grouped.transform(lambda x: (x >= 25).rolling(w, min_periods=1).mean())
+            elif func == 'sweet_spot':
+                stat_result = grouped.transform(lambda x: ((x >= 8) & (x <= 32)).rolling(w, min_periods=1).mean())
+            else:
+                stat_result = pd.Series(np.nan, index=x.index)
+            df[colname] = stat_result
+    # Per pitch type
+    if pitch_types is not None and 'pitch_type' in df.columns:
+        for pt in pitch_types:
+            mask = (df['pitch_type'].str.lower() == pt)
+            for stat, func in stat_cols.items():
+                base_col = stat_cols[stat]['base']
+                for w in event_windows:
+                    colname = f"{prefix}{stat}_{pt}_{w}"
+                    grouped = df[mask].groupby(id_col)[base_col]
+                    if func == 'mean':
+                        stat_result = grouped.transform(lambda x: x.rolling(w, min_periods=1).mean())
+                    elif func == 'hard_hit':
+                        stat_result = grouped.transform(lambda x: (x >= 95).rolling(w, min_periods=1).mean())
+                    elif func == 'barrel':
+                        stat_result = grouped.transform(lambda x: (
+                            ((df.loc[mask, 'launch_speed'] >= 98) &
+                             (df.loc[mask, 'launch_angle'] >= 26) &
+                             (df.loc[mask, 'launch_angle'] <= 30))
+                            .rolling(w, min_periods=1).mean()
+                        ))
+                    elif func == 'fb_rate':
+                        stat_result = grouped.transform(lambda x: (x >= 25).rolling(w, min_periods=1).mean())
+                    elif func == 'sweet_spot':
+                        stat_result = grouped.transform(lambda x: ((x >= 8) & (x <= 32)).rolling(w, min_periods=1).mean())
+                    else:
+                        stat_result = pd.Series(np.nan, index=x.index)
+                    df.loc[mask, colname] = stat_result
+    # Only keep last row per id
+    result = df.sort_values('game_date').groupby(id_col).tail(1).set_index(id_col)
+    return result
+
+# Stats to compute for both batter and pitcher
+stat_cols = {
+    'avg_exit_velo': {'base': 'launch_speed', 'func': 'mean'},
+    'hard_hit_rate': {'base': 'launch_speed', 'func': 'hard_hit'},
+    'barrel_rate': {'base': 'launch_speed', 'func': 'barrel'},
+    'fb_rate': {'base': 'launch_angle', 'func': 'fb_rate'},
+    'sweet_spot_rate': {'base': 'launch_angle', 'func': 'sweet_spot'},
+}
+
+# Remap stat names to their logic
+stat_func_map = {
+    'mean': 'mean',
+    'hard_hit': 'hard_hit',
+    'barrel': 'barrel',
+    'fb_rate': 'fb_rate',
+    'sweet_spot': 'sweet_spot',
+}
+for s in stat_cols:
+    stat_cols[s]['func'] = stat_func_map[stat_cols[s]['func']]
+
+# The full output columns, built up for every stat, window, and pitch type
+output_columns = [
+    "team_code","game_date","game_number","mlb_id","player_name","batting_order","position",
+    "weather","temp","wind_mph","wind_dir","condition","stadium","city","batter_id","p_throws",
+]
+# Add all rolling stat columns dynamically
+for s in stat_cols:
+    for w in event_windows:
+        output_columns.append(f"{s}_{w}")
+        output_columns.append(f"p_{s}_{w}")
+    for pt in main_pitch_types:
+        for w in event_windows:
+            output_columns.append(f"{s}_{pt}_{w}")
+            output_columns.append(f"p_{s}_{pt}_{w}")
+
 if today_file and hist_file:
     df_today = pd.read_csv(today_file)
     df_hist = pd.read_csv(hist_file)
@@ -127,7 +134,6 @@ if today_file and hist_file:
     st.success(f"Today's Matchups file loaded: {df_today.shape[0]} rows, {df_today.shape[1]} columns.")
     st.success(f"Historical Event-Level file loaded: {df_hist.shape[0]} rows, {df_hist.shape[1]} columns.")
 
-    # Standardize columns
     df_today.columns = [str(c).strip().lower().replace(" ", "_") for c in df_today.columns]
     df_hist.columns = [str(c).strip().lower().replace(" ", "_") for c in df_hist.columns]
 
@@ -142,7 +148,6 @@ if today_file and hist_file:
     df_today['batter_id'] = df_today[id_col_today].astype(str).str.strip().str.replace('.0', '', regex=False)
     df_hist['batter_id'] = df_hist['batter_id'].astype(str).str.strip().str.replace('.0', '', regex=False)
     df_hist['pitcher_id'] = df_hist['pitcher_id'].astype(str).str.strip().str.replace('.0', '', regex=False)
-
     df_today = df_today.drop_duplicates(subset=["batter_id"])
     df_today = parse_weather_fields(df_today)
     if 'game_date' not in df_hist.columns:
@@ -150,26 +155,30 @@ if today_file and hist_file:
         st.stop()
     df_hist['game_date'] = pd.to_datetime(df_hist['game_date'], errors='coerce')
 
-    # ---- Batter event rolling, per pitch type and overall ----
+    # Coerce stat columns
+    for stat in set([d['base'] for d in stat_cols.values()]):
+        if stat in df_hist.columns:
+            df_hist[stat] = pd.to_numeric(df_hist[stat], errors='coerce')
+    if 'launch_angle' in df_hist.columns:
+        df_hist['launch_angle'] = pd.to_numeric(df_hist['launch_angle'], errors='coerce')
+
+    # ---- Batter event rolling, per pitch type and overall (FAST) ----
     st.info("Computing batter rolling stats...")
-    batter_event = compute_event_rolling(
-        df_hist, "batter_id", "game_date", batter_custom_stats, event_windows, main_pitch_types, prefix=""
-    ).sort_values(['batter_id', 'game_date']).drop_duplicates(['batter_id'], keep='last')
+    batter_event = batter_pitcher_rolling(
+        df_hist, "batter_id", stat_cols, event_windows, main_pitch_types, prefix=""
+    )
+    batter_event = batter_event.reset_index()
+    st.success(f"Batter rolling stats shape: {batter_event.shape}")
 
-    # ---- Pitcher event rolling, per pitch type and overall ----
+    # ---- Pitcher event rolling, per pitch type and overall (FAST) ----
     st.info("Computing pitcher rolling stats...")
-    pitcher_event = compute_event_rolling(
-        df_hist.rename(columns={"pitcher_id": "batter_id"}), "batter_id", "game_date",
-        pitcher_custom_stats, event_windows, main_pitch_types, prefix="p_"
-    ).sort_values(['batter_id', 'game_date']).drop_duplicates(['batter_id'], keep='last')
-    pitcher_event = pitcher_event.rename(columns={'batter_id': 'pitcher_id', 'game_date': 'game_date'})
-
-    # Dynamically add per-pitch-type stat names to output_columns (batter, pitcher)
-    for stat in ["hard_hit_rate", "barrel_rate", "fb_rate", "avg_exit_velo", "sweet_spot_rate"]:
-        for pt in main_pitch_types:
-            for w in event_windows:
-                output_columns.append(f"{stat}_{pt}_{w}")
-                output_columns.append(f"p_{stat}_{pt}_{w}")
+    df_hist_p = df_hist.rename(columns={"pitcher_id": "batter_id"})
+    pitcher_event = batter_pitcher_rolling(
+        df_hist_p, "batter_id", {f"p_{k}": {'base': v['base'], 'func': v['func']} for k, v in stat_cols.items()}, 
+        event_windows, main_pitch_types, prefix="p_"
+    )
+    pitcher_event = pitcher_event.reset_index().rename(columns={'batter_id': 'pitcher_id'})
+    st.success(f"Pitcher rolling stats shape: {pitcher_event.shape}")
 
     # ---- Merge batter and pitcher stats into today's lineups ----
     st.info("Merging data...")
