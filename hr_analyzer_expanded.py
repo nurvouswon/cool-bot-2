@@ -38,35 +38,38 @@ def parse_weather_fields(df):
 def batter_pitcher_rolling(df, id_col, stat_cols, event_windows, pitch_types=None, prefix=''):
     df = df.copy()
     df = df.sort_values([id_col, 'game_date'])
-    result = df[[id_col, 'game_date']].drop_duplicates().copy().set_index([id_col])
     # Overall stats (no pitch_type split)
-    for stat, func in stat_cols.items():
+    for stat, info in stat_cols.items():
+        func = info['func']
+        base_col = info['base']
         for w in event_windows:
-            # Use rolling within groupby
             colname = f"{prefix}{stat}_{w}"
-            grouped = df.groupby(id_col)[stat_cols[stat]['base']]
+            grouped = df.groupby(id_col)[base_col]
             if func == 'mean':
                 stat_result = grouped.transform(lambda x: x.rolling(w, min_periods=1).mean())
             elif func == 'hard_hit':
                 stat_result = grouped.transform(lambda x: (x >= 95).rolling(w, min_periods=1).mean())
             elif func == 'barrel':
-                stat_result = grouped.transform(lambda x: (
-                    ((df['launch_speed'] >= 98) & (df['launch_angle'] >= 26) & (df['launch_angle'] <= 30))
-                    .rolling(w, min_periods=1).mean()
-                ))
+                stat_result = grouped.transform(
+                    lambda x: (
+                        ((df.loc[x.index, 'launch_speed'] >= 98) &
+                         (df.loc[x.index, 'launch_angle'] >= 26) &
+                         (df.loc[x.index, 'launch_angle'] <= 30))
+                        .rolling(w, min_periods=1).mean()
+                    )
+                )
             elif func == 'fb_rate':
                 stat_result = grouped.transform(lambda x: (x >= 25).rolling(w, min_periods=1).mean())
             elif func == 'sweet_spot':
                 stat_result = grouped.transform(lambda x: ((x >= 8) & (x <= 32)).rolling(w, min_periods=1).mean())
-            else:
-                stat_result = pd.Series(np.nan, index=x.index)
             df[colname] = stat_result
     # Per pitch type
     if pitch_types is not None and 'pitch_type' in df.columns:
         for pt in pitch_types:
             mask = (df['pitch_type'].str.lower() == pt)
-            for stat, func in stat_cols.items():
-                base_col = stat_cols[stat]['base']
+            for stat, info in stat_cols.items():
+                func = info['func']
+                base_col = info['base']
                 for w in event_windows:
                     colname = f"{prefix}{stat}_{pt}_{w}"
                     grouped = df[mask].groupby(id_col)[base_col]
@@ -75,18 +78,18 @@ def batter_pitcher_rolling(df, id_col, stat_cols, event_windows, pitch_types=Non
                     elif func == 'hard_hit':
                         stat_result = grouped.transform(lambda x: (x >= 95).rolling(w, min_periods=1).mean())
                     elif func == 'barrel':
-                        stat_result = grouped.transform(lambda x: (
-                            ((df.loc[mask, 'launch_speed'] >= 98) &
-                             (df.loc[mask, 'launch_angle'] >= 26) &
-                             (df.loc[mask, 'launch_angle'] <= 30))
-                            .rolling(w, min_periods=1).mean()
-                        ))
+                        stat_result = grouped.transform(
+                            lambda x: (
+                                ((df.loc[x.index, 'launch_speed'] >= 98) &
+                                 (df.loc[x.index, 'launch_angle'] >= 26) &
+                                 (df.loc[x.index, 'launch_angle'] <= 30))
+                                .rolling(w, min_periods=1).mean()
+                            )
+                        )
                     elif func == 'fb_rate':
                         stat_result = grouped.transform(lambda x: (x >= 25).rolling(w, min_periods=1).mean())
                     elif func == 'sweet_spot':
                         stat_result = grouped.transform(lambda x: ((x >= 8) & (x <= 32)).rolling(w, min_periods=1).mean())
-                    else:
-                        stat_result = pd.Series(np.nan, index=x.index)
                     df.loc[mask, colname] = stat_result
     # Only keep last row per id
     result = df.sort_values('game_date').groupby(id_col).tail(1).set_index(id_col)
@@ -100,17 +103,6 @@ stat_cols = {
     'fb_rate': {'base': 'launch_angle', 'func': 'fb_rate'},
     'sweet_spot_rate': {'base': 'launch_angle', 'func': 'sweet_spot'},
 }
-
-# Remap stat names to their logic
-stat_func_map = {
-    'mean': 'mean',
-    'hard_hit': 'hard_hit',
-    'barrel': 'barrel',
-    'fb_rate': 'fb_rate',
-    'sweet_spot': 'sweet_spot',
-}
-for s in stat_cols:
-    stat_cols[s]['func'] = stat_func_map[stat_cols[s]['func']]
 
 # The full output columns, built up for every stat, window, and pitch type
 output_columns = [
@@ -174,7 +166,7 @@ if today_file and hist_file:
     st.info("Computing pitcher rolling stats...")
     df_hist_p = df_hist.rename(columns={"pitcher_id": "batter_id"})
     pitcher_event = batter_pitcher_rolling(
-        df_hist_p, "batter_id", {f"p_{k}": {'base': v['base'], 'func': v['func']} for k, v in stat_cols.items()}, 
+        df_hist_p, "batter_id", {f"p_{k}": {'base': v['base'], 'func': v['func']} for k, v in stat_cols.items()},
         event_windows, main_pitch_types, prefix="p_"
     )
     pitcher_event = pitcher_event.reset_index().rename(columns={'batter_id': 'pitcher_id'})
