@@ -4,20 +4,21 @@ import numpy as np
 import re
 
 st.set_page_config("🟦 Generate Today's Event-Level CSV", layout="wide")
-st.title("🟦 Generate Today's Event-Level CSV (FAST, Optimized for Large Data)")
+st.title("🟦 Generate Today's Event-Level CSV (Pitcher Stat Diagnostics)")
 
 st.markdown("""
 **Instructions:**
-- Upload Today's Lineups/Matchups CSV (must have `batter_id` or `mlb_id`, `player_name`, etc).
+- Upload Today's Lineups/Matchups CSV (must have `batter_id` or `mlb_id`, `pitcher_id`, etc).
 - Upload Historical Event-Level CSV (must have `batter_id`, `pitcher_id`, `pitch_type`, `game_date`, and all stat columns).
 - Output: ONE row per batter with ALL rolling/stat features (3/7/14/20, batter & pitcher, per pitch type and overall).
+- Includes automatic diagnostics and debug panel below output.
 """)
 
 today_file = st.file_uploader("Upload Today's Matchups/Lineups CSV", type=["csv"], key="today_csv")
 hist_file = st.file_uploader("Upload Historical Event-Level CSV", type=["csv"], key="hist_csv")
 
 event_windows = [3, 7, 14, 20]
-main_pitch_types = ["ff", "sl", "cu", "ch", "si", "fc", "fs", "st", "sinker", "splitter", "sweeper"]  # expand if needed
+main_pitch_types = ["ff", "sl", "cu", "ch", "si", "fc", "fs", "st", "sinker", "splitter", "sweeper"]
 
 def parse_weather_fields(df):
     if "weather" in df.columns:
@@ -38,7 +39,6 @@ def parse_weather_fields(df):
 def batter_pitcher_rolling(df, id_col, stat_cols, event_windows, pitch_types=None, prefix=''):
     df = df.copy()
     df = df.sort_values([id_col, 'game_date'])
-    # Overall stats (no pitch_type split)
     for stat, info in stat_cols.items():
         func = info['func']
         base_col = info['base']
@@ -63,7 +63,6 @@ def batter_pitcher_rolling(df, id_col, stat_cols, event_windows, pitch_types=Non
             elif func == 'sweet_spot':
                 stat_result = grouped.transform(lambda x: ((x >= 8) & (x <= 32)).rolling(w, min_periods=1).mean())
             df[colname] = stat_result
-    # Per pitch type
     if pitch_types is not None and 'pitch_type' in df.columns:
         for pt in pitch_types:
             mask = (df['pitch_type'].str.lower() == pt)
@@ -91,11 +90,9 @@ def batter_pitcher_rolling(df, id_col, stat_cols, event_windows, pitch_types=Non
                     elif func == 'sweet_spot':
                         stat_result = grouped.transform(lambda x: ((x >= 8) & (x <= 32)).rolling(w, min_periods=1).mean())
                     df.loc[mask, colname] = stat_result
-    # Only keep last row per id
     result = df.sort_values('game_date').groupby(id_col).tail(1).set_index(id_col)
     return result
 
-# Stats to compute for both batter and pitcher
 stat_cols = {
     'avg_exit_velo': {'base': 'launch_speed', 'func': 'mean'},
     'hard_hit_rate': {'base': 'launch_speed', 'func': 'hard_hit'},
@@ -104,12 +101,10 @@ stat_cols = {
     'sweet_spot_rate': {'base': 'launch_angle', 'func': 'sweet_spot'},
 }
 
-# The full output columns, built up for every stat, window, and pitch type
 output_columns = [
     "team_code","game_date","game_number","mlb_id","player_name","batting_order","position",
     "weather","temp","wind_mph","wind_dir","condition","stadium","city","batter_id","p_throws",
 ]
-# Add all rolling stat columns dynamically
 for s in stat_cols:
     for w in event_windows:
         output_columns.append(f"{s}_{w}")
@@ -119,6 +114,31 @@ for s in stat_cols:
             output_columns.append(f"{s}_{pt}_{w}")
             output_columns.append(f"p_{s}_{pt}_{w}")
 
+# ---- Diagnostic helpers ----
+def clean_id(s):
+    """Convert to string, strip, and remove .0 if present."""
+    if pd.isnull(s):
+        return ""
+    return str(s).strip().replace(".0", "")
+
+def debug_id_overlap(df_today, pitcher_event):
+    """Show pitcher IDs in today's file not present in pitcher stats, and vice versa."""
+    today_pids = set(df_today['pitcher_id'].dropna().apply(clean_id).unique())
+    stats_pids = set(pitcher_event['pitcher_id'].dropna().apply(clean_id).unique())
+    missing_in_stats = today_pids - stats_pids
+    missing_in_today = stats_pids - today_pids
+    return missing_in_stats, missing_in_today
+
+def debug_merge_sample(df_today, pitcher_event):
+    """Show a merge sample of pitcher stats for a few batter rows."""
+    merged = df_today.copy()
+    merged['pitcher_id'] = merged['pitcher_id'].apply(clean_id)
+    pe = pitcher_event.copy()
+    pe['pitcher_id'] = pe['pitcher_id'].apply(clean_id)
+    ms = merged.merge(pe, on='pitcher_id', how='left', suffixes=('', '_pitcher'))
+    return ms.head(10)
+
+# ---- Main logic ----
 if today_file and hist_file:
     df_today = pd.read_csv(today_file)
     df_hist = pd.read_csv(hist_file)
@@ -137,9 +157,12 @@ if today_file and hist_file:
     if 'batter_id' not in df_hist.columns or 'pitcher_id' not in df_hist.columns:
         st.error("Historical file must have both 'batter_id' and 'pitcher_id' columns.")
         st.stop()
-    df_today['batter_id'] = df_today[id_col_today].astype(str).str.strip().str.replace('.0', '', regex=False)
-    df_hist['batter_id'] = df_hist['batter_id'].astype(str).str.strip().str.replace('.0', '', regex=False)
-    df_hist['pitcher_id'] = df_hist['pitcher_id'].astype(str).str.strip().str.replace('.0', '', regex=False)
+
+    df_today['batter_id'] = df_today[id_col_today].apply(clean_id)
+    df_today['pitcher_id'] = df_today['pitcher_id'].apply(clean_id) if 'pitcher_id' in df_today.columns else ""
+    df_hist['batter_id'] = df_hist['batter_id'].apply(clean_id)
+    df_hist['pitcher_id'] = df_hist['pitcher_id'].apply(clean_id)
+
     df_today = df_today.drop_duplicates(subset=["batter_id"])
     df_today = parse_weather_fields(df_today)
     if 'game_date' not in df_hist.columns:
@@ -154,15 +177,12 @@ if today_file and hist_file:
     if 'launch_angle' in df_hist.columns:
         df_hist['launch_angle'] = pd.to_numeric(df_hist['launch_angle'], errors='coerce')
 
-    # ---- Batter event rolling, per pitch type and overall (FAST) ----
     st.info("Computing batter rolling stats...")
     batter_event = batter_pitcher_rolling(
         df_hist, "batter_id", stat_cols, event_windows, main_pitch_types, prefix=""
-    )
-    batter_event = batter_event.reset_index()
+    ).reset_index()
     st.success(f"Batter rolling stats shape: {batter_event.shape}")
 
-    # ---- Pitcher event rolling, per pitch type and overall (FAST, FIXED) ----
     st.info("Computing pitcher rolling stats...")
     # Only keep columns needed
     pitcher_cols = ["pitcher_id", "game_date", "pitch_type"]
@@ -171,26 +191,41 @@ if today_file and hist_file:
             pitcher_cols.append(v['base'])
     df_hist_p = df_hist[pitcher_cols].copy()
     df_hist_p = df_hist_p.rename(columns={"pitcher_id": "batter_id"})
-
     pitcher_event = batter_pitcher_rolling(
         df_hist_p, "batter_id", {f"p_{k}": {'base': v['base'], 'func': v['func']} for k, v in stat_cols.items()},
         event_windows, main_pitch_types, prefix="p_"
-    )
-    pitcher_event = pitcher_event.reset_index().rename(columns={'batter_id': 'pitcher_id'})
+    ).reset_index().rename(columns={'batter_id': 'pitcher_id'})
     st.success(f"Pitcher rolling stats shape: {pitcher_event.shape}")
 
     # ---- Merge batter and pitcher stats into today's lineups ----
     st.info("Merging data...")
     merged = df_today.merge(batter_event, on='batter_id', how='left', suffixes=('', '_batter'))
+
+    pitcher_debug_info = ""
+    pitcher_merge_debug = None
+
     if 'pitcher_id' in df_today.columns:
-        df_today['pitcher_id'] = df_today['pitcher_id'].astype(str).str.strip().str.replace('.0', '', regex=False)
-        merged = merged.merge(pitcher_event, left_on='pitcher_id', right_on='pitcher_id', how='left', suffixes=('', '_pitcher'))
+        # Clean up IDs just in case
+        df_today['pitcher_id'] = df_today['pitcher_id'].apply(clean_id)
+        pitcher_event['pitcher_id'] = pitcher_event['pitcher_id'].apply(clean_id)
+        missing_in_stats, missing_in_today = debug_id_overlap(df_today, pitcher_event)
+        if missing_in_stats:
+            pitcher_debug_info += f"\nPitcher IDs in today's file missing from pitcher rolling stats: {sorted(list(missing_in_stats))[:10]}"
+        if missing_in_today:
+            pitcher_debug_info += f"\nPitcher IDs in stats not used today: {sorted(list(missing_in_today))[:10]}"
+        merged = merged.merge(pitcher_event, on='pitcher_id', how='left', suffixes=('', '_pitcher'))
+        pitcher_merge_debug = debug_merge_sample(df_today, pitcher_event)
+        if not pitcher_debug_info:
+            pitcher_debug_info = "All pitcher IDs matched successfully!"
+    else:
+        st.warning("No pitcher_id column found in today's matchups. Pitcher stats will be blank.")
 
     # ---- Add any missing columns all at once to avoid fragmentation ----
     missing_cols = [col for col in output_columns if col not in merged.columns]
     if missing_cols:
         nan_df = pd.DataFrame(np.nan, index=merged.index, columns=missing_cols)
         merged = pd.concat([merged, nan_df], axis=1)
+
     merged = merged.loc[:,~merged.columns.duplicated()]
     merged = merged.reindex(columns=output_columns)
 
@@ -202,5 +237,13 @@ if today_file and hist_file:
         data=merged.to_csv(index=False),
         file_name="event_level_today_full.csv"
     )
+
+    with st.expander("🔎 Pitcher Merge Diagnostics / Debug Panel"):
+        st.write("**Pitcher ID Matching Summary:**")
+        st.code(pitcher_debug_info)
+        if pitcher_merge_debug is not None:
+            st.write("**Sample merge of today file with pitcher stats:**")
+            st.dataframe(pitcher_merge_debug)
+
 else:
     st.info("Please upload BOTH today's matchups/lineups and historical event-level CSV.")
