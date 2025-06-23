@@ -162,9 +162,16 @@ if today_file and hist_file:
     batter_event = batter_event.reset_index()
     st.success(f"Batter rolling stats shape: {batter_event.shape}")
 
-    # ---- Pitcher event rolling, per pitch type and overall (FAST) ----
+    # ---- Pitcher event rolling, per pitch type and overall (FAST, FIXED) ----
     st.info("Computing pitcher rolling stats...")
-    df_hist_p = df_hist.rename(columns={"pitcher_id": "batter_id"})
+    # Only keep columns needed
+    pitcher_cols = ["pitcher_id", "game_date", "pitch_type"]
+    for v in stat_cols.values():
+        if v['base'] not in pitcher_cols:
+            pitcher_cols.append(v['base'])
+    df_hist_p = df_hist[pitcher_cols].copy()
+    df_hist_p = df_hist_p.rename(columns={"pitcher_id": "batter_id"})
+
     pitcher_event = batter_pitcher_rolling(
         df_hist_p, "batter_id", {f"p_{k}": {'base': v['base'], 'func': v['func']} for k, v in stat_cols.items()},
         event_windows, main_pitch_types, prefix="p_"
