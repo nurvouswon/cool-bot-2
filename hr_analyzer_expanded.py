@@ -148,9 +148,13 @@ if today_file and hist_file:
     batter_event = compute_event_rolling(df_hist, "batter_id", "game_date", all_batter_stats, event_windows)
     batter_day = compute_day_rolling(df_hist, "batter_id", "game_date", all_batter_stats, day_windows)
     # ---- Compute pitcher rolling windows (events) ----
-    if "pitcher_id" in df_hist.columns:
-        df_hist['pitcher_id'] = df_hist['pitcher_id'].astype(str).str.strip().str.replace('.0', '', regex=False)
-        pitcher_event = compute_event_rolling(df_hist.rename(columns={"pitcher_id": "batter_id"}), "batter_id", "game_date", all_pitcher_stats, event_windows)
+        if "pitcher_id" in df_hist.columns:
+            df_hist['pitcher_id'] = df_hist['pitcher_id'].astype(str).str.strip().str.replace('.0', '', regex=False)
+            df_pitcher_hist = df_hist.copy()
+        if "batter_id" in df_pitcher_hist.columns:
+            df_pitcher_hist = df_pitcher_hist.drop(columns=["batter_id"])
+        df_pitcher_hist = df_pitcher_hist.rename(columns={"pitcher_id": "batter_id"})
+        pitcher_event = compute_event_rolling(df_pitcher_hist, "batter_id", "game_date", all_pitcher_stats, event_windows)
         pitcher_day = compute_day_rolling(df_hist.rename(columns={"pitcher_id": "batter_id"}), "batter_id", "game_date", all_pitcher_stats, day_windows)
     else:
         pitcher_event = pd.DataFrame()
