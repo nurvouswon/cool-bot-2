@@ -36,23 +36,40 @@ output_columns = [
     # Add all your other HR model features here...
 ]
 
-# Windows and pitch types
 event_windows = [3, 7, 14, 20]
 main_pitch_types = ["ff", "sl", "cu", "ch", "si", "fc", "fs", "st", "sinker", "splitter", "sweeper"]  # common pitch codes (expand as needed)
 
+# ---- Robust stat helpers ----
+def safe_mean(arr):
+    arr = pd.to_numeric(arr, errors='coerce').dropna()
+    return np.mean(arr) if not arr.empty else np.nan
+
+def safe_nanmean(arr):
+    arr = pd.to_numeric(arr, errors='coerce').dropna()
+    return np.nanmean(arr) if not arr.empty else np.nan
+
+def safe_frac(arr, cond):
+    arr = pd.to_numeric(arr, errors='coerce')
+    mask = cond(arr)
+    denom = mask.size if mask is not None else 0
+    return np.nan if denom == 0 else np.mean(mask)
+
+# ---- Custom stat functions (fully protected) ----
 batter_custom_stats = {
-    "hard_hit_rate": lambda df: np.mean((pd.to_numeric(df['launch_speed'], errors='coerce') >= 95)),
-    "barrel_rate": lambda df: np.mean((pd.to_numeric(df['launch_speed'], errors='coerce') >= 98) &
-                                      (pd.to_numeric(df['launch_angle'], errors='coerce') >= 26) &
-                                      (pd.to_numeric(df['launch_angle'], errors='coerce') <= 30)),
-    "fb_rate": lambda df: np.mean((pd.to_numeric(df['launch_angle'], errors='coerce') >= 25)),
-    "avg_exit_velo": lambda df: np.nanmean(pd.to_numeric(df['launch_speed'], errors='coerce')),
-    "sweet_spot_rate": lambda df: np.mean((pd.to_numeric(df['launch_angle'], errors='coerce') >= 8) &
-                                          (pd.to_numeric(df['launch_angle'], errors='coerce') <= 32)),
+    "hard_hit_rate": lambda df: safe_frac(df['launch_speed'], lambda s: s >= 95),
+    "barrel_rate": lambda df: (
+        safe_frac(df[['launch_speed', 'launch_angle']].dropna(how='any'), 
+                  lambda d: (d['launch_speed'] >= 98) & (d['launch_angle'] >= 26) & (d['launch_angle'] <= 30))
+        if 'launch_speed' in df and 'launch_angle' in df and not df[['launch_speed', 'launch_angle']].dropna(how='any').empty
+        else np.nan
+    ),
+    "fb_rate": lambda df: safe_frac(df['launch_angle'], lambda s: s >= 25),
+    "avg_exit_velo": lambda df: safe_nanmean(df['launch_speed']),
+    "sweet_spot_rate": lambda df: safe_frac(df['launch_angle'], lambda s: (s >= 8) & (s <= 32)),
 }
 pitcher_custom_stats = {f"p_{k}": v for k, v in batter_custom_stats.items()}
 
-# Utility for overall and pitch-type rolling stats
+# ---- Compute rolling stats (fully robust) ----
 def compute_event_rolling(df, id_col, date_col, stat_fns, windows, pitch_types=None, prefix=""):
     out = []
     df = df.sort_values([id_col, date_col])
@@ -66,8 +83,9 @@ def compute_event_rolling(df, id_col, date_col, stat_fns, windows, pitch_types=N
                 for w in windows:
                     wgroup = group.iloc[max(0, idx-w+1):idx+1]
                     try:
-                        stats[f"{prefix}{stat}_{w}"] = func(wgroup)
-                    except Exception:
+                        val = func(wgroup)
+                        stats[f"{prefix}{stat}_{w}"] = val
+                    except Exception as e:
                         stats[f"{prefix}{stat}_{w}"] = np.nan
             # Per pitch type
             if pitch_types is not None and "pitch_type" in group:
@@ -78,12 +96,14 @@ def compute_event_rolling(df, id_col, date_col, stat_fns, windows, pitch_types=N
                         for w in windows:
                             wgroup = pt_group.iloc[max(0, idx-w+1):idx+1]
                             try:
-                                stats[f"{prefix}{stat}_{pt}_{w}"] = func(wgroup)
-                            except Exception:
+                                val = func(wgroup)
+                                stats[f"{prefix}{stat}_{pt}_{w}"] = val
+                            except Exception as e:
                                 stats[f"{prefix}{stat}_{pt}_{w}"] = np.nan
             out.append(stats)
     return pd.DataFrame(out)
 
+# ---- Weather parsing ----
 def parse_weather_fields(df):
     if "weather" in df.columns:
         weather_str = df["weather"].astype(str)
@@ -107,6 +127,7 @@ if today_file and hist_file:
     st.success(f"Today's Matchups file loaded: {df_today.shape[0]} rows, {df_today.shape[1]} columns.")
     st.success(f"Historical Event-Level file loaded: {df_hist.shape[0]} rows, {df_hist.shape[1]} columns.")
 
+    # Standardize columns
     df_today.columns = [str(c).strip().lower().replace(" ", "_") for c in df_today.columns]
     df_hist.columns = [str(c).strip().lower().replace(" ", "_") for c in df_hist.columns]
 
@@ -130,11 +151,13 @@ if today_file and hist_file:
     df_hist['game_date'] = pd.to_datetime(df_hist['game_date'], errors='coerce')
 
     # ---- Batter event rolling, per pitch type and overall ----
+    st.info("Computing batter rolling stats...")
     batter_event = compute_event_rolling(
         df_hist, "batter_id", "game_date", batter_custom_stats, event_windows, main_pitch_types, prefix=""
     ).sort_values(['batter_id', 'game_date']).drop_duplicates(['batter_id'], keep='last')
 
     # ---- Pitcher event rolling, per pitch type and overall ----
+    st.info("Computing pitcher rolling stats...")
     pitcher_event = compute_event_rolling(
         df_hist.rename(columns={"pitcher_id": "batter_id"}), "batter_id", "game_date",
         pitcher_custom_stats, event_windows, main_pitch_types, prefix="p_"
@@ -149,6 +172,7 @@ if today_file and hist_file:
                 output_columns.append(f"p_{stat}_{pt}_{w}")
 
     # ---- Merge batter and pitcher stats into today's lineups ----
+    st.info("Merging data...")
     merged = df_today.merge(batter_event, on='batter_id', how='left', suffixes=('', '_batter'))
     if 'pitcher_id' in df_today.columns:
         df_today['pitcher_id'] = df_today['pitcher_id'].astype(str).str.strip().str.replace('.0', '', regex=False)
