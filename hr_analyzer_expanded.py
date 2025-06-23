@@ -78,29 +78,37 @@ event_windows = [3, 7, 14, 20]
 day_windows = [3, 7, 14, 20]  # Can be same as event_windows
 
 def compute_event_rolling(df, id_col, date_col, stat_cols, windows):
-    df = df.sort_values([id_col, date_col])
+    df = df.copy()
+    # Ensure date
+    df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
+    # Temporary helper columns for boolean metrics
+    df["hard_hit"] = pd.to_numeric(df["launch_speed"], errors='coerce') >= 95
+    df["sweet_spot"] = (pd.to_numeric(df["launch_angle"], errors='coerce') >= 8) & (pd.to_numeric(df["launch_angle"], errors='coerce') <= 32)
+    df["barrel"] = (pd.to_numeric(df["launch_speed"], errors='coerce') >= 98) & (pd.to_numeric(df["launch_angle"], errors='coerce') >= 26) & (pd.to_numeric(df["launch_angle"], errors='coerce') <= 30)
+    df["fly_ball"] = df["bb_type"].isin(["fly_ball", "line_drive"])
+    df["launch_speed"] = pd.to_numeric(df["launch_speed"], errors='coerce')
+    # Now for each batter, calculate rolling rates
     out = []
     for pid, group in df.groupby(id_col):
         group = group.sort_values(date_col)
         for w in windows:
-            rolling = group.rolling(w, min_periods=1)
-            stats = {}
-            for c in stat_cols:
-                if c == "avg_exit_velo":
-                    stats[f"{c}_{w}"] = rolling["launch_speed"].mean().values[-1] if "launch_speed" in group else np.nan
-                elif c == "hard_hit_rate":
-                    stats[f"{c}_{w}"] = rolling.apply(lambda x: np.mean(x >= 95), raw=True)["launch_speed"].values[-1] if "launch_speed" in group else np.nan
-                elif c == "sweet_spot_rate":
-                    stats[f"{c}_{w}"] = rolling.apply(lambda x: np.mean((x >= 8) & (x <= 32)), raw=True)["launch_angle"].values[-1] if "launch_angle" in group else np.nan
-                elif c == "barrel_rate":
-                    # MLB barrel: launch_speed >=98, launch_angle 26-30
-                    stats[f"{c}_{w}"] = rolling.apply(lambda x: np.mean((group["launch_speed"] >= 98) & (group["launch_angle"].between(26, 30))), raw=False).values[-1] if "launch_speed" in group and "launch_angle" in group else np.nan
-                elif c == "fb_rate":
-                    stats[f"{c}_{w}"] = rolling.apply(lambda x: np.mean(group["bb_type"].isin(["fly_ball", "line_drive"])), raw=False).values[-1] if "bb_type" in group else np.nan
+            stats = {
+                id_col: pid,
+                date_col: group[date_col].max()
+            }
+            for stat in stat_cols:
+                if stat == "hard_hit_rate":
+                    stats[f"{stat}_{w}"] = group["hard_hit"].rolling(w, min_periods=1).mean().iloc[-1]
+                elif stat == "sweet_spot_rate":
+                    stats[f"{stat}_{w}"] = group["sweet_spot"].rolling(w, min_periods=1).mean().iloc[-1]
+                elif stat == "barrel_rate":
+                    stats[f"{stat}_{w}"] = group["barrel"].rolling(w, min_periods=1).mean().iloc[-1]
+                elif stat == "fb_rate":
+                    stats[f"{stat}_{w}"] = group["fly_ball"].rolling(w, min_periods=1).mean().iloc[-1]
+                elif stat == "avg_exit_velo":
+                    stats[f"{stat}_{w}"] = group["launch_speed"].rolling(w, min_periods=1).mean().iloc[-1]
                 else:
-                    stats[f"{c}_{w}"] = rolling[c].mean().values[-1] if c in group else np.nan
-            stats[id_col] = pid
-            stats[date_col] = group[date_col].max()
+                    stats[f"{stat}_{w}"] = np.nan
             out.append(stats)
     return pd.DataFrame(out)
 
