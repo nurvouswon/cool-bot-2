@@ -274,4 +274,20 @@ if today_file and hist_file:
     st.dataframe(merged.head(10))
 
     st.download_button(
-        "⬇️ Download Today's Event-Level CSV (Exact Format)",
+        "⬇️ Download Today's Event-Level CSV (Exact Format)", data=merged.to_csv(index=False),
+        file_name="event_level_today_full.csv"
+    )
+
+    # Diagnostic Output for Debugging: Simple Copy/Paste Table
+    with st.expander("📋 Show Diagnostic Table"):
+        diag_cols = [
+            "team_code","game_date","player_name","batter_id","position",
+            "pitcher_id","p_throws"
+        ] + [c for c in merged.columns if "pitcher_id" in c or "p_" in c or "b_" in c or "hr_" in c][:25]  # first 25 advanced/stat cols
+        st.write(merged[diag_cols].head(8))
+
+    # Optional: Offer simple text copy of diagnostics (for debugging support)
+    st.text_area("Copy/Paste Debug Table (First 8 rows)", merged.head(8).to_csv(sep="\t"), height=250)
+
+else:
+    st.info("Please upload BOTH today's matchups/lineups and historical event-level CSV.")
