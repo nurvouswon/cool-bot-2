@@ -119,35 +119,38 @@ def inc(msg=None):
     status.markdown(f"{pct(percent)} {'- ' + msg if msg else ''}")  
     time.sleep(0.05)  
   
+# Diagnostic log setup
+diagnostic_log = []  # All diagnostic information will go here
+
+# Add a helper to log diagnostics
+def log_diagnostic(msg):
+    diagnostic_log.append(msg)
+    st.info(msg)
+
+# --- MAIN LOGIC ---  
 if today_file and hist_file:  
     inc("Loading data")  
     df_today = pd.read_csv(today_file)  
     df_hist = pd.read_csv(hist_file)  
-    st.info("Today CSV loaded")  
-    st.write(df_today.head(2))  
-    st.info("Historical CSV loaded")  
-    st.write(df_hist.head(2))  
+    log_diagnostic("Loaded Today's matchups and historical event data.")  
+    log_diagnostic(f"Today's Data Sample: {df_today.head(2)}")  
+    log_diagnostic(f"Historical Data Sample: {df_hist.head(2)}")  
   
     inc("Standardizing columns and IDs")  
     df_today.columns = [str(c).strip().lower().replace(" ", "_") for c in df_today.columns]  
     df_hist.columns = [str(c).strip().lower().replace(" ", "_") for c in df_hist.columns]  
+    log_diagnostic("Standardized columns.")  
   
     id_cols_today = ['batter_id', 'mlb_id']  
     id_col_today = next((c for c in id_cols_today if c in df_today.columns), None)  
     if id_col_today is None:  
         st.error("Today's file must have 'batter_id' or 'mlb_id' column.")  
         st.stop()  
-    for col in ['batter_id', 'pitcher_id']:  
-        if col in df_today.columns:  
-            df_today[col] = df_today[col].astype(str).str.strip().str.replace('.0', '', regex=False)  
-        if col in df_hist.columns:  
-            df_hist[col] = df_hist[col].astype(str).str.strip().str.replace('.0', '', regex=False)  
-  
+
     df_today['batter_id'] = df_today[id_col_today].astype(str).str.strip().str.replace('.0', '', regex=False)  
     df_today = df_today.drop_duplicates(subset=["batter_id"])  
     df_today = parse_weather_fields(df_today)  
-    st.info("Today CSV after parse_weather and dedup:")  
-    st.write(df_today.head(2))  
+    log_diagnostic(f"Parsed weather data for today's lineup.")  
   
     inc("Parsing and validating dates")  
     if 'game_date' not in df_hist.columns:  
@@ -160,8 +163,7 @@ if today_file and hist_file:
         df_hist, "batter_id", "game_date", event_windows, main_pitch_types, prefix=""  
     )  
     batter_event = batter_event.set_index('batter_id')  
-    st.info("Batter event head:")  
-    st.write(batter_event.head(2))  
+    log_diagnostic(f"Batter event rolling stats computed.")  
   
     inc("Computing pitcher rolling stats (vectorized, fast)...")  
     if 'pitcher_id' in df_today.columns and 'pitcher_id' in df_hist.columns:  
@@ -171,75 +173,51 @@ if today_file and hist_file:
         )  
         pitcher_event = pitcher_event.set_index('batter_id')  
         pitcher_event.index.name = 'pitcher_id'  
-        st.info("Pitcher event head:")  
-        st.write(pitcher_event.head(2))  
+        log_diagnostic(f"Pitcher event rolling stats computed.")  
     else:  
         pitcher_event = pd.DataFrame()  
+        log_diagnostic("No pitcher stats found.")  
   
     inc("Merging batter and pitcher stats into today's data...")  
     df_today["_orig_idx"] = np.arange(len(df_today))  
     merged = df_today.set_index("batter_id").join(batter_event, how="left")  
     if not pitcher_event.empty and "pitcher_id" in df_today.columns:  
         merged = merged.reset_index()
-        merged = merged.merge(
-            pitcher_event.reset_index(),
-            how="left",
-            left_on="pitcher_id",
-            right_on="pitcher_id",
-            suffixes=("", "_p")
-        )
+        merged = merged.merge(  
+            pitcher_event.reset_index(),  
+            how="left",  
+            left_on="pitcher_id",  
+            right_on="pitcher_id",  
+            suffixes=("", "_p")  
+        )  
     else:  
         merged = merged.reset_index()  
   
-    merged["is_pitcher_row"] = merged["position"].astype(str).str.upper().isin(["SP", "P"])  
-    batter_stat_cols = [c for c in merged.columns if re.match(r"^(avg_exit_velo|hard_hit_rate|barrel_rate|fb_rate|sweet_spot_rate)_", c) and not c.startswith("p_")]
-    pitcher_stat_cols = [c for c in merged.columns if re.match(r"^p_(avg_exit_velo|hard_hit_rate|barrel_rate|fb_rate|sweet_spot_rate)_", c)]  
-  
-    for col in batter_stat_cols:  
-        merged.loc[merged["is_pitcher_row"], col] = np.nan  
-  
-    # DEBUG: For the first pitcher row, show all p_ features and debug  
-    pitcher_debug_row = merged[merged["is_pitcher_row"]].head(1)
-    if not pitcher_debug_row.empty:
-        debug_pid = pitcher_debug_row["batter_id"].values[0]
-        st.info(f"DEBUG: First SP/P row: batter_id (should match pitcher_id): {debug_pid}")
-        st.write(pitcher_debug_row)
-        st.info(f"DEBUG: pitcher_event index sample: {pitcher_event.index[:5].to_list()}")
-        st.info(f"DEBUG: pitcher_event.loc[pid] (if exists):")
-        if debug_pid in pitcher_event.index:
-            st.write(pitcher_event.loc[debug_pid])
-        else:
-            st.warning(f"DEBUG: {debug_pid} not in pitcher_event index!")
-        debug_p_cols = {col: pitcher_debug_row[col].values[0] for col in pitcher_stat_cols}
-        st.info("DEBUG: p_ feature values in merged row:")
-        st.write(debug_p_cols)
-  
-    # Fill pitcher stats for SP/P rows  
-    for col in pitcher_stat_cols:  
-        if col in pitcher_event.columns:  
-            pid_vals = merged.loc[merged["is_pitcher_row"], "batter_id"]
-            vals = pitcher_event.loc[
-                pitcher_event.index.isin(pid_vals), col
-            ].reindex(pid_vals).values
-            merged.loc[merged["is_pitcher_row"], col] = vals  
-  
-    merged = merged.sort_values("_orig_idx").drop(columns=["_orig_idx", "is_pitcher_row"], errors="ignore")  
-  
-    inc("Final formatting and reindexing")  
+    # Final formatting
     missing_cols = [col for col in output_columns if col not in merged.columns]  
     if missing_cols:  
         nan_df = pd.DataFrame(np.nan, index=merged.index, columns=missing_cols)  
         merged = pd.concat([merged, nan_df], axis=1)  
-    merged = merged.loc[:, ~merged.columns.duplicated()]  
-    merged = merged.reindex(columns=output_columns)  
   
+    merged = merged.sort_values("_orig_idx").drop(columns=["_orig_idx"], errors="ignore")  
     inc(f"🟢 Generated file: {merged.shape[0]} unique batters, {merged.shape[1]} columns (features).")  
     st.dataframe(merged.head(10))  
   
+    # Diagnostic download
+    diagnostic_log.append(f"🟢 Generated file with {merged.shape[0]} rows and {merged.shape[1]} columns.")
+    diagnostic_text = "\n".join(diagnostic_log)
+  
     st.download_button(  
-        "⬇️ Download Today's Event-Level CSV (Exact Format)",  
+        "⬇️ Download Diagnostic Log",  
+        data=diagnostic_text,  
+        file_name="diagnostic_log.txt"  
+    )  
+  
+    st.download_button(  
+        "⬇️ Download Today's Event-Level CSV",  
         data=merged.to_csv(index=False),  
         file_name="event_level_today_full.csv"  
     )  
+
 else:  
     st.info("Please upload BOTH today's matchups/lineups and historical event-level CSV.")
