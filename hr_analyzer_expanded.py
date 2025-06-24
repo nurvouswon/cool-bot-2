@@ -2,14 +2,10 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import re
-import warnings
+from collections import defaultdict
 
-# --- Suppress RuntimeWarnings about empty slices ---
-warnings.filterwarnings("ignore", message="Mean of empty slice")
-warnings.filterwarnings("ignore", category=RuntimeWarning)
-
-st.set_page_config("🟦 Generate Today's Event-Level CSV (FAST, Debug)", layout="wide")
-st.title("🟦 Generate Today's Event-Level CSV (All Rolling Stats, Pitcher+Batter, Pitch Type, All Windows, DEBUG)")
+st.set_page_config("🟦 Generate Today's Event-Level CSV (Optimized)", layout="wide")
+st.title("🟦 Generate Today's Event-Level CSV (FAST, Optimized for Large Data)")
 
 st.markdown("""
 **Instructions:**
@@ -25,66 +21,13 @@ hist_file = st.file_uploader("Upload Historical Event-Level CSV", type=["csv"], 
 output_columns = [
     "team_code","game_date","game_number","mlb_id","player_name","batting_order","position",
     "weather","temp","wind_mph","wind_dir","condition","stadium","city","batter_id","p_throws",
-    # Overall Batting
-    "hard_hit_rate_3","hard_hit_rate_7","hard_hit_rate_14","hard_hit_rate_20",
-    "barrel_rate_3","barrel_rate_7","barrel_rate_14","barrel_rate_20",
-    "fb_rate_3","fb_rate_7","fb_rate_14","fb_rate_20",
-    "avg_exit_velo_3","avg_exit_velo_7","avg_exit_velo_14","avg_exit_velo_20",
-    "sweet_spot_rate_3","sweet_spot_rate_7","sweet_spot_rate_14","sweet_spot_rate_20",
-    # Overall Pitching
-    "p_hard_hit_rate_3","p_hard_hit_rate_7","p_hard_hit_rate_14","p_hard_hit_rate_20",
-    "p_barrel_rate_3","p_barrel_rate_7","p_barrel_rate_14","p_barrel_rate_20",
-    "p_fb_rate_3","p_fb_rate_7","p_fb_rate_14","p_fb_rate_20",
-    "p_avg_exit_velo_3","p_avg_exit_velo_7","p_avg_exit_velo_14","p_avg_exit_velo_20",
-    "p_sweet_spot_rate_3","p_sweet_spot_rate_7","p_sweet_spot_rate_14","p_sweet_spot_rate_20",
-    # Add pitch-type columns (dynamically added below)
+    # Batting
+    # Pitching
+    # (dynamically expanded below)
 ]
 
 event_windows = [3, 7, 14, 20]
 main_pitch_types = ["ff", "sl", "cu", "ch", "si", "fc", "fs", "st", "sinker", "splitter", "sweeper"]
-
-batter_custom_stats = {
-    "hard_hit_rate": lambda df: np.mean((pd.to_numeric(df['launch_speed'], errors='coerce') >= 95)),
-    "barrel_rate": lambda df: np.mean((pd.to_numeric(df['launch_speed'], errors='coerce') >= 98) &
-                                      (pd.to_numeric(df['launch_angle'], errors='coerce') >= 26) &
-                                      (pd.to_numeric(df['launch_angle'], errors='coerce') <= 30)),
-    "fb_rate": lambda df: np.mean((pd.to_numeric(df['launch_angle'], errors='coerce') >= 25)),
-    "avg_exit_velo": lambda df: np.nanmean(pd.to_numeric(df['launch_speed'], errors='coerce')),
-    "sweet_spot_rate": lambda df: np.mean((pd.to_numeric(df['launch_angle'], errors='coerce') >= 8) &
-                                          (pd.to_numeric(df['launch_angle'], errors='coerce') <= 32)),
-}
-pitcher_custom_stats = {f"p_{k}": v for k, v in batter_custom_stats.items()}
-
-def compute_event_rolling(df, id_col, date_col, stat_fns, windows, pitch_types=None, prefix=""):
-    out = []
-    df = df.sort_values([id_col, date_col])
-    for pid, group in df.groupby(id_col):
-        group = group.sort_values(date_col)
-        for idx in range(len(group)):
-            row = group.iloc[idx]
-            stats = {id_col: row[id_col], date_col: row[date_col]}
-            # Overall
-            for stat, func in stat_fns.items():
-                for w in windows:
-                    wgroup = group.iloc[max(0, idx-w+1):idx+1]
-                    try:
-                        stats[f"{prefix}{stat}_{w}"] = func(wgroup)
-                    except Exception as e:
-                        stats[f"{prefix}{stat}_{w}"] = np.nan
-            # Per pitch type
-            if pitch_types is not None and "pitch_type" in group:
-                for pt in pitch_types:
-                    pt_mask = (group["pitch_type"].str.lower() == pt)
-                    pt_group = group[pt_mask]
-                    for stat, func in stat_fns.items():
-                        for w in windows:
-                            wgroup = pt_group.iloc[max(0, idx-w+1):idx+1]
-                            try:
-                                stats[f"{prefix}{stat}_{pt}_{w}"] = func(wgroup)
-                            except Exception as e:
-                                stats[f"{prefix}{stat}_{pt}_{w}"] = np.nan
-            out.append(stats)
-    return pd.DataFrame(out)
 
 def parse_weather_fields(df):
     if "weather" in df.columns:
@@ -102,6 +45,64 @@ def parse_weather_fields(df):
         df["condition"] = weather_str.str.extract(r'(indoor|outdoor)', flags=re.I, expand=False)
     return df
 
+# ---- New Fast Rolling Stat Function ----
+def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix=""):
+    """
+    Compute rolling stats for each id_col (batter or pitcher), all windows, overall and per-pitch-type, vectorized.
+    Returns: DataFrame with [id_col] as index, one row per entity with all rolling features.
+    """
+    # Ensure dates and numerics are correct
+    df = df.copy()
+    df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
+    df['launch_speed'] = pd.to_numeric(df['launch_speed'], errors='coerce')
+    df['launch_angle'] = pd.to_numeric(df['launch_angle'], errors='coerce')
+    if 'pitch_type' in df.columns:
+        df['pitch_type'] = df['pitch_type'].astype(str).str.lower().str.strip()
+    results = defaultdict(dict)
+    
+    # Sort for rolling
+    df = df.sort_values([id_col, date_col])
+    gb = df.groupby(id_col, group_keys=False)
+    for w in windows:
+        # Overall
+        results[f"{prefix}avg_exit_velo_{w}"] = gb['launch_speed'].apply(lambda x: x.rolling(w, min_periods=1).mean())
+        results[f"{prefix}hard_hit_rate_{w}"] = gb['launch_speed'].apply(lambda x: x.rolling(w, min_periods=1).apply(lambda y: np.mean(y >= 95)))
+        results[f"{prefix}barrel_rate_{w}"] = gb.apply(lambda group: 
+            ((group['launch_speed'] >= 98) & 
+             (group['launch_angle'] >= 26) & 
+             (group['launch_angle'] <= 30)).rolling(w, min_periods=1).mean().values
+        )
+        results[f"{prefix}fb_rate_{w}"] = gb['launch_angle'].apply(lambda x: x.rolling(w, min_periods=1).apply(lambda y: np.mean(y >= 25)))
+        results[f"{prefix}sweet_spot_rate_{w}"] = gb['launch_angle'].apply(lambda x: x.rolling(w, min_periods=1).apply(lambda y: np.mean((y >= 8) & (y <= 32))))
+    # Per-pitch-type
+    if pitch_types is not None and "pitch_type" in df.columns:
+        for pt in pitch_types:
+            pt_mask = (df["pitch_type"] == pt)
+            gb_pt = df[pt_mask].groupby(id_col, group_keys=False)
+            for w in windows:
+                results[f"{prefix}avg_exit_velo_{pt}_{w}"] = gb_pt['launch_speed'].apply(lambda x: x.rolling(w, min_periods=1).mean())
+                results[f"{prefix}hard_hit_rate_{pt}_{w}"] = gb_pt['launch_speed'].apply(lambda x: x.rolling(w, min_periods=1).apply(lambda y: np.mean(y >= 95)))
+                results[f"{prefix}barrel_rate_{pt}_{w}"] = gb_pt.apply(lambda group: 
+                    ((group['launch_speed'] >= 98) & 
+                     (group['launch_angle'] >= 26) & 
+                     (group['launch_angle'] <= 30)).rolling(w, min_periods=1).mean().values
+                )
+                results[f"{prefix}fb_rate_{pt}_{w}"] = gb_pt['launch_angle'].apply(lambda x: x.rolling(w, min_periods=1).apply(lambda y: np.mean(y >= 25)))
+                results[f"{prefix}sweet_spot_rate_{pt}_{w}"] = gb_pt['launch_angle'].apply(lambda x: x.rolling(w, min_periods=1).apply(lambda y: np.mean((y >= 8) & (y <= 32))))
+    # Combine results
+    res_df = pd.DataFrame(results)
+    res_df[id_col] = df[id_col].values
+    res_df[date_col] = df[date_col].values
+    # Take latest row for each id_col (most recent game/event)
+    res_df = res_df.sort_values([id_col, date_col]).groupby(id_col).tail(1)
+    res_df = res_df.set_index(id_col)
+    return res_df
+
+def show_diag(title, df):
+    st.write(f"#### {title}")
+    st.write(df.shape)
+    st.dataframe(df.head(8))
+
 if today_file and hist_file:
     df_today = pd.read_csv(today_file)
     df_hist = pd.read_csv(hist_file)
@@ -109,10 +110,10 @@ if today_file and hist_file:
     st.success(f"Today's Matchups file loaded: {df_today.shape[0]} rows, {df_today.shape[1]} columns.")
     st.success(f"Historical Event-Level file loaded: {df_hist.shape[0]} rows, {df_hist.shape[1]} columns.")
 
+    # --- Clean columns ---
     df_today.columns = [str(c).strip().lower().replace(" ", "_") for c in df_today.columns]
     df_hist.columns = [str(c).strip().lower().replace(" ", "_") for c in df_hist.columns]
 
-    # --- Fix decimal/string ID issue for batter and pitcher in BOTH dfs ---
     id_cols_today = ['batter_id', 'mlb_id']
     id_col_today = next((c for c in id_cols_today if c in df_today.columns), None)
     if id_col_today is None:
@@ -121,12 +122,13 @@ if today_file and hist_file:
     if 'batter_id' not in df_hist.columns or 'pitcher_id' not in df_hist.columns:
         st.error("Historical file must have both 'batter_id' and 'pitcher_id' columns.")
         st.stop()
+    # Clean ID columns
+    for c in ['batter_id', 'pitcher_id']:
+        if c in df_hist.columns:
+            df_hist[c] = df_hist[c].astype(str).str.strip().str.replace('.0', '', regex=False)
     df_today['batter_id'] = df_today[id_col_today].astype(str).str.strip().str.replace('.0', '', regex=False)
     if 'pitcher_id' in df_today.columns:
         df_today['pitcher_id'] = df_today['pitcher_id'].astype(str).str.strip().str.replace('.0', '', regex=False)
-    df_hist['batter_id'] = df_hist['batter_id'].astype(str).str.strip().str.replace('.0', '', regex=False)
-    df_hist['pitcher_id'] = df_hist['pitcher_id'].astype(str).str.strip().str.replace('.0', '', regex=False)
-
     df_today = df_today.drop_duplicates(subset=["batter_id"])
     df_today = parse_weather_fields(df_today)
     if 'game_date' not in df_hist.columns:
@@ -134,64 +136,63 @@ if today_file and hist_file:
         st.stop()
     df_hist['game_date'] = pd.to_datetime(df_hist['game_date'], errors='coerce')
 
-    # ---- Batter event rolling, per pitch type and overall ----
-    st.info("Computing batter rolling stats...")
-    batter_event = compute_event_rolling(
-        df_hist, "batter_id", "game_date", batter_custom_stats, event_windows, main_pitch_types, prefix=""
-    ).sort_values(['batter_id', 'game_date']).drop_duplicates(['batter_id'], keep='last')
-    st.info(f"Batter rolling stats shape: {batter_event.shape}")
+    # ---- DIAGNOSTIC: Show input data ----
+    show_diag("Today's Input Data", df_today)
+    show_diag("Historical Event-Level Data", df_hist)
 
-    # ---- Pitcher event rolling, per pitch type and overall ----
-    st.info("Computing pitcher rolling stats...")
-    pitcher_event = compute_event_rolling(
-        df_hist.rename(columns={"pitcher_id": "batter_id"}), "batter_id", "game_date",
-        pitcher_custom_stats, event_windows, main_pitch_types, prefix="p_"
-    ).sort_values(['batter_id', 'game_date']).drop_duplicates(['batter_id'], keep='last')
-    pitcher_event = pitcher_event.rename(columns={'batter_id': 'pitcher_id', 'game_date': 'game_date'})
-    st.info(f"Pitcher rolling stats shape: {pitcher_event.shape}")
+    # ---- Compute rolling stats: BATTER ----
+    st.info("Computing batter rolling stats (vectorized, fast)...")
+    batter_event = fast_rolling_stats(
+        df_hist, "batter_id", "game_date", event_windows, main_pitch_types, prefix=""
+    )
+    show_diag("Batter Rolling Stats", batter_event)
 
-    # Dynamically add per-pitch-type stat names to output_columns (batter, pitcher)
-    for stat in ["hard_hit_rate", "barrel_rate", "fb_rate", "avg_exit_velo", "sweet_spot_rate"]:
+    # ---- Compute rolling stats: PITCHER ----
+    st.info("Computing pitcher rolling stats (vectorized, fast)...")
+    # Rename pitcher_id as batter_id so function is identical
+    df_hist_p = df_hist.rename(columns={"pitcher_id": "batter_id"}).copy()
+    pitcher_event = fast_rolling_stats(
+        df_hist_p, "batter_id", "game_date", event_windows, main_pitch_types, prefix="p_"
+    )
+    show_diag("Pitcher Rolling Stats", pitcher_event)
+
+    # ---- Build column names ----
+    for stat in ["avg_exit_velo", "hard_hit_rate", "barrel_rate", "fb_rate", "sweet_spot_rate"]:
+        for w in event_windows:
+            output_columns += [
+                f"{stat}_{w}", f"p_{stat}_{w}"
+            ]
         for pt in main_pitch_types:
             for w in event_windows:
-                output_columns.append(f"{stat}_{pt}_{w}")
-                output_columns.append(f"p_{stat}_{pt}_{w}")
+                output_columns += [
+                    f"{stat}_{pt}_{w}", f"p_{stat}_{pt}_{w}"
+                ]
 
-    # ---- Merge batter and pitcher stats into today's lineups ----
-    st.info("Merging batter stats...")
-    merged = df_today.merge(batter_event, on='batter_id', how='left', suffixes=('', '_batter'))
-    st.info("Merging pitcher stats...")
+    # ---- Merge batter/pitcher stats with today's lineups ----
+    merged = df_today.set_index("batter_id").join(batter_event, how="left", rsuffix="_batter")
     if 'pitcher_id' in df_today.columns:
-        merged = merged.merge(pitcher_event, left_on='pitcher_id', right_on='pitcher_id', how='left', suffixes=('', '_pitcher'))
+        merged = merged.join(
+            pitcher_event, on='pitcher_id', how="left", rsuffix="_pitcher"
+        )
     else:
-        st.warning("No 'pitcher_id' column in today's CSV. Pitcher stats will not be included.")
+        st.warning("No pitcher_id in today's file, skipping pitcher stat merge.")
 
-    # ---- Diagnostic: Show which columns are missing after merge ----
+    # ---- Add missing columns as NaN ----
     missing_cols = [col for col in output_columns if col not in merged.columns]
-    st.write("Missing columns after merge:", missing_cols)
-
-    # ---- Add any missing columns using pd.concat(axis=1) ----
     if missing_cols:
         nan_df = pd.DataFrame(np.nan, index=merged.index, columns=missing_cols)
         merged = pd.concat([merged, nan_df], axis=1)
-
     merged = merged.loc[:,~merged.columns.duplicated()]
     merged = merged.reindex(columns=output_columns)
 
-    # ---- (Optional) Diagnostic: Show first 5 pitcher columns and rows for debugging ----
-    if 'pitcher_id' in merged.columns:
-        st.write("Pitcher columns sample:", merged.filter(like='p_', axis=1).head())
-
-    # ---- (Optional) Diagnostic: Concatenate debug info for visibility (can remove) ----
-    # debug_df = pd.concat([merged.head(5), merged.filter(like='p_', axis=1).head(5)], axis=1)
-    # st.write("Debug merged vs pitcher columns:", debug_df)
+    show_diag("Final Output Data", merged)
 
     st.success(f"🟢 Generated file: {merged.shape[0]} unique batters, {merged.shape[1]} columns (features).")
     st.dataframe(merged.head(10))
 
     st.download_button(
         "⬇️ Download Today's Event-Level CSV (Exact Format)",
-        data=merged.to_csv(index=False),
+        data=merged.reset_index(drop=True).to_csv(index=False),
         file_name="event_level_today_full.csv"
     )
 else:
