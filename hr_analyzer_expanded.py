@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import re
+import time
 
 st.set_page_config("🟦 Generate Today's Event-Level CSV", layout="wide")
 st.title("🟦 Generate Today's Event-Level CSV (All Features, Full Debug)")
@@ -123,6 +124,7 @@ all_feature_cols = [
     "park","temp","wind_mph","wind_dir","humidity","condition","hr_prob"
 ]
 
+# ========== LOGIC ==========
 if today_file and hist_file:
     st.info("Loaded today's matchups and historical event data.")
 
@@ -146,18 +148,14 @@ if today_file and hist_file:
 
     # ----------- Fill/Debug PITCHER ID ----------
     pitcher_fill_log = []
-
-    # Print out initial info for debug
-    st.code(f"Unique positions in today's data: {df_today['position'].unique() if 'position' in df_today.columns else 'NO POSITION COL'}")
-    st.code(f"Sample mlb_id values: {df_today['mlb_id'].unique()[:10] if 'mlb_id' in df_today.columns else 'NO MLB_ID COL'}")
-
+    st.code(f"Unique batting_order in today's data: {df_today['batting_order'].unique() if 'batting_order' in df_today.columns else 'NO BATTING_ORDER COL'}")
     if 'pitcher_id' not in df_today.columns or df_today['pitcher_id'].isnull().all():
         df_today['pitcher_id'] = np.nan
-        if 'position' in df_today.columns and 'mlb_id' in df_today.columns:
-            # Print out all rows that are marked as SP for debugging
-            st.write("Rows where position contains 'SP':")
-            st.dataframe(df_today[df_today['position'].astype(str).str.upper().str.contains("SP", na=False)])
-            sp_rows = df_today[df_today['position'].astype(str).str.upper().str.contains("SP", na=False)]
+        if 'batting_order' in df_today.columns and 'mlb_id' in df_today.columns:
+            # Find all rows where batting_order is SP
+            st.write("Rows where batting_order == 'SP':")
+            sp_rows = df_today[df_today['batting_order'].astype(str).str.upper().str.contains("SP", na=False)]
+            st.dataframe(sp_rows)
             for idx, sp_row in sp_rows.iterrows():
                 st.code(f"SP ROW: idx={idx}, team={sp_row['team_code']}, date={sp_row['game_date']}, game_num={sp_row['game_number']}, mlb_id={sp_row['mlb_id']}")
                 mask = (
@@ -175,10 +173,9 @@ if today_file and hist_file:
                     pitcher_id_val = str(pitcher_id_val)
                 df_today.loc[mask, 'pitcher_id'] = pitcher_id_val
                 pitcher_fill_log.append(f"Filled pitcher_id {pitcher_id_val} for team {sp_row['team_code']} {sp_row['game_date']} G{sp_row['game_number']}")
-
     # After filling, print out a sample of filled data
     st.write("Pitcher_id filled? Here are 10 rows:")
-    st.dataframe(df_today[['team_code','game_date','game_number','player_name','position','mlb_id','pitcher_id']].head(10))
+    st.dataframe(df_today[['team_code','game_date','game_number','player_name','batting_order','position','mlb_id','pitcher_id']].head(10))
     if pitcher_fill_log:
         st.code('\n'.join(pitcher_fill_log), language='text')
     st.code("Pitcher_id null count after fill: " + str(df_today['pitcher_id'].isnull().sum()))
@@ -198,11 +195,13 @@ if today_file and hist_file:
 
     # ---- Rolling PITCHER stats ----
     if 'pitcher_id' in df_hist.columns:
+        # Use actual pitcher_id column from history
         pitcher_event = fast_rolling_stats(
             df_hist.rename(columns={"pitcher_id":"batter_id"}),  # temporary rename for function
             "batter_id", "game_date", event_windows, main_pitch_types, prefix="p_"
         )
     elif 'mlb_id' in df_hist.columns:
+        # Use mlb_id as pitcher_id if not present
         pitcher_event = fast_rolling_stats(
             df_hist.rename(columns={"mlb_id":"batter_id"}),
             "batter_id", "game_date", event_windows, main_pitch_types, prefix="p_"
