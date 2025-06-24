@@ -18,11 +18,10 @@ st.markdown("""
 today_file = st.file_uploader("Upload Today's Matchups/Lineups CSV", type=["csv"], key="today_csv")
 hist_file = st.file_uploader("Upload Historical Event-Level CSV", type=["csv"], key="hist_csv")
 
-# --- Config ---
 event_windows = [3, 7, 14, 20]
 main_pitch_types = ["ff", "sl", "cu", "ch", "si", "fc", "fs", "st", "sinker", "splitter", "sweeper"]
 
-# All extra features (add as needed from your big list!)
+# --- your advanced/extra features list here ---
 advanced_columns = [
     'hard_hit_rate_20', 'sweet_spot_rate_20', 'park_hand_hr_7', 'park_hand_hr_14', 'park_hand_hr_30',
     'b_vsp_hand_hr_3', 'p_vsb_hand_hr_3', 'b_vsp_hand_hr_5', 'p_vsb_hand_hr_5',
@@ -50,10 +49,9 @@ advanced_columns = [
 
 output_columns = [
     "team_code","game_date","game_number","mlb_id","player_name","batting_order","position",
-    "weather","time","stadium","city","batter_id","p_throws"
+    "weather","time","stadium","city","batter_id","p_throws", "pitcher_id"
 ] + advanced_columns
 
-# Expand output columns for rolling stat windows and pitch types
 for base in ["avg_exit_velo", "hard_hit_rate", "barrel_rate", "fb_rate", "sweet_spot_rate"]:
     for w in event_windows:
         output_columns.append(f"{base}_{w}")
@@ -63,7 +61,6 @@ for base in ["avg_exit_velo", "hard_hit_rate", "barrel_rate", "fb_rate", "sweet_
             output_columns.append(f"{base}_{pt}_{w}")
             output_columns.append(f"p_{base}_{pt}_{w}")
 
-# --- Weather Parsing ---
 def parse_weather_fields(df):
     if "weather" in df.columns:
         weather_str = df["weather"].astype(str)
@@ -80,12 +77,10 @@ def parse_weather_fields(df):
         df["condition"] = weather_str.str.extract(r'(indoor|outdoor)', flags=re.I, expand=False)
     return df
 
-# --- Caching for rolling stats ---
 @st.cache_data(show_spinner=False)
 def cached_fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix=""):
     return fast_rolling_stats(df, id_col, date_col, windows, pitch_types, prefix)
 
-# --- Fast Rolling Stats, One Row Per Entity ---
 def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix=""):
     df = df.copy()
     df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
@@ -112,7 +107,6 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
                                                .apply(lambda x: np.mean(x >= 25)).iloc[-1])
             out_row[f"{prefix}sweet_spot_rate_{w}"] = (group['launch_angle'].rolling(w, min_periods=1)
                                                        .apply(lambda x: np.mean((x >= 8) & (x <= 32))).iloc[-1])
-        # Per pitch type
         if pitch_types is not None and "pitch_type" in group.columns:
             for pt in pitch_types:
                 pt_group = group[group['pitch_type'] == pt]
@@ -140,19 +134,17 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
         feature_frames.append(out_row)
     return pd.DataFrame(feature_frames)
 
-# --- Progress bar utilities ---
 step = [0]
-step_total = 8  # Number of steps below!
+step_total = 8
 progress = st.progress(0)
 status = st.empty()
 def inc(msg=None):
     step[0] += 1
-    percent = min(int(100 * step[0] / step_total), 100)  # cap at 100%
+    percent = min(int(100 * step[0] / step_total), 100)
     progress.progress(percent)
     status.markdown(f"{percent}% {'- ' + msg if msg else ''}")
     time.sleep(0.05)
 
-# --- MAIN APP LOGIC ---
 if today_file and hist_file:
     inc("Loading data")
     df_today = pd.read_csv(today_file)
@@ -162,7 +154,6 @@ if today_file and hist_file:
     df_today.columns = [str(c).strip().lower().replace(" ", "_") for c in df_today.columns]
     df_hist.columns = [str(c).strip().lower().replace(" ", "_") for c in df_hist.columns]
 
-    # --- ID Fixes for both files ---
     id_cols_today = ['batter_id', 'mlb_id']
     id_col_today = next((c for c in id_cols_today if c in df_today.columns), None)
     if id_col_today is None:
@@ -178,11 +169,11 @@ if today_file and hist_file:
     df_today = df_today.drop_duplicates(subset=["batter_id"])
     df_today = parse_weather_fields(df_today)
 
-    # --- Ensure pitcher_id exists BEFORE logic! ---
+    # --- Always create pitcher_id column if missing ---
     if 'pitcher_id' not in df_today.columns:
         df_today['pitcher_id'] = np.nan
 
-    # --- Fill pitcher_id for each team/game (EXACT LOGIC as before) ---
+    # --- FILL pitcher_id column for all rows for this team/game ---
     if 'position' in df_today.columns and 'mlb_id' in df_today.columns:
         sp_rows = df_today[df_today['position'].astype(str).str.upper().str.strip().isin(['SP', 'P'])]
         for _, sp_row in sp_rows.iterrows():
@@ -191,7 +182,6 @@ if today_file and hist_file:
                 (df_today['game_date'] == sp_row['game_date']) &
                 (df_today['game_number'] == sp_row['game_number'])
             )
-            # robust float→int→str handling
             val = sp_row['mlb_id']
             if not pd.isnull(val):
                 try:
@@ -201,7 +191,9 @@ if today_file and hist_file:
             else:
                 val = np.nan
             df_today.loc[mask, 'pitcher_id'] = val
-        st.write("Pitcher_id column filled. Sample:", df_today[['team_code','game_date','game_number','player_name','position','mlb_id','pitcher_id']].head(8))
+    # --- After fill, ENSURE pitcher_id is string and exists! ---
+    df_today['pitcher_id'] = df_today['pitcher_id'].astype(str).str.strip().replace('nan','')
+    st.write("Pitcher_id column filled. Sample:", df_today[['team_code','game_date','game_number','player_name','position','mlb_id','pitcher_id']].head(8))
 
     inc("Parsing and validating dates")
     if 'game_date' not in df_hist.columns:
@@ -220,18 +212,19 @@ if today_file and hist_file:
         df_hist.rename(columns={"pitcher_id": "batter_id", "batter_id": "unused"}),
         "batter_id", "game_date", event_windows, main_pitch_types, prefix="p_"
     )
-    pitcher_event = pitcher_event.set_index('batter_id')
-    pitcher_event.index.name = 'pitcher_id'
+    pitcher_event = pitcher_event.rename(columns={'batter_id':'pitcher_id'})
+    pitcher_event['pitcher_id'] = pitcher_event.index.astype(str)
+    pitcher_event = pitcher_event.reset_index(drop=True)
 
     inc("Merging batter stats into today's data...")
     merged = df_today.set_index('batter_id').join(batter_event, how='left')
+    merged = merged.reset_index()
 
     inc("Merging pitcher stats into today's data...")
-    if not pitcher_event.empty and 'pitcher_id' in merged.columns:
-        merged = merged.reset_index().set_index('pitcher_id').join(pitcher_event, how='left').reset_index()
-        merged.rename(columns={'index': 'batter_id'}, inplace=True)
-    else:
-        merged = merged.reset_index()
+    # --- JOIN ON COLUMN NOT INDEX; both as string ---
+    merged['pitcher_id'] = merged['pitcher_id'].astype(str).str.strip().replace('nan','')
+    pitcher_event['pitcher_id'] = pitcher_event['pitcher_id'].astype(str).str.strip().replace('nan','')
+    merged = pd.merge(merged, pitcher_event, how='left', on='pitcher_id', suffixes=('', '_pstat'))
 
     inc("Final formatting and reindexing")
     missing_cols = [col for col in output_columns if col not in merged.columns]
