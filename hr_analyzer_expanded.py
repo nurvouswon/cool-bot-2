@@ -35,7 +35,6 @@ for base in ["avg_exit_velo", "hard_hit_rate", "barrel_rate", "fb_rate", "sweet_
             output_columns.append(f"{base}_{pt}_{w}")  
             output_columns.append(f"p_{base}_{pt}_{w}")  
   
-# --- Utility for Weather Parsing ---  
 def parse_weather_fields(df):  
     if "weather" in df.columns:  
         weather_str = df["weather"].astype(str)  
@@ -52,7 +51,6 @@ def parse_weather_fields(df):
         df["condition"] = weather_str.str.extract(r'(indoor|outdoor)', flags=re.I, expand=False)  
     return df  
   
-# --- Fast Rolling Stats, One Row Per Entity ---  
 def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix=""):  
     df = df.copy()  
     df[date_col] = pd.to_datetime(df[date_col], errors='coerce')  
@@ -79,7 +77,6 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
                                                .apply(lambda x: np.mean(x >= 25)).iloc[-1])  
             out_row[f"{prefix}sweet_spot_rate_{w}"] = (group['launch_angle'].rolling(w, min_periods=1)  
                                                        .apply(lambda x: np.mean((x >= 8) & (x <= 32))).iloc[-1])  
-        # Per pitch type  
         if pitch_types is not None and "pitch_type" in group.columns:  
             for pt in pitch_types:  
                 pt_group = group[group['pitch_type'] == pt]  
@@ -107,39 +104,34 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
         feature_frames.append(out_row)  
     return pd.DataFrame(feature_frames)  
   
-# --- Diagnostics: Print & Streamlit ---  
-def diag(msg, df=None):  
-    st.info(msg)  
-    if df is not None:  
-        st.write(f"Shape: {df.shape}")  
-        st.dataframe(df.head(3))  
-  
 def pct(x):  
     return f"{x}%"  
   
 # --- Progress bar utilities ---  
 step = [0]  
-step_total = 8  # Number of steps below!  
+step_total = 8  
 progress = st.progress(0)  
 status = st.empty()  
 def inc(msg=None):  
     step[0] += 1  
-    percent = min(int(100 * step[0] / step_total), 100)  # cap at 100%  
+    percent = min(int(100 * step[0] / step_total), 100)  
     progress.progress(percent)  
     status.markdown(f"{pct(percent)} {'- ' + msg if msg else ''}")  
     time.sleep(0.05)  
   
-# --- MAIN APP LOGIC ---  
 if today_file and hist_file:  
     inc("Loading data")  
     df_today = pd.read_csv(today_file)  
     df_hist = pd.read_csv(hist_file)  
+    st.info("Today CSV loaded")  
+    st.write(df_today.head(2))  
+    st.info("Historical CSV loaded")  
+    st.write(df_hist.head(2))  
   
     inc("Standardizing columns and IDs")  
     df_today.columns = [str(c).strip().lower().replace(" ", "_") for c in df_today.columns]  
     df_hist.columns = [str(c).strip().lower().replace(" ", "_") for c in df_hist.columns]  
   
-    # --- ID Fixes for both files ---  
     id_cols_today = ['batter_id', 'mlb_id']  
     id_col_today = next((c for c in id_cols_today if c in df_today.columns), None)  
     if id_col_today is None:  
@@ -154,6 +146,8 @@ if today_file and hist_file:
     df_today['batter_id'] = df_today[id_col_today].astype(str).str.strip().str.replace('.0', '', regex=False)  
     df_today = df_today.drop_duplicates(subset=["batter_id"])  
     df_today = parse_weather_fields(df_today)  
+    st.info("Today CSV after parse_weather and dedup:")  
+    st.write(df_today.head(2))  
   
     inc("Parsing and validating dates")  
     if 'game_date' not in df_hist.columns:  
@@ -166,6 +160,8 @@ if today_file and hist_file:
         df_hist, "batter_id", "game_date", event_windows, main_pitch_types, prefix=""  
     )  
     batter_event = batter_event.set_index('batter_id')  
+    st.info("Batter event head:")  
+    st.write(batter_event.head(2))  
   
     inc("Computing pitcher rolling stats (vectorized, fast)...")  
     if 'pitcher_id' in df_today.columns and 'pitcher_id' in df_hist.columns:  
@@ -175,17 +171,14 @@ if today_file and hist_file:
         )  
         pitcher_event = pitcher_event.set_index('batter_id')  
         pitcher_event.index.name = 'pitcher_id'  
+        st.info("Pitcher event head:")  
+        st.write(pitcher_event.head(2))  
     else:  
         pitcher_event = pd.DataFrame()  
   
-    # --- FIXED MERGE LOGIC TO POPULATE STARTING PITCHER ROWS ---  
     inc("Merging batter and pitcher stats into today's data...")  
     df_today["_orig_idx"] = np.arange(len(df_today))  
-  
-    # Merge batter stats  
     merged = df_today.set_index("batter_id").join(batter_event, how="left")  
-  
-    # Merge pitcher stats (using pitcher_id for everyone, including SP rows)  
     if not pitcher_event.empty and "pitcher_id" in df_today.columns:  
         merged = merged.reset_index()
         merged = merged.merge(
@@ -198,17 +191,30 @@ if today_file and hist_file:
     else:  
         merged = merged.reset_index()  
   
-    # Fix: For pure-pitcher rows, fill batter features with NaN, pitcher features from pitcher_event  
     merged["is_pitcher_row"] = merged["position"].astype(str).str.upper().isin(["SP", "P"])  
-  
     batter_stat_cols = [c for c in merged.columns if re.match(r"^(avg_exit_velo|hard_hit_rate|barrel_rate|fb_rate|sweet_spot_rate)_", c) and not c.startswith("p_")]
     pitcher_stat_cols = [c for c in merged.columns if re.match(r"^p_(avg_exit_velo|hard_hit_rate|barrel_rate|fb_rate|sweet_spot_rate)_", c)]  
   
-    # Set all batter features to NaN for pitcher rows  
     for col in batter_stat_cols:  
         merged.loc[merged["is_pitcher_row"], col] = np.nan  
   
-    # For pitcher rows, set p_ features using their own batter_id as pitcher_id  
+    # DEBUG: For the first pitcher row, show all p_ features and debug  
+    pitcher_debug_row = merged[merged["is_pitcher_row"]].head(1)
+    if not pitcher_debug_row.empty:
+        debug_pid = pitcher_debug_row["batter_id"].values[0]
+        st.info(f"DEBUG: First SP/P row: batter_id (should match pitcher_id): {debug_pid}")
+        st.write(pitcher_debug_row)
+        st.info(f"DEBUG: pitcher_event index sample: {pitcher_event.index[:5].to_list()}")
+        st.info(f"DEBUG: pitcher_event.loc[pid] (if exists):")
+        if debug_pid in pitcher_event.index:
+            st.write(pitcher_event.loc[debug_pid])
+        else:
+            st.warning(f"DEBUG: {debug_pid} not in pitcher_event index!")
+        debug_p_cols = {col: pitcher_debug_row[col].values[0] for col in pitcher_stat_cols}
+        st.info("DEBUG: p_ feature values in merged row:")
+        st.write(debug_p_cols)
+  
+    # Fill pitcher stats for SP/P rows  
     for col in pitcher_stat_cols:  
         if col in pitcher_event.columns:  
             pid_vals = merged.loc[merged["is_pitcher_row"], "batter_id"]
@@ -217,7 +223,6 @@ if today_file and hist_file:
             ].reindex(pid_vals).values
             merged.loc[merged["is_pitcher_row"], col] = vals  
   
-    # Remove temp columns and restore original row order  
     merged = merged.sort_values("_orig_idx").drop(columns=["_orig_idx", "is_pitcher_row"], errors="ignore")  
   
     inc("Final formatting and reindexing")  
