@@ -26,8 +26,6 @@ output_columns = [
     "team_code","game_date","game_number","mlb_id","player_name","batting_order","position",
     "weather","temp","wind_mph","wind_dir","condition","stadium","city","batter_id","p_throws"
 ]
-
-# Add all stat columns for output (order matches your sample)
 for base in ["avg_exit_velo", "hard_hit_rate", "barrel_rate", "fb_rate", "sweet_spot_rate"]:
     for w in event_windows:
         output_columns.append(f"{base}_{w}")
@@ -73,9 +71,9 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
             out_row[f"{prefix}avg_exit_velo_{w}"] = group['launch_speed'].rolling(w, min_periods=1).mean().iloc[-1]
             out_row[f"{prefix}hard_hit_rate_{w}"] = (group['launch_speed'].rolling(w, min_periods=1)
                                                      .apply(lambda x: np.mean(x >= 95)).iloc[-1])
-            out_row[f"{prefix}barrel_rate_{w}"] = (((group['launch_speed'] >= 98) &
-                                                    (group['launch_angle'] >= 26) &
-                                                    (group['launch_angle'] <= 30))
+            out_row[f"{prefix}barrel_rate_{w}"] = (( (group['launch_speed'] >= 98) &
+                                                     (group['launch_angle'] >= 26) &
+                                                     (group['launch_angle'] <= 30) )
                                                    .rolling(w, min_periods=1).mean().iloc[-1])
             out_row[f"{prefix}fb_rate_{w}"] = (group['launch_angle'].rolling(w, min_periods=1)
                                                .apply(lambda x: np.mean(x >= 25)).iloc[-1])
@@ -97,9 +95,9 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
                         out_row[f"{prefix}avg_exit_velo_{pt}_{w}"] = pt_group['launch_speed'].rolling(w, min_periods=1).mean().iloc[-1]
                         out_row[f"{prefix}hard_hit_rate_{pt}_{w}"] = (pt_group['launch_speed'].rolling(w, min_periods=1)
                                                                        .apply(lambda x: np.mean(x >= 95)).iloc[-1])
-                        out_row[f"{prefix}barrel_rate_{pt}_{w}"] = (((pt_group['launch_speed'] >= 98) &
-                                                                     (pt_group['launch_angle'] >= 26) &
-                                                                     (pt_group['launch_angle'] <= 30))
+                        out_row[f"{prefix}barrel_rate_{pt}_{w}"] = ( ( (pt_group['launch_speed'] >= 98) &
+                                                                        (pt_group['launch_angle'] >= 26) &
+                                                                        (pt_group['launch_angle'] <= 30) )
                                                                       .rolling(w, min_periods=1).mean().iloc[-1])
                         out_row[f"{prefix}fb_rate_{pt}_{w}"] = (pt_group['launch_angle'].rolling(w, min_periods=1)
                                                                 .apply(lambda x: np.mean(x >= 25)).iloc[-1])
@@ -116,35 +114,30 @@ def diag(msg, df=None):
         st.write(f"Shape: {df.shape}")
         st.dataframe(df.head(3))
 
-# --- Progress Bar Setup ---
+def pct(x):
+    return f"{x}%"
+
+# --- Progress bar utilities ---
+step = [0]
+step_total = 8  # Number of steps below!
 progress = st.progress(0)
 status = st.empty()
-pct = lambda n: f"**{int(n)}%**"
-step = [0]
-step_total = 7  # 7 steps in the process
-
 def inc(msg=None):
     step[0] += 1
-    percent = int(100 * step[0] / step_total)
+    percent = min(int(100 * step[0] / step_total), 100)  # cap at 100%
     progress.progress(percent)
     status.markdown(f"{pct(percent)} {'- ' + msg if msg else ''}")
     time.sleep(0.05)
 
 # --- MAIN APP LOGIC ---
 if today_file and hist_file:
-    # --- Load data ---
+    inc("Loading data")
     df_today = pd.read_csv(today_file)
     df_hist = pd.read_csv(hist_file)
-    inc("Loaded CSVs")
 
-    diag("Today's Input Data", df_today)
-    diag("Historical Event-Level Data", df_hist)
-    inc("Parsed input files")
-
-    # --- Standardize columns/IDs ---
+    inc("Standardizing columns and IDs")
     df_today.columns = [str(c).strip().lower().replace(" ", "_") for c in df_today.columns]
     df_hist.columns = [str(c).strip().lower().replace(" ", "_") for c in df_hist.columns]
-    inc("Standardized column names")
 
     # --- ID Fixes for both files ---
     id_cols_today = ['batter_id', 'mlb_id']
@@ -161,62 +154,55 @@ if today_file and hist_file:
     df_today['batter_id'] = df_today[id_col_today].astype(str).str.strip().str.replace('.0', '', regex=False)
     df_today = df_today.drop_duplicates(subset=["batter_id"])
     df_today = parse_weather_fields(df_today)
-    inc("ID fixes and weather fields")
 
+    inc("Parsing and validating dates")
     if 'game_date' not in df_hist.columns:
         st.error("Historical file must have a 'game_date' column.")
         st.stop()
     df_hist['game_date'] = pd.to_datetime(df_hist['game_date'], errors='coerce')
 
-    # --- Compute batter stats ---
-    diag("Computing batter rolling stats (vectorized, fast)...")
+    inc("Computing batter rolling stats (vectorized, fast)...")
     batter_event = fast_rolling_stats(
         df_hist, "batter_id", "game_date", event_windows, main_pitch_types, prefix=""
     )
     batter_event = batter_event.set_index('batter_id')
-    diag("Batter rolling stats shape:", batter_event)
-    inc("Computed batter stats")
 
-    # --- Compute pitcher stats ---
+    inc("Computing pitcher rolling stats (vectorized, fast)...")
     if 'pitcher_id' in df_today.columns and 'pitcher_id' in df_hist.columns:
-        diag("Computing pitcher rolling stats (vectorized, fast)...")
         pitcher_event = fast_rolling_stats(
             df_hist.rename(columns={"pitcher_id": "batter_id", "batter_id": "unused"}),
             "batter_id", "game_date", event_windows, main_pitch_types, prefix="p_"
         )
         pitcher_event = pitcher_event.set_index('batter_id')
         pitcher_event.index.name = 'pitcher_id'
-        diag("Pitcher rolling stats shape:", pitcher_event)
     else:
         pitcher_event = pd.DataFrame()
-    inc("Computed pitcher stats")
 
-    # --- Merge all stats into today's df ---
-    diag("Merging batter stats into today's data...")
+    inc("Merging batter stats into today's data...")
     merged = df_today.set_index('batter_id').join(batter_event, how='left')
+
+    inc("Merging pitcher stats into today's data...")
     if not pitcher_event.empty and 'pitcher_id' in df_today.columns:
         merged = merged.reset_index().set_index('pitcher_id').join(pitcher_event, how='left').reset_index()
         merged.rename(columns={'index': 'batter_id'}, inplace=True)
     else:
         merged = merged.reset_index()
-    inc("Merged all stats")
 
-    # --- Fill all missing stat columns so columns are never fragmented ---
+    inc("Final formatting and reindexing")
     missing_cols = [col for col in output_columns if col not in merged.columns]
     if missing_cols:
         nan_df = pd.DataFrame(np.nan, index=merged.index, columns=missing_cols)
         merged = pd.concat([merged, nan_df], axis=1)
     merged = merged.loc[:, ~merged.columns.duplicated()]
     merged = merged.reindex(columns=output_columns)
-    diag(f"🟢 Generated file: {merged.shape[0]} unique batters, {merged.shape[1]} columns (features).", merged)
-    inc("Final formatting and reindexing")
+
+    inc(f"🟢 Generated file: {merged.shape[0]} unique batters, {merged.shape[1]} columns (features).")
+    st.dataframe(merged.head(10))
 
     st.download_button(
         "⬇️ Download Today's Event-Level CSV (Exact Format)",
         data=merged.to_csv(index=False),
         file_name="event_level_today_full.csv"
     )
-    inc("Ready for download")
-
 else:
     st.info("Please upload BOTH today's matchups/lineups and historical event-level CSV.")
