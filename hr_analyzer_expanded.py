@@ -36,8 +36,10 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
     if 'pitch_type' in df.columns:
         df['pitch_type'] = df['pitch_type'].astype(str).str.lower().str.strip()
     df = df.sort_values([id_col, date_col])
+
     feature_frames = []
     grouped = df.groupby(id_col)
+
     for name, group in grouped:
         out_row = {}
         for w in windows:
@@ -80,14 +82,18 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
         feature_frames.append(out_row)
     return pd.DataFrame(feature_frames)
 
-# --- ALL FEATURE COLUMNS ---
+# ========== MAIN APP ==========
+today_file = st.file_uploader("Upload Today's Matchups/Lineups CSV", type=["csv"], key="today_csv")
+hist_file = st.file_uploader("Upload Historical Event-Level CSV", type=["csv"], key="hist_csv")
+
+# --- Full Feature List (use your latest full list here) ---
 all_feature_cols = [
     # Core
     "team_code","game_date","game_number","mlb_id","player_name","batting_order","position",
     "weather","time","stadium","city","batter_id","p_throws",
-    # Rolling Stats (examples, add as needed)
+    # Rolling Stats (add more if needed)
     "hard_hit_rate_20","sweet_spot_rate_20",
-    # Park/Pitcher/Batter/HR Contexts
+    # Park/Pitcher/Batter/HR Contexts - expand as needed
     "park_hand_hr_7","park_hand_hr_14","park_hand_hr_30",
     "b_vsp_hand_hr_3","p_vsb_hand_hr_3","b_vsp_hand_hr_5","p_vsb_hand_hr_5",
     "b_vsp_hand_hr_7","p_vsb_hand_hr_7","b_vsp_hand_hr_14","p_vsb_hand_hr_14",
@@ -114,111 +120,129 @@ all_feature_cols = [
     "p_pfx_x_3","p_pfx_x_5","p_pfx_x_7","p_pfx_x_14",
     "p_pfx_z_3","p_pfx_z_5","p_pfx_z_7","p_pfx_z_14",
     # Environment
-    "park","temp","wind_mph","wind_dir","humidity","condition","hr_prob"
+    "park","temp","wind_mph","wind_dir","humidity","condition","hr_prob",
+    # Diagnostic/Output
+    "pitcher_id"
 ]
-
-today_file = st.file_uploader("Upload Today's Matchups/Lineups CSV", type=["csv"], key="today_csv")
-hist_file = st.file_uploader("Upload Historical Event-Level CSV", type=["csv"], key="hist_csv")
 
 if today_file and hist_file:
     st.info("Loaded today's matchups and historical event data.")
 
-    # Load and clean data
+    # LOAD DATA
     df_today = read_csv(today_file)
     df_hist = read_csv(hist_file)
+
     st.write("Today's Data Sample:", df_today.head(2))
     st.write("Historical Data Sample:", df_hist.head(2))
 
-    # Standardize columns
+    # -------- STANDARDIZE IDS/STRINGS --------
     df_today.columns = [str(c).strip().lower().replace(" ", "_") for c in df_today.columns]
     df_hist.columns = [str(c).strip().lower().replace(" ", "_") for c in df_hist.columns]
 
-    # Fix ID columns to be string, no decimals
+    # Fix for ID columns to ensure they are clean strings
     for col in ['batter_id', 'mlb_id', 'pitcher_id']:
         if col in df_today.columns:
             df_today[col] = df_today[col].astype(str).str.replace('.0','',regex=False).str.strip()
         if col in df_hist.columns:
             df_hist[col] = df_hist[col].astype(str).str.replace('.0','',regex=False).str.strip()
 
-    # ==========================
-    # PITCHER_ID FILL (robust)
-    # ==========================
-    st.write("Unique positions in today's data:", df_today['position'].unique())
-    st.write("Sample mlb_id values:", df_today['mlb_id'].dropna().astype(str).unique())
-    st.write("Rows where batting_order contains 'SP':")
-    st.write(df_today[df_today['batting_order'].astype(str).str.upper() == "SP"])
-
+    # ----------- Fill/Debug PITCHER ID ----------
+    pitcher_id_null_count = 0
     if 'pitcher_id' not in df_today.columns or df_today['pitcher_id'].isnull().all():
         df_today['pitcher_id'] = np.nan
-        group_cols = ['team_code','game_date','game_number']
-        for group, group_df in df_today.groupby(group_cols):
-            sp = group_df[group_df['batting_order'].astype(str).str.upper() == "SP"]
-            if not sp.empty:
-                pid = sp.iloc[0]['mlb_id']
-                try:
-                    pid = str(int(float(pid)))
-                except:
-                    pid = str(pid)
-                mask = (df_today['team_code'].astype(str) == str(group[0])) & \
-                       (df_today['game_date'].astype(str) == str(group[1])) & \
-                       (df_today['game_number'].astype(str) == str(group[2]))
-                df_today.loc[mask, 'pitcher_id'] = pid
-                st.code(f"Set pitcher_id={pid} for {group}")
-    st.write("Pitcher_id filled. Sample:", df_today[['team_code','game_date','game_number','player_name','batting_order','position','mlb_id','pitcher_id']].head(12))
-    st.code(f"Pitcher_id null count after fill: {df_today['pitcher_id'].isnull().sum()}")
+        # New logic: detect SP based on batting_order or position
+        if 'batting_order' in df_today.columns:
+            sp_rows = df_today[df_today['batting_order'].astype(str).str.upper().str.contains("SP", na=False)]
+            for _, sp_row in sp_rows.iterrows():
+                mask = (
+                    (df_today['team_code'] == sp_row['team_code']) &
+                    (df_today['game_date'] == sp_row['game_date']) &
+                    (df_today['game_number'] == sp_row['game_number'])
+                )
+                val = sp_row['mlb_id']
+                st.write(f"Set pitcher_id={val} for ({sp_row['team_code']}, {sp_row['game_date']}, {sp_row['game_number']})")
+                df_today.loc[mask, 'pitcher_id'] = val
+        if df_today['pitcher_id'].isnull().all() and 'position' in df_today.columns:
+            sp_rows = df_today[df_today['position'].astype(str).str.upper().str.contains("SP", na=False)]
+            for _, sp_row in sp_rows.iterrows():
+                mask = (
+                    (df_today['team_code'] == sp_row['team_code']) &
+                    (df_today['game_date'] == sp_row['game_date']) &
+                    (df_today['game_number'] == sp_row['game_number'])
+                )
+                val = sp_row['mlb_id']
+                st.write(f"Set pitcher_id={val} for ({sp_row['team_code']}, {sp_row['game_date']}, {sp_row['game_number']})")
+                df_today.loc[mask, 'pitcher_id'] = val
+    # Final pitcher_id string/int fix
+    if 'pitcher_id' in df_today.columns:
+        df_today['pitcher_id'] = df_today['pitcher_id'].astype(str).str.replace('.0','',regex=False).str.strip()
+        pitcher_id_null_count = df_today['pitcher_id'].isnull().sum()
+    st.write("Pitcher_id filled. Sample:", df_today[['team_code','game_date','game_number','player_name','position','batting_order','mlb_id','pitcher_id']].head(12))
+    st.write(f"Pitcher_id null count after fill: {pitcher_id_null_count}")
 
     # ---- Weather Parse ----
     df_today = parse_weather_fields(df_today)
     st.write("Weather columns parsed. Weather sample:", df_today[['weather','temp','wind_mph','wind_dir','condition']].head(2))
 
-    # ---- Rolling Stats ----
+    # ---- Rolling Stats Setup ----
     event_windows = [3,7,14,20]
     main_pitch_types = ["ff", "sl", "cu", "ch", "si", "fc", "fs", "st", "sinker", "splitter", "sweeper"]
 
-    # Rolling BATTER stats
+    # ---- Rolling BATTER stats ----
+    st.write("Running fast_rolling_stats for batter...")
     batter_event = fast_rolling_stats(df_hist, "batter_id", "game_date", event_windows, main_pitch_types, prefix="")
-    st.write("Batter rolling event stats sample:", batter_event.head(3))
     batter_event = batter_event.set_index('batter_id')
+    st.write("Batter rolling event stats sample:", batter_event.head(3))
 
-    # Rolling PITCHER stats
+    # ---- Rolling PITCHER stats ----
+    st.write("Running fast_rolling_stats for pitcher...")
+    pitcher_event = pd.DataFrame()
     if 'pitcher_id' in df_hist.columns:
+        pitcher_hist = df_hist.copy()
+        if 'batter_id' in pitcher_hist.columns:
+            pitcher_hist = pitcher_hist.drop(columns=['batter_id'])
+        pitcher_hist = pitcher_hist.rename(columns={"pitcher_id": "batter_id"})
+        pitcher_hist = pitcher_hist.loc[:,~pitcher_hist.columns.duplicated()]
         pitcher_event = fast_rolling_stats(
-            df_hist.rename(columns={"pitcher_id":"batter_id"}),
-            "batter_id", "game_date", event_windows, main_pitch_types, prefix="p_"
+            pitcher_hist, "batter_id", "game_date", event_windows, main_pitch_types, prefix="p_"
         )
     elif 'mlb_id' in df_hist.columns:
+        pitcher_hist = df_hist.copy()
+        if 'batter_id' in pitcher_hist.columns:
+            pitcher_hist = pitcher_hist.drop(columns=['batter_id'])
+        pitcher_hist = pitcher_hist.rename(columns={"mlb_id": "batter_id"})
+        pitcher_hist = pitcher_hist.loc[:,~pitcher_hist.columns.duplicated()]
         pitcher_event = fast_rolling_stats(
-            df_hist.rename(columns={"mlb_id":"batter_id"}),
-            "batter_id", "game_date", event_windows, main_pitch_types, prefix="p_"
+            pitcher_hist, "batter_id", "game_date", event_windows, main_pitch_types, prefix="p_"
         )
     else:
         pitcher_event = pd.DataFrame()
     if not pitcher_event.empty:
+        pitcher_event = pitcher_event.set_index('batter_id')
+        pitcher_event.index.name = 'pitcher_id'
         st.write("Pitcher rolling stats sample:", pitcher_event.head(3))
-    pitcher_event = pitcher_event.set_index('batter_id')
-    pitcher_event.index.name = 'pitcher_id'
 
-    # ---- Merge stats into today's data ----
+    # ---- Merge STATS into today ----
     merged = df_today.set_index('batter_id').join(batter_event, how='left')
+    merged = merged.reset_index()
     if not pitcher_event.empty and 'pitcher_id' in df_today.columns:
-        merged = merged.reset_index().set_index('pitcher_id').join(pitcher_event, how='left').reset_index()
-        merged.rename(columns={'index': 'batter_id'}, inplace=True)
-    else:
-        merged = merged.reset_index()
+        merged = merged.set_index('pitcher_id').join(pitcher_event, how='left').reset_index()
+        merged = merged.loc[:,~merged.columns.duplicated()]  # Deduplicate columns after join
+
     st.write("Merged Data Sample:", merged.head(8))
 
-    # ---- Add all feature columns as nan if missing (for strict output format) ----
+    # ---- Add advanced/statcast/park features ----
     for col in all_feature_cols:
         if col not in merged.columns:
-            merged[col] = np.nan
+            merged[col] = np.nan  # Fill as NaN for output consistency
 
+    # ---- Final Output Formatting ----
     merged = merged.loc[:,~merged.columns.duplicated()]
     merged = merged.reindex(columns=all_feature_cols)
-
     st.success(f"🟢 Generated file with {merged.shape[0]} rows and {merged.shape[1]} columns.")
     st.dataframe(merged.head(10))
 
-    # ---- Diagnostic Output ----
+    # ---- Diagnostic Output (Copy/Paste block) ----
     diag_text = f"""
 Data Diagnostics:
 - df_today columns: {list(df_today.columns)}
@@ -231,5 +255,6 @@ Data Diagnostics:
 """
     st.download_button("⬇️ Download Diagnostics (.txt)", diag_text, file_name="diagnostics.txt")
     st.download_button("⬇️ Download Today's Event-Level CSV (Exact Format)", data=merged.to_csv(index=False), file_name="event_level_today_full.csv")
+
 else:
     st.info("Please upload BOTH today's matchups/lineups and historical event-level CSV.")
