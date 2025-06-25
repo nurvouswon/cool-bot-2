@@ -36,7 +36,7 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
     df['launch_angle'] = pd.to_numeric(df['launch_angle'], errors='coerce')
     if 'pitch_type' in df.columns:
         df['pitch_type'] = df['pitch_type'].astype(str).str.lower().str.strip()
-    df = df.drop_duplicates(subset=[id_col, date_col], keep='last')  # Dedup
+    df = df.drop_duplicates(subset=[id_col, date_col], keep='last')
     df = df.sort_values([id_col, date_col])
 
     feature_frames = []
@@ -56,7 +56,6 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
                                                .apply(lambda x: np.mean(x >= 25)).iloc[-1])
             out_row[f"{prefix}sweet_spot_rate_{w}"] = (group['launch_angle'].rolling(w, min_periods=1)
                                                        .apply(lambda x: np.mean((x >= 8) & (x <= 32))).iloc[-1])
-        # Per pitch type
         if pitch_types is not None and "pitch_type" in group.columns:
             for pt in pitch_types:
                 pt_group = group[group['pitch_type'] == pt]
@@ -84,11 +83,9 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
         feature_frames.append(out_row)
     return pd.DataFrame(feature_frames)
 
-# ========== MAIN APP ==========
 today_file = st.file_uploader("Upload Today's Matchups/Lineups CSV", type=["csv"], key="today_csv")
 hist_file = st.file_uploader("Upload Historical Event-Level CSV", type=["csv"], key="hist_csv")
 
-# --- Define all your feature columns ---
 all_feature_cols = [
     "team_code","game_date","game_number","mlb_id","player_name","batting_order","position",
     "weather","time","stadium","city","batter_id","p_throws",
@@ -138,8 +135,6 @@ if today_file and hist_file:
         if col in df_hist.columns:
             df_hist[col] = df_hist[col].astype(str).str.replace('.0','',regex=False).str.strip()
 
-    # Assign correct pitcher_id for each batter: use the opponent's SP
-    # Find all unique games
     games = df_today[['game_date', 'game_number']].drop_duplicates()
     opp_pitcher_map = {}
     for _, game in games.iterrows():
@@ -205,7 +200,6 @@ if today_file and hist_file:
     if 'batter_id' not in merged.columns:
         merged['batter_id'] = merged['mlb_id']
 
-    # --- BATTER MERGE ---
     merged = pd.merge(
         merged,
         batter_event.reset_index(),
@@ -214,7 +208,6 @@ if today_file and hist_file:
         right_on='batter_id'
     )
 
-    # --- PITCHER MERGE ---
     if not pitcher_event.empty and 'pitcher_id' in merged.columns:
         merged = pd.merge(
             merged,
@@ -224,13 +217,11 @@ if today_file and hist_file:
             right_on='batter_id',
             suffixes=('', '_pitcherstats')
         )
-    # Remove duplicate 'batter_id_pitcherstats' column if exists
     if 'batter_id_pitcherstats' in merged.columns:
         merged = merged.drop(columns=['batter_id_pitcherstats'])
 
     merged = merged.loc[:, ~merged.columns.duplicated()]
     st.write("Merged Data Sample:", merged.head(8))
-    # === BEGIN DIAGNOSTICS ===
     st.write("---- FULL MERGED COLUMN LIST ----")
     st.write(list(merged.columns))
     st.write("---- FULL MERGED .head() ----")
@@ -243,52 +234,18 @@ if today_file and hist_file:
     st.write(f"Missing in merged: {missing_in_merged}")
     st.write(f"Extra in merged: {extra_in_merged}")
 
-    # Show a summary of null counts for all output columns
-    st.write("---- NULL COUNTS FOR OUTPUT COLUMNS ----")
-    st.write(merged[all_feature_cols].isnull().sum())
-
-    # Also, inspect the first rows for those columns
-    st.write("---- FIRST 3 ROWS OF FINAL OUTPUT COLUMNS ----")
-    st.write(merged[all_feature_cols].head(3))
-   
-    # === COLUMN RENAME FIX: Map event-level stats to expected output names ===
-
-    batter_rename_map = {
-        'b_launch_speed_3': 'avg_exit_velo_3',
-        'b_launch_speed_5': 'avg_exit_velo_5',
-        'b_launch_speed_7': 'avg_exit_velo_7',
-        'b_launch_speed_14': 'avg_exit_velo_14',
-        'b_hard_hit_rate_20': 'hard_hit_rate_20',
-        'b_sweet_spot_rate_20': 'sweet_spot_rate_20',
-        # Add more mappings as needed for your expected features!
-        # Example: 'b_barrel_rate_3': 'barrel_rate_3', ...
-    }
-
-    pitcher_rename_map = {
-        'p_launch_speed_3': 'p_avg_exit_velo_3',
-        'p_launch_speed_5': 'p_avg_exit_velo_5',
-        'p_launch_speed_7': 'p_avg_exit_velo_7',
-        'p_launch_speed_14': 'p_avg_exit_velo_14',
-        'p_hard_hit_rate_20': 'p_hard_hit_rate_20',
-        'p_sweet_spot_rate_20': 'p_sweet_spot_rate_20',
-        # Add more mappings as needed for your expected features!
-        # Example: 'p_barrel_rate_3': 'p_barrel_rate_3', ...
-    }
-
-    # Rename columns only if the original (right-side) name exists in merged
-    merged.rename(columns={v: k for k, v in batter_rename_map.items() if v in merged.columns}, inplace=True)
-    merged.rename(columns={v: k for k, v in pitcher_rename_map.items() if v in merged.columns}, inplace=True)
-
-    # === END COLUMN RENAME FIX ===
-    # === END DIAGNOSTICS ===
+    # === COLUMN FILL FIX: Ensure ALL output columns exist before diagnostics/output ===
     for col in all_feature_cols:
         if col not in merged.columns:
             merged[col] = np.nan  # Fill as NaN for output consistency
 
     # ---- Final Output Formatting ----
-    # Only keep columns that are present (avoid all-NaN columns for features that were never merged in)
-    output_cols = [col for col in all_feature_cols if col in merged.columns]
-    merged = merged[output_cols]
+    # Only keep columns that are present in all_feature_cols
+    merged = merged[all_feature_cols]
+    st.write("---- NULL COUNTS FOR OUTPUT COLUMNS ----")
+    st.write(merged.isnull().sum())
+    st.write("---- FIRST 3 ROWS OF FINAL OUTPUT COLUMNS ----")
+    st.write(merged.head(3))
     st.success(f"🟢 Generated file with {merged.shape[0]} rows and {merged.shape[1]} columns.")
     st.dataframe(merged.head(10))
 
