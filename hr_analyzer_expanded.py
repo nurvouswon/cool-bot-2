@@ -205,26 +205,41 @@ if today_file and hist_file:
         pitcher_event = pitcher_event[~pitcher_event.index.duplicated(keep='last')]
         st.write("Pitcher rolling stats sample:", pitcher_event.head(3))
 
-    # ---- Merge STATS into today ----
-    # ==============================
-    # REPLACED BLOCK STARTS HERE
+    # ---- Assign Opponent Pitcher ID for merge ----
+    def get_opp_pitcher_id(row, df):
+        teams = df[
+            (df['game_date'] == row['game_date']) &
+            (df['game_number'] == row['game_number'])
+        ]['team_code'].unique()
+        opp_teams = [t for t in teams if t != row['team_code']]
+        if not opp_teams:
+            return np.nan
+        opp_team = opp_teams[0]
+        opp_sp_row = df[
+            (df['team_code'] == opp_team) &
+            (df['game_date'] == row['game_date']) &
+            (df['game_number'] == row['game_number']) &
+            (df['batting_order'].astype(str).str.upper().str.strip() == "SP")
+        ]
+        if not opp_sp_row.empty:
+            return str(opp_sp_row.iloc[0]['mlb_id'])
+        else:
+            return np.nan
+
     merged = df_today.copy()
     if 'batter_id' not in merged.columns:
         merged['batter_id'] = merged['mlb_id']
-    # Join batter stats (by batter_id)
-    merged = merged.join(
-        batter_event, on='batter_id', how='left', rsuffix='_batterstats'
-    )
-    # Join pitcher stats (by pitcher_id)
-    if not pitcher_event.empty and 'pitcher_id' in merged.columns:
-        merged = merged.join(
-            pitcher_event, on='pitcher_id', how='left', rsuffix='_pitcherstats'
-        )
-    # Remove duplicate columns (if any)
-    merged = merged.loc[:, ~merged.columns.duplicated()]
-    # ==============================
-    # END OF REPLACED BLOCK
-
+    # Add opponent_pitcher_id column for merge
+    merged['opponent_pitcher_id'] = merged.apply(lambda row: get_opp_pitcher_id(row, df_today), axis=1)
+    merged = merged.set_index('batter_id').join(batter_event, how='left')
+    merged = merged.reset_index()
+    # Now join pitcher stats using opponent_pitcher_id
+    if not pitcher_event.empty and 'opponent_pitcher_id' in merged.columns:
+        merged = merged.set_index('opponent_pitcher_id').join(pitcher_event, how='left', rsuffix='_pstats')
+        merged = merged.reset_index().rename(columns={'index':'opponent_pitcher_id'})
+        # For output, set 'pitcher_id' to be the actual opponent_pitcher_id used
+        merged['pitcher_id'] = merged['opponent_pitcher_id']
+    merged = merged.loc[:,~merged.columns.duplicated()]
     st.write("Merged Data Sample:", merged.head(8))
 
     # ---- Add advanced/statcast/park features ----
