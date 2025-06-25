@@ -250,6 +250,36 @@ if today_file and hist_file:
     # Also, inspect the first rows for those columns
     st.write("---- FIRST 3 ROWS OF FINAL OUTPUT COLUMNS ----")
     st.write(merged[all_feature_cols].head(3))
+   
+    # === COLUMN RENAME FIX: Map event-level stats to expected output names ===
+
+    batter_rename_map = {
+        'b_launch_speed_3': 'avg_exit_velo_3',
+        'b_launch_speed_5': 'avg_exit_velo_5',
+        'b_launch_speed_7': 'avg_exit_velo_7',
+        'b_launch_speed_14': 'avg_exit_velo_14',
+        'b_hard_hit_rate_20': 'hard_hit_rate_20',
+        'b_sweet_spot_rate_20': 'sweet_spot_rate_20',
+        # Add more mappings as needed for your expected features!
+        # Example: 'b_barrel_rate_3': 'barrel_rate_3', ...
+    }
+
+    pitcher_rename_map = {
+        'p_launch_speed_3': 'p_avg_exit_velo_3',
+        'p_launch_speed_5': 'p_avg_exit_velo_5',
+        'p_launch_speed_7': 'p_avg_exit_velo_7',
+        'p_launch_speed_14': 'p_avg_exit_velo_14',
+        'p_hard_hit_rate_20': 'p_hard_hit_rate_20',
+        'p_sweet_spot_rate_20': 'p_sweet_spot_rate_20',
+        # Add more mappings as needed for your expected features!
+        # Example: 'p_barrel_rate_3': 'p_barrel_rate_3', ...
+    }
+
+    # Rename columns only if the original (right-side) name exists in merged
+    merged.rename(columns={v: k for k, v in batter_rename_map.items() if v in merged.columns}, inplace=True)
+    merged.rename(columns={v: k for k, v in pitcher_rename_map.items() if v in merged.columns}, inplace=True)
+
+    # === END COLUMN RENAME FIX ===
     # === END DIAGNOSTICS ===
     for col in all_feature_cols:
         if col not in merged.columns:
