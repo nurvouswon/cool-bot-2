@@ -1,5 +1,11 @@
 streamlit
+streamlit
 pandas
+numpy
+requests
+pybaseball
+scikit-learn
+python-dateutil
 numpy
 scikit-learn
 xgboost
