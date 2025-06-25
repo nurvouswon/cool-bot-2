@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import re
-import time
 
 st.set_page_config("🟦 Generate Today's Event-Level CSV", layout="wide")
 st.title("🟦 Generate Today's Event-Level CSV (All Features, Full Debug)")
@@ -193,13 +192,16 @@ if today_file and hist_file:
     st.write("Running fast_rolling_stats for pitchers...")
     pitcher_event = pd.DataFrame()
     if 'pitcher_id' in df_hist.columns:
+        # To prevent duplicate 'batter_id', drop the hitter's batter_id before renaming
+        temp_hist = df_hist.drop(columns=['batter_id'], errors='ignore').rename(columns={"pitcher_id":"batter_id"})
         pitcher_event = fast_rolling_stats(
-            df_hist.rename(columns={"pitcher_id":"batter_id"}),
+            temp_hist,
             "batter_id", "game_date", event_windows, main_pitch_types, prefix="p_"
         )
     elif 'mlb_id' in df_hist.columns:
+        temp_hist = df_hist.drop(columns=['batter_id'], errors='ignore').rename(columns={"mlb_id":"batter_id"})
         pitcher_event = fast_rolling_stats(
-            df_hist.rename(columns={"mlb_id":"batter_id"}),
+            temp_hist,
             "batter_id", "game_date", event_windows, main_pitch_types, prefix="p_"
         )
     if not pitcher_event.empty:
