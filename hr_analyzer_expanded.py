@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import re
+import time
 
 st.set_page_config("🟦 Generate Today's Event-Level CSV", layout="wide")
 st.title("🟦 Generate Today's Event-Level CSV (All Features, Full Debug)")
@@ -35,11 +36,12 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
     df['launch_angle'] = pd.to_numeric(df['launch_angle'], errors='coerce')
     if 'pitch_type' in df.columns:
         df['pitch_type'] = df['pitch_type'].astype(str).str.lower().str.strip()
+    df = df.drop_duplicates(subset=[id_col, date_col], keep='last')  # Dedup
     df = df.sort_values([id_col, date_col])
-    df = df.drop_duplicates(subset=[id_col, date_col, 'launch_speed', 'launch_angle'], keep='last')
 
     feature_frames = []
     grouped = df.groupby(id_col)
+
     for name, group in grouped:
         out_row = {}
         for w in windows:
@@ -86,15 +88,21 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
 today_file = st.file_uploader("Upload Today's Matchups/Lineups CSV", type=["csv"], key="today_csv")
 hist_file = st.file_uploader("Upload Historical Event-Level CSV", type=["csv"], key="hist_csv")
 
+# --- Define all your feature columns ---
 all_feature_cols = [
+    # Core
     "team_code","game_date","game_number","mlb_id","player_name","batting_order","position",
-    "weather","time","stadium","city","batter_id","p_throws","pitcher_id",
+    "weather","time","stadium","city","batter_id","p_throws",
+    "pitcher_id",
+    # Rolling Stats (add more if needed)
     "hard_hit_rate_20","sweet_spot_rate_20",
+    # Park/Pitcher/Batter/HR Contexts - expand as needed
     "park_hand_hr_7","park_hand_hr_14","park_hand_hr_30",
     "b_vsp_hand_hr_3","p_vsb_hand_hr_3","b_vsp_hand_hr_5","p_vsb_hand_hr_5",
     "b_vsp_hand_hr_7","p_vsb_hand_hr_7","b_vsp_hand_hr_14","p_vsb_hand_hr_14",
     "b_pitchtype_hr_3","p_pitchtype_hr_3","b_pitchtype_hr_5","p_pitchtype_hr_5",
     "b_pitchtype_hr_7","p_pitchtype_hr_7","b_pitchtype_hr_14","p_pitchtype_hr_14",
+    # Batter rolling batted ball
     "b_launch_speed_3","b_launch_speed_5","b_launch_speed_7","b_launch_speed_14",
     "b_launch_angle_3","b_launch_angle_5","b_launch_angle_7","b_launch_angle_14",
     "b_hit_distance_sc_3","b_hit_distance_sc_5","b_hit_distance_sc_7","b_hit_distance_sc_14",
@@ -104,6 +112,7 @@ all_feature_cols = [
     "b_spin_axis_3","b_spin_axis_5","b_spin_axis_7","b_spin_axis_14",
     "b_pfx_x_3","b_pfx_x_5","b_pfx_x_7","b_pfx_x_14",
     "b_pfx_z_3","b_pfx_z_5","b_pfx_z_7","b_pfx_z_14",
+    # Pitcher rolling
     "p_launch_speed_3","p_launch_speed_5","p_launch_speed_7","p_launch_speed_14",
     "p_launch_angle_3","p_launch_angle_5","p_launch_angle_7","p_launch_angle_14",
     "p_hit_distance_sc_3","p_hit_distance_sc_5","p_hit_distance_sc_7","p_hit_distance_sc_14",
@@ -113,70 +122,77 @@ all_feature_cols = [
     "p_spin_axis_3","p_spin_axis_5","p_spin_axis_7","p_spin_axis_14",
     "p_pfx_x_3","p_pfx_x_5","p_pfx_x_7","p_pfx_x_14",
     "p_pfx_z_3","p_pfx_z_5","p_pfx_z_7","p_pfx_z_14",
+    # Environment
     "park","temp","wind_mph","wind_dir","humidity","condition","hr_prob"
 ]
 
+# ========== LOGIC ==========
 if today_file and hist_file:
     st.info("Loaded today's matchups and historical event data.")
 
+    # LOAD DATA
     df_today = read_csv(today_file)
     df_hist = read_csv(hist_file)
 
     st.write("Today's Data Sample:", df_today.head(2))
     st.write("Historical Data Sample:", df_hist.head(2))
 
-    # Standardize column names
+    # -------- STANDARDIZE IDS/STRINGS --------
     df_today.columns = [str(c).strip().lower().replace(" ", "_") for c in df_today.columns]
     df_hist.columns = [str(c).strip().lower().replace(" ", "_") for c in df_hist.columns]
 
-    # Clean ID columns
+    # Fix for ID columns to ensure they are clean strings
     for col in ['batter_id', 'mlb_id', 'pitcher_id']:
         if col in df_today.columns:
             df_today[col] = df_today[col].astype(str).str.replace('.0','',regex=False).str.strip()
         if col in df_hist.columns:
             df_hist[col] = df_hist[col].astype(str).str.replace('.0','',regex=False).str.strip()
 
-    # Fill pitcher_id from SP rows in 'batting_order'
+    # ----------- Fill/Debug PITCHER ID ----------
     if 'pitcher_id' not in df_today.columns or df_today['pitcher_id'].isnull().all():
+        # FILL: Use batting_order == 'SP' as indicator of starting pitcher
         df_today['pitcher_id'] = np.nan
-        sp_rows = df_today[df_today['batting_order'].astype(str).str.upper() == 'SP']
+        sp_rows = df_today[df_today['batting_order'].astype(str).str.upper().str.strip() == "SP"]
         for idx, sp_row in sp_rows.iterrows():
-            if pd.isnull(sp_row['mlb_id']) or sp_row['mlb_id'] in ['nan','']:
+            if pd.isna(sp_row['mlb_id']) or str(sp_row['mlb_id']).lower() == "nan":
                 st.write("Skipping SP row with missing mlb_id:", dict(sp_row))
                 continue
-            key = (sp_row['team_code'], sp_row['game_date'], sp_row['game_number'])
             mask = (
                 (df_today['team_code'] == sp_row['team_code']) &
                 (df_today['game_date'] == sp_row['game_date']) &
                 (df_today['game_number'] == sp_row['game_number'])
             )
-            st.write(f"Set pitcher_id={sp_row['mlb_id']} for {key}")
+            st.write(f"Set pitcher_id={sp_row['mlb_id']} for ({sp_row['team_code']}, {sp_row['game_date']}, {sp_row['game_number']})")
             df_today.loc[mask, 'pitcher_id'] = str(int(float(sp_row['mlb_id'])))
-    df_today['pitcher_id'] = df_today['pitcher_id'].astype(str).str.replace('.0','',regex=False).str.strip()
-    st.write("Pitcher_id filled. Sample:", df_today[['team_code','game_date','game_number','player_name','batting_order','mlb_id','pitcher_id']].head(8))
+    if 'pitcher_id' in df_today.columns:
+        df_today['pitcher_id'] = df_today['pitcher_id'].astype(str).str.replace('.0','',regex=False).str.strip()
+    st.write("Pitcher_id filled. Sample:", df_today[['team_code','game_date','game_number','player_name','batting_order','mlb_id','pitcher_id']].head(10))
     st.write("Pitcher_id null count after fill:", df_today['pitcher_id'].isnull().sum())
 
-    # Parse weather fields
+    # ---- Weather Parse ----
     df_today = parse_weather_fields(df_today)
     st.write("Weather columns parsed. Weather sample:", df_today[['weather','temp','wind_mph','wind_dir','condition']].head(2))
 
-    # Set up windows, pitch types
+    # ---- Rolling Stats Setup ----
     event_windows = [3,7,14,20]
     main_pitch_types = ["ff", "sl", "cu", "ch", "si", "fc", "fs", "st", "sinker", "splitter", "sweeper"]
 
-    # Rolling stats - Batter
+    # ---- Rolling BATTER stats ----
     st.write("Running fast_rolling_stats for batters...")
     batter_event = fast_rolling_stats(df_hist, "batter_id", "game_date", event_windows, main_pitch_types, prefix="")
+    st.write("Batter rolling event stats sample:", batter_event.head(3))
     batter_event = batter_event.set_index('batter_id')
     batter_event = batter_event[~batter_event.index.duplicated(keep='last')]
-    st.write("Batter rolling event stats sample:", batter_event.head(3))
 
-    # Rolling stats - Pitcher
+    # ---- Rolling PITCHER stats ----
     st.write("Running fast_rolling_stats for pitchers...")
     pitcher_event = pd.DataFrame()
+    df_hist_for_pitcher = df_hist.copy()
+    if 'batter_id' in df_hist_for_pitcher.columns:
+        df_hist_for_pitcher = df_hist_for_pitcher.drop(columns=['batter_id'])
     if 'pitcher_id' in df_hist.columns:
         pitcher_event = fast_rolling_stats(
-            df_hist.rename(columns={"pitcher_id":"batter_id"}),  # Use pitcher_id as key
+            df_hist_for_pitcher.rename(columns={"pitcher_id":"batter_id"}),
             "batter_id", "game_date", event_windows, main_pitch_types, prefix="p_"
         )
     elif 'mlb_id' in df_hist.columns:
@@ -189,28 +205,29 @@ if today_file and hist_file:
         pitcher_event = pitcher_event[~pitcher_event.index.duplicated(keep='last')]
         st.write("Pitcher rolling stats sample:", pitcher_event.head(3))
 
-    # Guarantee batter_id column exists for merge
-    if 'batter_id' not in df_today.columns:
-        df_today['batter_id'] = df_today['mlb_id'].astype(str)
-
-    # Merge all rolling stats
-    merged = df_today.set_index('batter_id').join(batter_event, how='left')
+    # ---- Merge STATS into today ----
+    merged = df_today.copy()
+    if 'batter_id' not in merged.columns:
+        merged['batter_id'] = merged['mlb_id']
+    merged = merged.set_index('batter_id').join(batter_event, how='left')
     merged = merged.reset_index()
     if not pitcher_event.empty and 'pitcher_id' in merged.columns:
-        merged = merged.set_index('pitcher_id').join(pitcher_event, how='left', rsuffix='_pitcher')
+        merged = merged.set_index('pitcher_id').join(pitcher_event, how='left', rsuffix='_pstats')
         merged = merged.reset_index()
+    merged = merged.loc[:,~merged.columns.duplicated()]
     st.write("Merged Data Sample:", merged.head(8))
 
-    # Fill in all features
+    # ---- Add advanced/statcast/park features ----
     for col in all_feature_cols:
         if col not in merged.columns:
-            merged[col] = np.nan
-    merged = merged.loc[:,~merged.columns.duplicated()]
-    merged = merged.reindex(columns=all_feature_cols)
+            merged[col] = np.nan  # Fill as NaN for output consistency
 
+    # ---- Final Output Formatting ----
+    merged = merged.reindex(columns=all_feature_cols)
     st.success(f"🟢 Generated file with {merged.shape[0]} rows and {merged.shape[1]} columns.")
     st.dataframe(merged.head(10))
 
+    # ---- Diagnostic Output (Copy/Paste block) ----
     diag_text = f"""
 Data Diagnostics:
 - df_today columns: {list(df_today.columns)}
@@ -223,5 +240,6 @@ Data Diagnostics:
 """
     st.download_button("⬇️ Download Diagnostics (.txt)", diag_text, file_name="diagnostics.txt")
     st.download_button("⬇️ Download Today's Event-Level CSV (Exact Format)", data=merged.to_csv(index=False), file_name="event_level_today_full.csv")
+
 else:
     st.info("Please upload BOTH today's matchups/lineups and historical event-level CSV.")
