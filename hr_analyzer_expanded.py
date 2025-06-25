@@ -230,7 +230,27 @@ if today_file and hist_file:
 
     merged = merged.loc[:, ~merged.columns.duplicated()]
     st.write("Merged Data Sample:", merged.head(8))
+    # === BEGIN DIAGNOSTICS ===
+    st.write("---- FULL MERGED COLUMN LIST ----")
+    st.write(list(merged.columns))
+    st.write("---- FULL MERGED .head() ----")
+    st.write(merged.head(10))
+    st.write("---- COLUMN INTERSECTION WITH ALL_FEATURE_COLS ----")
+    matching_cols = set(merged.columns).intersection(set(all_feature_cols))
+    missing_in_merged = [c for c in all_feature_cols if c not in merged.columns]
+    extra_in_merged = [c for c in merged.columns if c not in all_feature_cols]
+    st.write(f"Matching columns ({len(matching_cols)}): {matching_cols}")
+    st.write(f"Missing in merged: {missing_in_merged}")
+    st.write(f"Extra in merged: {extra_in_merged}")
 
+    # Show a summary of null counts for all output columns
+    st.write("---- NULL COUNTS FOR OUTPUT COLUMNS ----")
+    st.write(merged[all_feature_cols].isnull().sum())
+
+    # Also, inspect the first rows for those columns
+    st.write("---- FIRST 3 ROWS OF FINAL OUTPUT COLUMNS ----")
+    st.write(merged[all_feature_cols].head(3))
+    # === END DIAGNOSTICS ===
     for col in all_feature_cols:
         if col not in merged.columns:
             merged[col] = np.nan  # Fill as NaN for output consistency
