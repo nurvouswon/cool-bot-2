@@ -213,12 +213,15 @@ if today_file and hist_file:
     st.write("Merged Data Sample:", merged.head(8))
 
     for col in all_feature_cols:
-        if col not in merged.columns:
-            merged[col] = np.nan
+    if col not in merged.columns:
+        merged[col] = np.nan  # Fill as NaN for output consistency
 
-    # Only include columns that actually exist in the merged dataframe
+    # ---- Final Output Formatting ----
     final_cols = [col for col in all_feature_cols if col in merged.columns]
-    merged = merged.reindex(columns=final_cols)
+    merged = merged[final_cols]
+    st.write("Final merged shape right before download:", merged.shape)
+    st.write("Non-null values in merged:", merged.notnull().sum())
+    st.dataframe(merged.head(3))
     st.success(f"🟢 Generated file with {merged.shape[0]} rows and {merged.shape[1]} columns.")
     st.dataframe(merged.head(10))
 
@@ -234,6 +237,5 @@ Data Diagnostics:
 """
     st.download_button("⬇️ Download Diagnostics (.txt)", diag_text, file_name="diagnostics.txt")
     st.download_button("⬇️ Download Today's Event-Level CSV (Exact Format)", data=merged.to_csv(index=False), file_name="event_level_today_full.csv")
-
 else:
     st.info("Please upload BOTH today's matchups/lineups and historical event-level CSV.")
