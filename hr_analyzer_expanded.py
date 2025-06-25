@@ -204,12 +204,31 @@ if today_file and hist_file:
     merged = df_today.copy()
     if 'batter_id' not in merged.columns:
         merged['batter_id'] = merged['mlb_id']
-    merged = merged.set_index('batter_id').join(batter_event, how='left')
-    merged = merged.reset_index()
+
+    # --- BATTER MERGE ---
+    merged = pd.merge(
+        merged,
+        batter_event.reset_index(),
+        how='left',
+        left_on='batter_id',
+        right_on='batter_id'
+    )
+
+    # --- PITCHER MERGE ---
     if not pitcher_event.empty and 'pitcher_id' in merged.columns:
-        merged = merged.set_index('pitcher_id').join(pitcher_event, how='left', rsuffix='_pstats')
-        merged = merged.reset_index()
-    merged = merged.loc[:,~merged.columns.duplicated()]
+        merged = pd.merge(
+            merged,
+            pitcher_event.reset_index(),
+            how='left',
+            left_on='pitcher_id',
+            right_on='batter_id',
+            suffixes=('', '_pitcherstats')
+        )
+    # Remove duplicate 'batter_id_pitcherstats' column if exists
+    if 'batter_id_pitcherstats' in merged.columns:
+        merged = merged.drop(columns=['batter_id_pitcherstats'])
+
+    merged = merged.loc[:, ~merged.columns.duplicated()]
     st.write("Merged Data Sample:", merged.head(8))
 
     for col in all_feature_cols:
