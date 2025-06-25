@@ -213,8 +213,8 @@ if today_file and hist_file:
     st.write("Merged Data Sample:", merged.head(8))
 
     for col in all_feature_cols:
-    if col not in merged.columns:
-        merged[col] = np.nan  # Fill as NaN for output consistency
+        if col not in merged.columns:
+            merged[col] = np.nan  # Fill as NaN for output consistency
 
     # ---- Final Output Formatting ----
     final_cols = [col for col in all_feature_cols if col in merged.columns]
