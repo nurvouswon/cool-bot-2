@@ -206,15 +206,25 @@ if today_file and hist_file:
         st.write("Pitcher rolling stats sample:", pitcher_event.head(3))
 
     # ---- Merge STATS into today ----
+    # ==============================
+    # REPLACED BLOCK STARTS HERE
     merged = df_today.copy()
     if 'batter_id' not in merged.columns:
         merged['batter_id'] = merged['mlb_id']
-    merged = merged.set_index('batter_id').join(batter_event, how='left')
-    merged = merged.reset_index()
+    # Join batter stats (by batter_id)
+    merged = merged.join(
+        batter_event, on='batter_id', how='left', rsuffix='_batterstats'
+    )
+    # Join pitcher stats (by pitcher_id)
     if not pitcher_event.empty and 'pitcher_id' in merged.columns:
-        merged = merged.set_index('pitcher_id').join(pitcher_event, how='left', rsuffix='_pstats')
-        merged = merged.reset_index()
-    merged = merged.loc[:,~merged.columns.duplicated()]
+        merged = merged.join(
+            pitcher_event, on='pitcher_id', how='left', rsuffix='_pitcherstats'
+        )
+    # Remove duplicate columns (if any)
+    merged = merged.loc[:, ~merged.columns.duplicated()]
+    # ==============================
+    # END OF REPLACED BLOCK
+
     st.write("Merged Data Sample:", merged.head(8))
 
     # ---- Add advanced/statcast/park features ----
