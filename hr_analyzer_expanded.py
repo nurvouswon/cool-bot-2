@@ -217,24 +217,14 @@ if today_file and hist_file:
             merged[col] = np.nan  # Fill as NaN for output consistency
 
     # ---- Final Output Formatting ----
-    final_cols = [col for col in all_feature_cols if col in merged.columns]
-    merged = merged[final_cols]
-    st.write("Final merged shape right before download:", merged.shape)
-    st.write("Non-null values in merged:", merged.notnull().sum())
-    st.dataframe(merged.head(3))
+    # Only keep columns that are present (avoid all-NaN columns for features that were never merged in)
+    output_cols = [col for col in all_feature_cols if col in merged.columns]
+    merged = merged[output_cols]
     st.success(f"🟢 Generated file with {merged.shape[0]} rows and {merged.shape[1]} columns.")
     st.dataframe(merged.head(10))
 
-    diag_text = f"""
-Data Diagnostics:
-- df_today columns: {list(df_today.columns)}
-- df_hist columns: {list(df_hist.columns)}
-- batter_event shape: {batter_event.shape}
-- pitcher_event shape: {pitcher_event.shape}
-- merged shape: {merged.shape}
-- pitcher_id nulls: {merged['pitcher_id'].isnull().sum()}
-- feature columns in output: {all_feature_cols}
-"""
+    # ---- Diagnostic Output (Copy/Paste block) ----
+    diag_text = f""" ... """
     st.download_button("⬇️ Download Diagnostics (.txt)", diag_text, file_name="diagnostics.txt")
     st.download_button("⬇️ Download Today's Event-Level CSV (Exact Format)", data=merged.to_csv(index=False), file_name="event_level_today_full.csv")
 else:
