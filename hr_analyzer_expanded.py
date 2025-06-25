@@ -216,7 +216,9 @@ if today_file and hist_file:
         if col not in merged.columns:
             merged[col] = np.nan
 
-    merged = merged.reindex(columns=all_feature_cols)
+    # Only include columns that actually exist in the merged dataframe
+    final_cols = [col for col in all_feature_cols if col in merged.columns]
+    merged = merged.reindex(columns=final_cols)
     st.success(f"🟢 Generated file with {merged.shape[0]} rows and {merged.shape[1]} columns.")
     st.dataframe(merged.head(10))
 
