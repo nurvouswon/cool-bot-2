@@ -7,9 +7,6 @@ import requests
 import re
 
 # ========== CONTEXT MAPS ==========
-# ... [YOUR ORIGINAL context maps HERE, unchanged] ...
-
-# ========== CONTEXT MAPS ==========
 park_hr_rate_map = {
     'angels_stadium': 1.05, 'angel_stadium': 1.05, 'minute_maid_park': 1.06, 'coors_field': 1.30,
     'yankee_stadium': 1.19, 'fenway_park': 0.97, 'rogers_centre': 1.10, 'tropicana_field': 0.85,
