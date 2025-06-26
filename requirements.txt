@@ -1,3 +1,7 @@
 streamlit
 pandas
 numpy
+requests
+pybaseball
+scikit-learn
+python-dateutil
