@@ -54,7 +54,30 @@ mlb_team_city_map = {
     'WSH': 'Washington'
 }
 
-# ---------- UTILITY FUNCTIONS ----------
+# ========== UTILITY FUNCTIONS ==========
+def get_all_stat_rolling_cols():
+    roll_base = ['launch_speed', 'launch_angle', 'hit_distance_sc', 'woba_value',
+                 'release_speed', 'release_spin_rate', 'spin_axis', 'pfx_x', 'pfx_z']
+    windows = [3, 5, 7, 14]
+    cols = []
+    for prefix in ['B_', 'P_']:
+        for base in roll_base:
+            for w in windows:
+                cols.append(f"{prefix}{base}_{w}")
+    # Handedness, pitchtype HR rolling windows
+    for typ in ['B_vsP_hand_HR_', 'P_vsB_hand_HR_', 'B_pitchtype_HR_', 'P_pitchtype_HR_']:
+        for w in windows:
+            cols.append(f"{typ}{w}")
+    # Park/stand splits
+    for w in [7, 14, 30]:
+        cols.append(f"park_hand_HR_{w}")
+    # Other
+    cols += [
+        'hard_hit_rate_20', 'sweet_spot_rate_20', 'barrel_rate_20', 'avg_exit_velo_20',
+        'relative_wind_angle', 'relative_wind_sin', 'relative_wind_cos'
+    ]
+    return cols
+
 def wind_dir_to_angle(wind_dir):
     directions = {
         'N': 0, 'NNE': 22.5, 'NE': 45, 'ENE': 67.5, 'E': 90, 'ESE': 112.5,
@@ -116,7 +139,7 @@ with tab1:
     with col2:
         end_date = st.date_input("End Date", value=datetime.today())
 
-    st.markdown("##### (Optional) Upload Today's Matchups/Lineups CSV (for city, stadium, time, weather context)")
+    st.markdown("##### Upload Today's Matchups/Lineups CSV (required for TODAY CSV)")
     uploaded_lineups = st.file_uploader("Upload Today's Matchups CSV", type="csv", key="lineupsup")
     fetch_btn = st.button("Fetch Statcast, Feature Engineer, and Download", type="primary")
     progress = st.empty()
@@ -229,7 +252,10 @@ with tab1:
             df['hard_hit_rate_20'] = df.groupby('batter_id')['launch_speed'].transform(lambda x: (x.shift(1) >= 95).rolling(20, min_periods=5).mean())
         if 'launch_angle' in df.columns and 'batter_id' in df.columns:
             df['sweet_spot_rate_20'] = df.groupby('batter_id')['launch_angle'].transform(lambda x: x.shift(1).between(8, 32).rolling(20, min_periods=5).mean())
+        if 'launch_speed' in df.columns and 'batter_id' in df.columns:
+            df['avg_exit_velo_20'] = df.groupby('batter_id')['launch_speed'].transform(lambda x: x.shift(1).rolling(20, min_periods=5).mean())
 
+        # Advanced wind features
         if 'stand' in df.columns and 'wind_dir_angle' in df.columns:
             def relative_wind_angle(row):
                 try:
@@ -251,8 +277,7 @@ with tab1:
         roll_windows = [3, 5, 7, 14]
         batter_cols = ['launch_speed', 'launch_angle', 'hit_distance_sc', 'woba_value',
                        'release_speed', 'release_spin_rate', 'spin_axis', 'pfx_x', 'pfx_z']
-        pitcher_cols = ['launch_speed', 'launch_angle', 'hit_distance_sc', 'woba_value',
-                        'release_speed', 'release_spin_rate', 'spin_axis', 'pfx_x', 'pfx_z']
+        pitcher_cols = ['launch_speed', 'launch_angle', 'hit_distance_sc', 'woba_value','release_speed', 'release_spin_rate', 'spin_axis', 'pfx_x', 'pfx_z']
 
         batter_feat_dict = {}
         pitcher_feat_dict = {}
@@ -277,7 +302,6 @@ with tab1:
                 df[f'B_pitchtype_HR_{w}'] = rolling_pitch_type_hr(df, 'batter_id', 'pitch_type', w)
                 df[f'P_pitchtype_HR_{w}'] = rolling_pitch_type_hr(df, 'pitcher_id', 'pitch_type', w)
 
-        # Attach the engineered columns
         df = pd.concat([df, pd.DataFrame(batter_feat_dict), pd.DataFrame(pitcher_feat_dict)], axis=1)
         df = df.copy()
         progress.progress(80, "Advanced Statcast & context features done")
@@ -286,42 +310,65 @@ with tab1:
         st.markdown("#### Download Event-Level CSV (all features, 1 row per batted ball event):")
         st.dataframe(df.head(20))
 
-        # --------- OUTPUT COLUMN ALIGNMENT TO "TODAY CSV" ---------
-        today_csv_header = """team_code	game_date	game_number	mlb_id	player_name	batting_order	position	weather	time	stadium	city	pitcher_id	temp	wind_mph	wind_dir	condition	batter_id	avg_exit_velo_3	hard_hit_rate_3	barrel_rate_3	fb_rate_3	sweet_spot_rate_3	avg_exit_velo_7	hard_hit_rate_7	barrel_rate_7	fb_rate_7	sweet_spot_rate_7	avg_exit_velo_14	hard_hit_rate_14	barrel_rate_14	fb_rate_14	sweet_spot_rate_14	avg_exit_velo_20	hard_hit_rate_20	barrel_rate_20	fb_rate_20	sweet_spot_rate_20	avg_exit_velo_ff_3	hard_hit_rate_ff_3	barrel_rate_ff_3	fb_rate_ff_3	sweet_spot_rate_ff_3	avg_exit_velo_ff_7	hard_hit_rate_ff_7	barrel_rate_ff_7	fb_rate_ff_7	sweet_spot_rate_ff_7	avg_exit_velo_ff_14	hard_hit_rate_ff_14	barrel_rate_ff_14	fb_rate_ff_14	sweet_spot_rate_ff_14	avg_exit_velo_ff_20	hard_hit_rate_ff_20	barrel_rate_ff_20	fb_rate_ff_20	sweet_spot_rate_ff_20	avg_exit_velo_sl_3	hard_hit_rate_sl_3	barrel_rate_sl_3	fb_rate_sl_3	sweet_spot_rate_sl_3	avg_exit_velo_sl_7	hard_hit_rate_sl_7	barrel_rate_sl_7	fb_rate_sl_7	sweet_spot_rate_sl_7	avg_exit_velo_sl_14	hard_hit_rate_sl_14	barrel_rate_sl_14	fb_rate_sl_14	sweet_spot_rate_sl_14	avg_exit_velo_sl_20	hard_hit_rate_sl_20	barrel_rate_sl_20	fb_rate_sl_20	sweet_spot_rate_sl_20	avg_exit_velo_cu_3	hard_hit_rate_cu_3	barrel_rate_cu_3	fb_rate_cu_3	sweet_spot_rate_cu_3	avg_exit_velo_cu_7	hard_hit_rate_cu_7	barrel_rate_cu_7	fb_rate_cu_7	sweet_spot_rate_cu_7	avg_exit_velo_cu_14	hard_hit_rate_cu_14	barrel_rate_cu_14	fb_rate_cu_14	sweet_spot_rate_cu_14	avg_exit_velo_cu_20	hard_hit_rate_cu_20	barrel_rate_cu_20	fb_rate_cu_20	sweet_spot_rate_cu_20	avg_exit_velo_ch_3	hard_hit_rate_ch_3	barrel_rate_ch_3	fb_rate_ch_3	sweet_spot_rate_ch_3	avg_exit_velo_ch_7	hard_hit_rate_ch_7	barrel_rate_ch_7	fb_rate_ch_7	sweet_spot_rate_ch_7	avg_exit_velo_ch_14	hard_hit_rate_ch_14	barrel_rate_ch_14	fb_rate_ch_14	sweet_spot_rate_ch_14	avg_exit_velo_ch_20	hard_hit_rate_ch_20	barrel_rate_ch_20	fb_rate_ch_20	sweet_spot_rate_ch_20	avg_exit_velo_si_3	hard_hit_rate_si_3	barrel_rate_si_3	fb_rate_si_3	sweet_spot_rate_si_3	avg_exit_velo_si_7	hard_hit_rate_si_7	barrel_rate_si_7	fb_rate_si_7	sweet_spot_rate_si_7	avg_exit_velo_si_14	hard_hit_rate_si_14	barrel_rate_si_14	fb_rate_si_14	sweet_spot_rate_si_14	avg_exit_velo_si_20	hard_hit_rate_si_20	barrel_rate_si_20	fb_rate_si_20	sweet_spot_rate_si_20	avg_exit_velo_fc_3	hard_hit_rate_fc_3	barrel_rate_fc_3	fb_rate_fc_3	sweet_spot_rate_fc_3	avg_exit_velo_fc_7	hard_hit_rate_fc_7	barrel_rate_fc_7	fb_rate_fc_7	sweet_spot_rate_fc_7	avg_exit_velo_fc_14	hard_hit_rate_fc_14	barrel_rate_fc_14	fb_rate_fc_14	sweet_spot_rate_fc_14	avg_exit_velo_fc_20	hard_hit_rate_fc_20	barrel_rate_fc_20	fb_rate_fc_20	sweet_spot_rate_fc_20	avg_exit_velo_fs_3	hard_hit_rate_fs_3	barrel_rate_fs_3	fb_rate_fs_3	sweet_spot_rate_fs_3	avg_exit_velo_fs_7	hard_hit_rate_fs_7	barrel_rate_fs_7	fb_rate_fs_7	sweet_spot_rate_fs_7	avg_exit_velo_fs_14	hard_hit_rate_fs_14	barrel_rate_fs_14	fb_rate_fs_14	sweet_spot_rate_fs_14	avg_exit_velo_fs_20	hard_hit_rate_fs_20	barrel_rate_fs_20	fb_rate_fs_20	sweet_spot_rate_fs_20	avg_exit_velo_st_3	hard_hit_rate_st_3	barrel_rate_st_3	fb_rate_st_3	sweet_spot_rate_st_3	avg_exit_velo_st_7	hard_hit_rate_st_7	barrel_rate_st_7	fb_rate_st_7	sweet_spot_rate_st_7	avg_exit_velo_st_14	hard_hit_rate_st_14	barrel_rate_st_14	fb_rate_st_14	sweet_spot_rate_st_14	avg_exit_velo_st_20	hard_hit_rate_st_20	barrel_rate_st_20	fb_rate_st_20	sweet_spot_rate_st_20	avg_exit_velo_sinker_3	hard_hit_rate_sinker_3	barrel_rate_sinker_3	fb_rate_sinker_3	sweet_spot_rate_sinker_3	avg_exit_velo_sinker_7	hard_hit_rate_sinker_7	barrel_rate_sinker_7	fb_rate_sinker_7	sweet_spot_rate_sinker_7	avg_exit_velo_sinker_14	hard_hit_rate_sinker_14	barrel_rate_sinker_14	fb_rate_sinker_14	sweet_spot_rate_sinker_14	avg_exit_velo_sinker_20	hard_hit_rate_sinker_20	barrel_rate_sinker_20	fb_rate_sinker_20	sweet_spot_rate_sinker_20	avg_exit_velo_splitter_3	hard_hit_rate_splitter_3	barrel_rate_splitter_3	fb_rate_splitter_3	sweet_spot_rate_splitter_3	avg_exit_velo_splitter_7	hard_hit_rate_splitter_7	barrel_rate_splitter_7	fb_rate_splitter_7	sweet_spot_rate_splitter_7	avg_exit_velo_splitter_14	hard_hit_rate_splitter_14	barrel_rate_splitter_14	fb_rate_splitter_14	sweet_spot_rate_splitter_14	avg_exit_velo_splitter_20	hard_hit_rate_splitter_20	barrel_rate_splitter_20	fb_rate_splitter_20	sweet_spot_rate_splitter_20	avg_exit_velo_sweeper_3	hard_hit_rate_sweeper_3	barrel_rate_sweeper_3	fb_rate_sweeper_3	sweet_spot_rate_sweeper_3	avg_exit_velo_sweeper_7	hard_hit_rate_sweeper_7	barrel_rate_sweeper_7	fb_rate_sweeper_7	sweet_spot_rate_sweeper_7	avg_exit_velo_sweeper_14	hard_hit_rate_sweeper_14	barrel_rate_sweeper_14	fb_rate_sweeper_14	sweet_spot_rate_sweeper_14	avg_exit_velo_sweeper_20	hard_hit_rate_sweeper_20	barrel_rate_sweeper_20	fb_rate_sweeper_20	sweet_spot_rate_sweeper_20""".split('\t')
-        today_csv_header = [c.strip() for c in today_csv_header if c.strip()]
-
-        # --- Output 1: Event-level CSV (all features, all events) ---
+        # --------- EVENT LEVEL DOWNLOAD ---------
         st.download_button(
-            "⬇️ Download Event-Level CSV (All Features)",
+            "⬇️ Download Event-Level CSV (full features, all rows)",
             data=df.to_csv(index=False),
-            file_name="event_level_hr_features_aligned.csv",
-            key="download_aligned_event_level"
+            file_name="event_level_hr_features.csv",
+            key="download_event_level"
         )
 
-        # --- Output 2: TODAY CSV: 1 row per batter per game ---
-        # Use only columns you want per-batter, per-game
-        today_batter_cols = [
-            'game_date', 'team_code', 'batter_id', 'player_name', 'batting_order', 'position',
-            'pitcher_id', 'stadium', 'city', 'time',
-            'temp', 'humidity', 'wind_mph', 'wind_dir', 'condition',
-            'hard_hit_rate_20', 'sweet_spot_rate_20',
-            # rolling advanced batter stats (optional, add what you need)
-            'avg_exit_velo_3', 'avg_exit_velo_7', 'avg_exit_velo_14', 'avg_exit_velo_20',
-            'barrel_rate_3', 'barrel_rate_7', 'barrel_rate_14', 'barrel_rate_20',
-            'fb_rate_3', 'fb_rate_7', 'fb_rate_14', 'fb_rate_20',
-            'sweet_spot_rate_3', 'sweet_spot_rate_7', 'sweet_spot_rate_14', 'sweet_spot_rate_20',
-            # add more features as needed
-        ]
-        # For each batter/game, take the *last* event (should have latest rolling stats)
-        df_today = df.sort_values(['game_date', 'batter_id', 'at_bat_number', 'pitch_number']).groupby(['game_date', 'batter_id']).tail(1)
-
-        # Only keep columns that are in both list and dataframe
-        today_batter_cols_present = [col for col in today_batter_cols if col in df_today.columns]
-        df_today = df_today[today_batter_cols_present]
-
-        st.download_button(
-            "⬇️ Download TODAY CSV (1 Row Per Batter, All Features)",
-            data=df_today.to_csv(index=False),
-            file_name="today_hr_features.csv",
-            key="download_today_csv"
-        )
+        # ============ TODAY CSV: 1 row per batter, pitching matchup & weather =============
+        if uploaded_lineups is not None:
+            # Use the lineups to identify "today's" hitters and matchups
+            lineup_df = pd.read_csv(uploaded_lineups)
+            # Assumed columns: team_code, game_date, mlb_id, player_name, batting_order, position, pitcher_id, etc.
+            cols_for_today = [
+                "game_date", "team_code", "batter_id", "player_name", "pitcher_id",
+                "temp", "humidity", "wind_mph", "wind_dir", "condition", "park",
+                "hard_hit_rate_20", "sweet_spot_rate_20", "avg_exit_velo_20"
+            ]
+            # Add more features as needed by referencing get_all_stat_rolling_cols() and advanced features
+            cols_for_today += [c for c in get_all_stat_rolling_cols() if c in df.columns and c not in cols_for_today]
+            # Get the last game date for each batter in the window
+            summary_rows = []
+            for idx, row in lineup_df.iterrows():
+                batter_id = row.get('mlb_id', row.get('batter_id'))
+                pitcher_id = row.get('pitcher_id', None)
+                player_name = row.get('player_name', None)
+                team_code = row.get('team_code', None)
+                game_date = row.get('game_date', None)
+                park = row.get('stadium', None)
+                # Find last game event row for that batter/pitcher/date in event data
+                batter_events = df[(df['batter_id'] == batter_id)]
+                if len(batter_events) == 0:
+                    summary = {col: None for col in cols_for_today}
+                    summary['batter_id'] = batter_id
+                    summary['player_name'] = player_name
+                    summary['pitcher_id'] = pitcher_id
+                    summary['team_code'] = team_code
+                    summary['game_date'] = game_date
+                    summary['park'] = park
+                else:
+                    latest_event = batter_events.iloc[-1]
+                    summary = {col: latest_event[col] if col in latest_event else None for col in cols_for_today}
+                    summary['batter_id'] = batter_id
+                    summary['player_name'] = player_name
+                    summary['pitcher_id'] = pitcher_id
+                    summary['team_code'] = team_code
+                    summary['game_date'] = game_date
+                    summary['park'] = park
+                summary_rows.append(summary)
+            today_csv = pd.DataFrame(summary_rows)
+            today_csv = today_csv[~today_csv['batter_id'].isnull()]
+            # Fillna for display
+            st.markdown("#### Download Today CSV (1 row per batter, with weather & stats):")
+            st.dataframe(today_csv.head(20))
+            st.download_button(
+                "⬇️ Download Today's CSV (one row per batter)",
+                data=today_csv.to_csv(index=False),
+                file_name="event_level_today.csv",
+                key="download_today_csv"
+            )
+        else:
+            st.info("Upload today's lineups/matchups CSV to generate 'Today' CSV output (one row per batter).")
