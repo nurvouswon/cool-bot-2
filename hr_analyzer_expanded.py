@@ -44,27 +44,10 @@ team_code_to_park = {
     'ARI': 'chase_field', 'COL': 'coors_field', 'PIT': 'pnc_park', 'STL': 'busch_stadium',
     'BAL': 'camden_yards', 'WSH': 'nationals_park', 'ATH': 'sutter_health_park'
 }
-mlb_team_city_map = {
-    'ANA': 'Anaheim', 'ARI': 'Phoenix', 'ATL': 'Atlanta', 'BAL': 'Baltimore', 'BOS': 'Boston',
-    'CHC': 'Chicago', 'CIN': 'Cincinnati', 'CLE': 'Cleveland', 'COL': 'Denver', 'CWS': 'Chicago',
-    'DET': 'Detroit', 'HOU': 'Houston', 'KC': 'Kansas City', 'LAA': 'Anaheim', 'LAD': 'Los Angeles',
-    'MIA': 'Miami', 'MIL': 'Milwaukee', 'MIN': 'Minneapolis', 'NYM': 'New York', 'NYY': 'New York',
-    'OAK': 'Oakland', 'PHI': 'Philadelphia', 'PIT': 'Pittsburgh', 'SD': 'San Diego', 'SEA': 'Seattle',
-    'SF': 'San Francisco', 'STL': 'St. Louis', 'TB': 'St. Petersburg', 'TEX': 'Arlington', 'TOR': 'Toronto',
-    'WSH': 'Washington'
-}
 
 def dedup_columns(df):
     return df.loc[:, ~df.columns.duplicated()]
 
-def wind_dir_to_angle_custom(vector, field_dir):
-    # Approximate mapping for out/in and field direction
-    if pd.isna(vector) or pd.isna(field_dir): return np.nan
-    base = {'CF':0, 'LF':-45, 'RF':45, 'L':-45, 'R':45}.get(str(field_dir).upper(), 0)
-    # Out = from home plate outward to field, In = from field to home plate
-    return (base if str(vector).upper() == 'O' else (base+180)%360)
-
-# ----------- WEATHER PARSER for "92 O CF 12-14 30% outdoor" -----------
 def parse_custom_weather_string_v2(s):
     """Parse weather string like '92 O CF 12-14 30% outdoor'."""
     if pd.isna(s): return pd.Series([np.nan]*7, index=['temp','wind_vector','wind_field_dir','wind_mph','humidity','condition','wind_dir_string'])
@@ -244,9 +227,13 @@ with tab1:
 
         # Identify home_team_code for park mapping
         if 'home_team_code' in df.columns:
+            df['team_code'] = df['home_team_code'].astype(str).str.upper()
             df['park'] = df['home_team_code'].map(team_code_to_park)
         elif 'home_team' in df.columns:
-            df['park'] = df['home_team'].str.lower().str.replace(' ', '_').map(park_hr_rate_map).index
+            df['team_code'] = df['home_team'].astype(str).str.upper()
+            df['park'] = df['home_team'].str.lower().str.replace(' ', '_')
+        elif 'team_code' not in df.columns:
+            df['team_code'] = np.nan
 
         df['park_hr_rate'] = df['park'].map(park_hr_rate_map).fillna(1.0)
         df['park_altitude'] = df['park'].map(park_altitude_map).fillna(0)
@@ -254,23 +241,37 @@ with tab1:
 
         # If city not present, try from park
         if 'city' not in df.columns:
-            df['city'] = df['park'].map({k: v for k, v in team_code_to_park.items() if k in mlb_team_city_map}).fillna("")
+            df['city'] = df['park'].map({
+                'angels_stadium': 'Anaheim', 'angel_stadium': 'Anaheim',
+                'minute_maid_park': 'Houston', 'coors_field': 'Denver',
+                'yankee_stadium': 'New York', 'fenway_park': 'Boston', 'rogers_centre': 'Toronto',
+                'tropicana_field': 'St. Petersburg', 'camden_yards': 'Baltimore',
+                'guaranteed_rate_field': 'Chicago', 'progressive_field': 'Cleveland',
+                'comerica_park': 'Detroit', 'kauffman_stadium': 'Kansas City',
+                'globe_life_field': 'Arlington', 'dodger_stadium': 'Los Angeles',
+                'oakland_coliseum': 'Oakland', 't-mobile_park': 'Seattle', 'tmobile_park': 'Seattle',
+                'oracle_park': 'San Francisco', 'wrigley_field': 'Chicago',
+                'great_american_ball_park': 'Cincinnati', 'american_family_field': 'Milwaukee',
+                'pnc_park': 'Pittsburgh', 'busch_stadium': 'St. Louis', 'truist_park': 'Atlanta',
+                'loan_depot_park': 'Miami', 'loandepot_park': 'Miami', 'citi_field': 'New York',
+                'nationals_park': 'Washington', 'petco_park': 'San Diego',
+                'chase_field': 'Phoenix', 'citizens_bank_park': 'Philadelphia',
+                'sutter_health_park': 'Sacramento', 'target_field': 'Minneapolis'
+            }).fillna("")
 
         # ------- Statcast Rolling and Custom Features --------
         roll_windows = [3, 5, 7, 14, 20]
         main_pitch_types = ["ff", "sl", "cu", "ch", "si", "fc", "fs", "st", "sinker", "splitter", "sweeper"]
 
-        # For demo: assume basic columns
+        # Generate rolling stats for batters
         if 'batter' in df.columns and 'batter_id' not in df.columns:
             df['batter_id'] = df['batter']
         if 'pitcher' in df.columns and 'pitcher_id' not in df.columns:
             df['pitcher_id'] = df['pitcher']
 
-        # If HR outcome not present, generate
         if 'hr_outcome' not in df.columns:
             df['hr_outcome'] = df['events_clean'].isin(['homerun', 'home_run']).astype(int)
 
-        # Rolling stat features (can be extended)
         batter_cols = ['launch_speed', 'launch_angle', 'hit_distance_sc', 'woba_value',
                        'release_speed', 'release_spin_rate', 'spin_axis', 'pfx_x', 'pfx_z']
         pitcher_cols = ['launch_speed', 'launch_angle', 'hit_distance_sc', 'woba_value',
@@ -285,13 +286,11 @@ with tab1:
                 for w in roll_windows:
                     df[f'P_{col}_{w}'] = df.groupby('pitcher_id')[col].transform(lambda x: x.shift(1).rolling(w, min_periods=1).mean())
 
-        # Handedness HR rates
         if 'stand' in df.columns and 'p_throws' in df.columns:
             for w in roll_windows:
                 df[f'B_vsP_hand_HR_{w}'] = df.groupby(['batter_id', 'p_throws'])['hr_outcome'].transform(lambda x: x.shift(1).rolling(w, min_periods=1).mean())
                 df[f'P_vsB_hand_HR_{w}'] = df.groupby(['pitcher_id', 'stand'])['hr_outcome'].transform(lambda x: x.shift(1).rolling(w, min_periods=1).mean())
 
-        # Park/hand split HR rates
         if 'park' in df.columns and 'stand' in df.columns:
             for w in [7, 14, 30]:
                 df[f'park_hand_HR_{w}'] = df.groupby(['park', 'stand'])['hr_outcome'].transform(lambda x: x.shift(1).rolling(w, min_periods=5).mean())
@@ -308,9 +307,10 @@ with tab1:
                 if c not in lineup_df.columns:
                     lineup_df[c] = np.nan
             weather_merge = lineup_df[weather_cols].drop_duplicates()
-            df = pd.merge(df, weather_merge, how='left', on=['game_date','team_code'])
+            # Only merge if both columns exist
+            if 'game_date' in df.columns and 'team_code' in df.columns:
+                df = pd.merge(df, weather_merge, how='left', on=['game_date','team_code'])
 
-        # -- Output event-level CSV --
         df = dedup_columns(df)
         st.success(f"Feature engineering complete! {len(df)} batted ball events.")
         st.markdown("#### Download Event-Level CSV (all features, 1 row per batted ball event):")
@@ -324,7 +324,8 @@ with tab1:
 
         # ==================== TODAY CSV: 1 row per batter ======================
         cols_for_today = [
-            "game_date", "batter_id", "player_name", "pitcher_id", "temp", "humidity", "wind_mph", "wind_dir_string", "condition", "hard_hit_rate_20", "sweet_spot_rate_20"
+            "game_date", "batter_id", "player_name", "pitcher_id", "temp", "humidity",
+            "wind_mph", "wind_dir_string", "condition", "hard_hit_rate_20", "sweet_spot_rate_20"
         ]
         today_rows = []
         missing_weather = 0
