@@ -4,7 +4,6 @@ import numpy as np
 from pybaseball import statcast
 from datetime import datetime, timedelta
 import requests
-import re
 
 # ========== CONTEXT MAPS ==========
 park_hr_rate_map = {
@@ -55,9 +54,8 @@ mlb_team_city_map = {
     'WSH': 'Washington'
 }
 
-# ---------- UTILITY FUNCTIONS ----------
+# ========== UTILITY FUNCTIONS ==========
 def get_all_stat_rolling_cols():
-    # ... [UNCHANGED] ...
     roll_base = ['launch_speed', 'launch_angle', 'hit_distance_sc', 'woba_value',
                  'release_speed', 'release_spin_rate', 'spin_axis', 'pfx_x', 'pfx_z']
     windows = [3, 5, 7, 14]
@@ -72,13 +70,12 @@ def get_all_stat_rolling_cols():
     for w in [7, 14, 30]:
         cols.append(f"park_hand_HR_{w}")
     cols += [
-        'hard_hit_rate_20', 'sweet_spot_rate_20', 'relative_wind_angle',
+        'hard_hit_rate_20', 'sweet_spot_rate_20', 'barrel_rate_20', 'relative_wind_angle',
         'relative_wind_sin', 'relative_wind_cos'
     ]
     return cols
 
 def wind_dir_to_angle(wind_dir):
-    # ... [UNCHANGED] ...
     directions = {
         'N': 0, 'NNE': 22.5, 'NE': 45, 'ENE': 67.5, 'E': 90, 'ESE': 112.5,
         'SE': 135, 'SSE': 157.5, 'S': 180, 'SSW': 202.5, 'SW': 225, 'WSW': 247.5,
@@ -94,7 +91,6 @@ def wind_dir_to_angle(wind_dir):
 
 @st.cache_data(show_spinner=False)
 def get_weather(city, date):
-    # ... [UNCHANGED] ...
     api_key = st.secrets["weather"]["api_key"]
     url = f"http://api.weatherapi.com/v1/history.json?key={api_key}&q={city}&dt={date}"
     try:
@@ -128,21 +124,18 @@ def rolling_pitch_type_hr(df, id_col, pitch_col, window):
         out[group_idx] = vals
     return out
 
-def parse_weather_str(weather_series):
-    # Robustly parse temp, wind dir, wind mph, humidity, condition from weather string
-    temp = weather_series.str.extract(r'(\d{2,3})\s')[0]
-    temp = pd.to_numeric(temp, errors='coerce')
-    wind_dir = weather_series.str.extract(r'([OI] [A-Z]{2,})')[0]
-    wind_mph = weather_series.str.extract(r'(\d{1,3})-(\d{1,3})')
-    wind_mph = wind_mph.apply(pd.to_numeric, errors='coerce')
-    wind_mph = wind_mph.mean(axis=1)
-    wind_mph = wind_mph.fillna(weather_series.str.extract(r'(\d{1,3})\s*mph')[0]).astype(float)
-    humidity = weather_series.str.extract(r'(\d{1,3})%\s')[0]
-    humidity = pd.to_numeric(humidity, errors='coerce')
-    condition = weather_series.str.extract(r'(indoor|outdoor)', flags=re.I)[0]
-    return temp, wind_dir, wind_mph, humidity, condition
+def robust_numeric_columns(df):
+    cols = []
+    for c in df.columns:
+        try:
+            dt = pd.api.types.pandas_dtype(df[c].dtype)
+            if (np.issubdtype(dt, np.number) or pd.api.types.is_numeric_dtype(df[c])) and not pd.api.types.is_bool_dtype(df[c]) and df[c].nunique() > 1:
+                cols.append(c)
+        except Exception:
+            continue
+    return cols
 
-# ========== TAB 1 ==========
+# ========== STREAMLIT APP ==========
 st.set_page_config("MLB HR Analyzer", layout="wide")
 tab1, tab2 = st.tabs(["1️⃣ Fetch & Feature Engineer Data", "2️⃣ Upload & Analyze"])
 
@@ -220,16 +213,6 @@ with tab1:
         df['roof_status'] = df['park'].map(roof_status_map).fillna("open")
         progress.progress(20, "Park/team/stadium context merged")
 
-        # ----- Weather Parsing (from weather string) -----
-        if 'weather' in df.columns:
-            temp, wind_dir, wind_mph, humidity, condition = parse_weather_str(df['weather'].astype(str))
-            df['temp'] = temp
-            df['wind_dir'] = wind_dir
-            df['wind_mph'] = wind_mph
-            df['humidity'] = humidity
-            df['condition'] = condition
-
-        # ----- Weather API fill for missing -----
         weather_features = ['temp', 'wind_mph', 'wind_dir', 'humidity', 'condition']
         if 'city' in df.columns and 'game_date' in df.columns:
             df['weather_key'] = df['city'].fillna('') + "_" + df['game_date'].astype(str)
@@ -238,16 +221,13 @@ with tab1:
                 if '_' not in key: continue
                 city, date = key.split('_', 1)
                 if not city or not date: continue
-                needs_api = False
+                if 'weather' in df.columns and pd.notnull(df.loc[df['weather_key'] == key, 'weather']).any():
+                    continue
+                weather = get_weather(city, date)
                 for feat in weather_features:
-                    if feat in df.columns and pd.isnull(df.loc[df['weather_key'] == key, feat]).all():
-                        needs_api = True
-                if needs_api:
-                    weather = get_weather(city, date)
-                    for feat in weather_features:
-                        df.loc[df['weather_key'] == key, feat] = df.loc[df['weather_key'] == key, feat].fillna(weather[feat])
+                    df.loc[df['weather_key'] == key, feat] = weather[feat]
                 progress.progress(20 + int(30 * (i+1) / len(unique_keys)), text=f"Weather {i+1}/{len(unique_keys)}")
-            progress.progress(50, "Weather merged and filled (city/date).")
+            progress.progress(50, "Weather merged (city/date).")
         else:
             if 'home_team_code' in df.columns and 'game_date' in df.columns:
                 df['weather_key'] = df['home_team_code'] + "_" + df['game_date'].astype(str)
@@ -256,16 +236,11 @@ with tab1:
                     team = key.split('_')[0]
                     city = mlb_team_city_map.get(team, "New York")
                     date = df[df['weather_key'] == key].iloc[0]['game_date']
-                    needs_api = False
+                    weather = get_weather(city, str(date))
                     for feat in weather_features:
-                        if feat in df.columns and pd.isnull(df.loc[df['weather_key'] == key, feat]).all():
-                            needs_api = True
-                    if needs_api:
-                        weather = get_weather(city, str(date))
-                        for feat in weather_features:
-                            df.loc[df['weather_key'] == key, feat] = df.loc[df['weather_key'] == key, feat].fillna(weather[feat])
+                        df.loc[df['weather_key'] == key, feat] = weather[feat]
                     progress.progress(20 + int(30 * (i+1) / len(unique_keys)), text=f"Weather {i+1}/{len(unique_keys)}")
-                progress.progress(50, "Weather merged and filled (fallback).")
+                progress.progress(50, "Weather merged (fallback).")
             else:
                 for feat in weather_features:
                     df[feat] = None
@@ -286,6 +261,7 @@ with tab1:
         if 'launch_angle' in df.columns and 'batter_id' in df.columns:
             df['sweet_spot_rate_20'] = df.groupby('batter_id')['launch_angle'].transform(lambda x: x.shift(1).between(8, 32).rolling(20, min_periods=5).mean())
 
+        # All advanced splits (rolling, park, pitchtype, etc)
         if 'stand' in df.columns and 'wind_dir_angle' in df.columns:
             def relative_wind_angle(row):
                 try:
@@ -307,7 +283,8 @@ with tab1:
         roll_windows = [3, 5, 7, 14]
         batter_cols = ['launch_speed', 'launch_angle', 'hit_distance_sc', 'woba_value',
                        'release_speed', 'release_spin_rate', 'spin_axis', 'pfx_x', 'pfx_z']
-        pitcher_cols = ['launch_speed', 'launch_angle', 'hit_distance_sc', 'woba_value','release_speed', 'release_spin_rate', 'spin_axis', 'pfx_x', 'pfx_z']
+        pitcher_cols = ['launch_speed', 'launch_angle', 'hit_distance_sc', 'woba_value',
+                        'release_speed', 'release_spin_rate', 'spin_axis', 'pfx_x', 'pfx_z']
 
         batter_feat_dict = {}
         pitcher_feat_dict = {}
@@ -322,54 +299,53 @@ with tab1:
                     cname = f'P_{col}_{w}'
                     pitcher_feat_dict[cname] = df.groupby('pitcher_id')[col].transform(lambda x: x.shift(1).rolling(w, min_periods=1).mean())
 
+        # Handedness splits
         if 'stand' in df.columns and 'p_throws' in df.columns:
             for w in roll_windows:
                 df[f'B_vsP_hand_HR_{w}'] = df.groupby(['batter_id', 'p_throws'])['hr_outcome'].transform(lambda x: x.shift(1).rolling(w, min_periods=1).mean())
                 df[f'P_vsB_hand_HR_{w}'] = df.groupby(['pitcher_id', 'stand'])['hr_outcome'].transform(lambda x: x.shift(1).rolling(w, min_periods=1).mean())
 
+        # Pitchtype splits
         if 'pitch_type' in df.columns:
             for w in roll_windows:
                 df[f'B_pitchtype_HR_{w}'] = rolling_pitch_type_hr(df, 'batter_id', 'pitch_type', w)
                 df[f'P_pitchtype_HR_{w}'] = rolling_pitch_type_hr(df, 'pitcher_id', 'pitch_type', w)
 
+        # Concatenate advanced rolling features
         df = pd.concat([df, pd.DataFrame(batter_feat_dict), pd.DataFrame(pitcher_feat_dict)], axis=1)
         df = df.copy()
-        progress.progress(80, "Advanced Statcast & context features done")
         df = dedup_columns(df)
+        progress.progress(80, "Advanced Statcast & context features done")
+
         st.success(f"Feature engineering complete! {len(df)} batted ball events.")
         st.markdown("#### Download Event-Level CSV (all features, 1 row per batted ball event):")
         st.dataframe(df.head(20))
-        
-        # --------- OUTPUT COLUMN ALIGNMENT TO "TODAY CSV" ---------
-        # Use a canonical header for today CSV, but include all event-level features.
-        today_csv_header = """team_code	game_date	game_number	mlb_id	player_name	batting_order	position	weather	time	stadium	city	pitcher_id	temp	wind_mph	wind_dir	condition	batter_id	avg_exit_velo_3	hard_hit_rate_3	barrel_rate_3	fb_rate_3	sweet_spot_rate_3	avg_exit_velo_7	hard_hit_rate_7	barrel_rate_7	fb_rate_7	sweet_spot_rate_7	avg_exit_velo_14	hard_hit_rate_14	barrel_rate_14	fb_rate_14	sweet_spot_rate_14	avg_exit_velo_20	hard_hit_rate_20	barrel_rate_20	fb_rate_20	sweet_spot_rate_20	avg_exit_velo_ff_3	hard_hit_rate_ff_3	barrel_rate_ff_3	fb_rate_ff_3	sweet_spot_rate_ff_3	avg_exit_velo_ff_7	hard_hit_rate_ff_7	barrel_rate_ff_7	fb_rate_ff_7	sweet_spot_rate_ff_7	avg_exit_velo_ff_14	hard_hit_rate_ff_14	barrel_rate_ff_14	fb_rate_ff_14	sweet_spot_rate_ff_14	avg_exit_velo_ff_20	hard_hit_rate_ff_20	barrel_rate_ff_20	fb_rate_ff_20	sweet_spot_rate_ff_20	avg_exit_velo_sl_3	hard_hit_rate_sl_3	barrel_rate_sl_3	fb_rate_sl_3	sweet_spot_rate_sl_3	avg_exit_velo_sl_7	hard_hit_rate_sl_7	barrel_rate_sl_7	fb_rate_sl_7	sweet_spot_rate_sl_7	avg_exit_velo_sl_14	hard_hit_rate_sl_14	barrel_rate_sl_14	fb_rate_sl_14	sweet_spot_rate_sl_14	avg_exit_velo_sl_20	hard_hit_rate_sl_20	barrel_rate_sl_20	fb_rate_sl_20	sweet_spot_rate_sl_20	avg_exit_velo_cu_3	hard_hit_rate_cu_3	barrel_rate_cu_3	fb_rate_cu_3	sweet_spot_rate_cu_3	avg_exit_velo_cu_7	hard_hit_rate_cu_7	barrel_rate_cu_7	fb_rate_cu_7	sweet_spot_rate_cu_7	avg_exit_velo_cu_14	hard_hit_rate_cu_14	barrel_rate_cu_14	fb_rate_cu_14	sweet_spot_rate_cu_14	avg_exit_velo_cu_20	hard_hit_rate_cu_20	barrel_rate_cu_20	fb_rate_cu_20	sweet_spot_rate_cu_20	avg_exit_velo_ch_3	hard_hit_rate_ch_3	barrel_rate_ch_3	fb_rate_ch_3	sweet_spot_rate_ch_3	avg_exit_velo_ch_7	hard_hit_rate_ch_7	barrel_rate_ch_7	fb_rate_ch_7	sweet_spot_rate_ch_7	avg_exit_velo_ch_14	hard_hit_rate_ch_14	barrel_rate_ch_14	fb_rate_ch_14	sweet_spot_rate_ch_14	avg_exit_velo_ch_20	hard_hit_rate_ch_20	barrel_rate_ch_20	fb_rate_ch_20	sweet_spot_rate_ch_20	avg_exit_velo_si_3	hard_hit_rate_si_3	barrel_rate_si_3	fb_rate_si_3	sweet_spot_rate_si_3	avg_exit_velo_si_7	hard_hit_rate_si_7	barrel_rate_si_7	fb_rate_si_7	sweet_spot_rate_si_7	avg_exit_velo_si_14	hard_hit_rate_si_14	barrel_rate_si_14	fb_rate_si_14	sweet_spot_rate_si_14	avg_exit_velo_si_20	hard_hit_rate_si_20	barrel_rate_si_20	fb_rate_si_20	sweet_spot_rate_si_20	avg_exit_velo_fc_3	hard_hit_rate_fc_3	barrel_rate_fc_3	fb_rate_fc_3	sweet_spot_rate_fc_3	avg_exit_velo_fc_7	hard_hit_rate_fc_7	barrel_rate_fc_7	fb_rate_fc_7	sweet_spot_rate_fc_7	avg_exit_velo_fc_14	hard_hit_rate_fc_14	barrel_rate_fc_14	fb_rate_fc_14	sweet_spot_rate_fc_14	avg_exit_velo_fc_20	hard_hit_rate_fc_20	barrel_rate_fc_20	fb_rate_fc_20	sweet_spot_rate_fc_20	avg_exit_velo_fs_3	hard_hit_rate_fs_3	barrel_rate_fs_3	fb_rate_fs_3	sweet_spot_rate_fs_3	avg_exit_velo_fs_7	hard_hit_rate_fs_7	barrel_rate_fs_7	fb_rate_fs_7	sweet_spot_rate_fs_7	avg_exit_velo_fs_14	hard_hit_rate_fs_14	barrel_rate_fs_14	fb_rate_fs_14	sweet_spot_rate_fs_14	avg_exit_velo_fs_20	hard_hit_rate_fs_20	barrel_rate_fs_20	fb_rate_fs_20	sweet_spot_rate_fs_20	avg_exit_velo_st_3	hard_hit_rate_st_3	barrel_rate_st_3	fb_rate_st_3	sweet_spot_rate_st_3	avg_exit_velo_st_7	hard_hit_rate_st_7	barrel_rate_st_7	fb_rate_st_7	sweet_spot_rate_st_7	avg_exit_velo_st_14	hard_hit_rate_st_14	barrel_rate_st_14	fb_rate_st_14	sweet_spot_rate_st_14	avg_exit_velo_st_20	hard_hit_rate_st_20	barrel_rate_st_20	fb_rate_st_20	sweet_spot_rate_st_20	avg_exit_velo_sinker_3	hard_hit_rate_sinker_3	barrel_rate_sinker_3	fb_rate_sinker_3	sweet_spot_rate_sinker_3	avg_exit_velo_sinker_7	hard_hit_rate_sinker_7	barrel_rate_sinker_7	fb_rate_sinker_7	sweet_spot_rate_sinker_7	avg_exit_velo_sinker_14	hard_hit_rate_sinker_14	barrel_rate_sinker_14	fb_rate_sinker_14	sweet_spot_rate_sinker_14	avg_exit_velo_sinker_20	hard_hit_rate_sinker_20	barrel_rate_sinker_20	fb_rate_sinker_20	sweet_spot_rate_sinker_20	avg_exit_velo_splitter_3	hard_hit_rate_splitter_3	barrel_rate_splitter_3	fb_rate_splitter_3	sweet_spot_rate_splitter_3	avg_exit_velo_splitter_7	hard_hit_rate_splitter_7	barrel_rate_splitter_7	fb_rate_splitter_7	sweet_spot_rate_splitter_7	avg_exit_velo_splitter_14	hard_hit_rate_splitter_14	barrel_rate_splitter_14	fb_rate_splitter_14	sweet_spot_rate_splitter_14	avg_exit_velo_splitter_20	hard_hit_rate_splitter_20	barrel_rate_splitter_20	fb_rate_splitter_20	sweet_spot_rate_splitter_20	avg_exit_velo_sweeper_3	hard_hit_rate_sweeper_3	barrel_rate_sweeper_3	fb_rate_sweeper_3	sweet_spot_rate_sweeper_3	avg_exit_velo_sweeper_7	hard_hit_rate_sweeper_7	barrel_rate_sweeper_7	fb_rate_sweeper_7	sweet_spot_rate_sweeper_7	avg_exit_velo_sweeper_14	hard_hit_rate_sweeper_14	barrel_rate_sweeper_14	fb_rate_sweeper_14	sweet_spot_rate_sweeper_14	avg_exit_velo_sweeper_20	hard_hit_rate_sweeper_20	barrel_rate_sweeper_20	fb_rate_sweeper_20	sweet_spot_rate_sweeper_20""".split('\t')
-        today_csv_header = [c.strip() for c in today_csv_header if c.strip()]
 
-        # Build aligned event-level DataFrame
-        event_level_df = df.copy()
-        # For today CSV, match columns and order; pad with NA where necessary
-        today_cols = today_csv_header.copy()
-        for c in today_cols:
-            if c not in event_level_df.columns:
-                event_level_df[c] = np.nan
-        # Output columns: today header, then all additional columns
-        today_cols_full = today_cols + [c for c in event_level_df.columns if c not in today_cols]
-        today_csv_df = event_level_df[today_cols_full]
+        # ---- OUTPUT FILES ----
 
-        # --- Download buttons for both ---
+        # Today CSV: Use ALL feature columns, same header/format in both outputs
+        # If you want to force a "today_csv_header" format, define the header as a list of columns (below)
+        # Otherwise, by default, we use all columns in df
+
+        # ========== TODAY CSV HEADER ==========
+        # If you want to hardcode the column order to match some "template," uncomment and use this instead:
+        # today_csv_header = ["team_code", "game_date", "mlb_id", ...etc] # your own list
+        # output_cols = [c for c in today_csv_header if c in df.columns] + [c for c in df.columns if c not in today_csv_header]
+        # df_today = df.reindex(columns=output_cols)
+
+        # Otherwise just use all columns (full features, always consistent):
+        df_today = df.copy()
+
+        # --- Output buttons ---
         st.download_button(
-            "⬇️ Download Event-Level CSV (all features)", 
-            data=event_level_df.to_csv(index=False), 
-            file_name="event_level_full_features.csv", key="download_full_event_level"
+            "⬇️ Download Event-Level CSV (full, all features)",
+            data=df.to_csv(index=False),
+            file_name="event_level_hr_features.csv",
+            key="event_level_csv_dl"
         )
         st.download_button(
-            "⬇️ Download Today CSV (aligned, all features)", 
-            data=today_csv_df.to_csv(index=False), 
-            file_name="today_full_features.csv", key="download_today_full"
+            "⬇️ Download Today CSV (full, all features, consistent header)",
+            data=df_today.to_csv(index=False),
+            file_name="today_hr_features.csv",
+            key="today_csv_dl"
         )
-
-        st.success("Both event-level and today CSVs are consistent, fully aligned, and weather-enhanced!")
-
-# ========== TAB 2 (unchanged—your upload & modeling logic) ==========
-
-# ...You can keep your original analysis/modeling code in tab2...
