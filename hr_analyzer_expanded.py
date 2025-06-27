@@ -57,7 +57,6 @@ mlb_team_city_map = {
 def dedup_columns(df):
     return df.loc[:, ~df.columns.duplicated()]
 
-# WEATHER parsing for "92 O CF 12-14 30% outdoor"
 def parse_custom_weather_string_v2(s):
     if pd.isna(s): return pd.Series([np.nan]*7, index=['temp','wind_vector','wind_field_dir','wind_mph','humidity','condition','wind_dir_string'])
     s = str(s)
@@ -83,33 +82,69 @@ def parse_custom_weather_string_v2(s):
 @st.cache_data(show_spinner=True)
 def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix=""):
     df = df.copy()
-    df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
-    df['launch_speed'] = pd.to_numeric(df['launch_speed'], errors='coerce')
-    df['launch_angle'] = pd.to_numeric(df['launch_angle'], errors='coerce')
+    # Dedup only if columns exist
+    if id_col in df.columns and date_col in df.columns:
+        df = df.drop_duplicates(subset=[id_col, date_col], keep='last')
+        df = df.sort_values([id_col, date_col])
+    if 'launch_speed' in df.columns:
+        df['launch_speed'] = pd.to_numeric(df['launch_speed'], errors='coerce')
+    if 'launch_angle' in df.columns:
+        df['launch_angle'] = pd.to_numeric(df['launch_angle'], errors='coerce')
     if 'pitch_type' in df.columns:
         df['pitch_type'] = df['pitch_type'].astype(str).str.lower().str.strip()
-    df = df.drop_duplicates(subset=[id_col, date_col], keep='last')
-    df = df.sort_values([id_col, date_col])
     feature_frames = []
     grouped = df.groupby(id_col)
     for name, group in grouped:
         out_row = {}
         for w in windows:
-            out_row[f"{prefix}avg_exit_velo_{w}"] = group['launch_speed'].rolling(w, min_periods=1).mean().iloc[-1]
-            out_row[f"{prefix}hard_hit_rate_{w}"] = (group['launch_speed'].rolling(w, min_periods=1)
-                                                     .apply(lambda x: np.mean(x >= 95)).iloc[-1])
-            out_row[f"{prefix}barrel_rate_{w}"] = (((group['launch_speed'] >= 98) &
-                                                    (group['launch_angle'] >= 26) &
-                                                    (group['launch_angle'] <= 30))
-                                                    .rolling(w, min_periods=1).mean().iloc[-1])
-            out_row[f"{prefix}fb_rate_{w}"] = (group['launch_angle'].rolling(w, min_periods=1)
-                                               .apply(lambda x: np.mean(x >= 25)).iloc[-1])
-            out_row[f"{prefix}sweet_spot_rate_{w}"] = (group['launch_angle'].rolling(w, min_periods=1)
-                                                       .apply(lambda x: np.mean((x >= 8) & (x <= 32))).iloc[-1])
+            # All statcast rolling metrics per deep research plan
+            if 'launch_speed' in group.columns:
+                out_row[f"{prefix}avg_exit_velo_{w}"] = group['launch_speed'].rolling(w, min_periods=1).mean().iloc[-1]
+                out_row[f"{prefix}hard_hit_rate_{w}"] = (group['launch_speed'].rolling(w, min_periods=1)
+                                                         .apply(lambda x: np.mean(x >= 95)).iloc[-1])
+            if 'launch_angle' in group.columns:
+                out_row[f"{prefix}fb_rate_{w}"] = (group['launch_angle'].rolling(w, min_periods=1)
+                                                   .apply(lambda x: np.mean(x >= 25)).iloc[-1])
+                out_row[f"{prefix}sweet_spot_rate_{w}"] = (group['launch_angle'].rolling(w, min_periods=1)
+                                                           .apply(lambda x: np.mean((x >= 8) & (x <= 32))).iloc[-1])
+            if 'launch_speed' in group.columns and 'launch_angle' in group.columns:
+                out_row[f"{prefix}barrel_rate_{w}"] = (((group['launch_speed'] >= 98) &
+                                                        (group['launch_angle'] >= 26) &
+                                                        (group['launch_angle'] <= 30))
+                                                        .rolling(w, min_periods=1).mean().iloc[-1])
+            # Extend to more columns if you wish (woba_value, distance, etc)
+            for feat in ['hit_distance_sc', 'woba_value', 'release_speed', 'release_spin_rate', 'spin_axis', 'pfx_x', 'pfx_z']:
+                if feat in group.columns:
+                    out_row[f"{prefix}{feat}_{w}"] = group[feat].rolling(w, min_periods=1).mean().iloc[-1]
+        # Per pitch type rolling rates
+        if pitch_types is not None and "pitch_type" in group.columns:
+            for pt in pitch_types:
+                pt_group = group[group['pitch_type'] == pt]
+                for w in windows:
+                    key = f"{prefix}{pt}_"
+                    if not pt_group.empty:
+                        if 'launch_speed' in pt_group.columns:
+                            out_row[f"{key}avg_exit_velo_{w}"] = pt_group['launch_speed'].rolling(w, min_periods=1).mean().iloc[-1]
+                            out_row[f"{key}hard_hit_rate_{w}"] = (pt_group['launch_speed'].rolling(w, min_periods=1)
+                                                                   .apply(lambda x: np.mean(x >= 95)).iloc[-1])
+                        if 'launch_angle' in pt_group.columns:
+                            out_row[f"{key}fb_rate_{w}"] = (pt_group['launch_angle'].rolling(w, min_periods=1)
+                                                           .apply(lambda x: np.mean(x >= 25)).iloc[-1])
+                            out_row[f"{key}sweet_spot_rate_{w}"] = (pt_group['launch_angle'].rolling(w, min_periods=1)
+                                                                     .apply(lambda x: np.mean((x >= 8) & (x <= 32))).iloc[-1])
+                        if 'launch_speed' in pt_group.columns and 'launch_angle' in pt_group.columns:
+                            out_row[f"{key}barrel_rate_{w}"] = (((pt_group['launch_speed'] >= 98) &
+                                                                 (pt_group['launch_angle'] >= 26) &
+                                                                 (pt_group['launch_angle'] <= 30))
+                                                                 .rolling(w, min_periods=1).mean().iloc[-1])
+                    else:
+                        for feat in ['avg_exit_velo', 'hard_hit_rate', 'barrel_rate', 'fb_rate', 'sweet_spot_rate']:
+                            out_row[f"{key}{feat}_{w}"] = np.nan
         out_row[id_col] = name
         feature_frames.append(out_row)
     return pd.DataFrame(feature_frames)
-    st.set_page_config("MLB HR Analyzer", layout="wide")
+
+st.set_page_config("MLB HR Analyzer", layout="wide")
 tab1, tab2 = st.tabs(["1️⃣ Fetch & Feature Engineer Data", "2️⃣ Upload & Analyze"])
 
 with tab1:
@@ -133,22 +168,24 @@ with tab1:
         if len(df) == 0:
             st.error("No data! Try different dates.")
             st.stop()
+        df.columns = [str(c).strip().lower().replace(" ", "_") for c in df.columns]
+        if 'game_date' in df.columns:
+            df['game_date'] = pd.to_datetime(df['game_date'], errors='coerce').dt.strftime('%Y-%m-%d')
 
-        # ---- LINEUPS CSV PREP ----
+        # --- Read and clean lineups ---
         try:
             lineup_df = pd.read_csv(uploaded_lineups)
         except Exception as e:
             st.error(f"Could not read lineup CSV: {e}")
             st.stop()
-
-        # --- COLUMN STANDARDIZATION ---
         lineup_df.columns = [str(c).strip().lower().replace(" ", "_") for c in lineup_df.columns]
-        for possible_col in ['mlb_id', 'batter_id', 'batter']:
-            if possible_col in lineup_df.columns and 'batter_id' not in lineup_df.columns:
-                lineup_df['batter_id'] = lineup_df[possible_col]
-        for possible_col in ['player_name', 'player name', 'name']:
-            if possible_col in lineup_df.columns and 'player_name' not in lineup_df.columns:
-                lineup_df['player_name'] = lineup_df[possible_col]
+        # Clean columns
+        for col in ['mlb_id', 'batter_id', 'batter']:
+            if col in lineup_df.columns and 'batter_id' not in lineup_df.columns:
+                lineup_df['batter_id'] = lineup_df[col]
+        for col in ['player_name', 'player name', 'name']:
+            if col in lineup_df.columns and 'player_name' not in lineup_df.columns:
+                lineup_df['player_name'] = lineup_df[col]
         if 'game_date' not in lineup_df.columns:
             for date_col in ['game_date', 'game date']:
                 if date_col in lineup_df.columns:
@@ -165,7 +202,7 @@ with tab1:
             if col in lineup_df.columns:
                 lineup_df[col] = lineup_df[col].astype(str).str.replace('.0','',regex=False).str.strip()
 
-        # --- WEATHER PARSE ---
+        # ==== Parse Weather Fields from Weather String ====
         if 'weather' in lineup_df.columns:
             lineup_df[['temp','wind_vector','wind_field_dir','wind_mph','humidity','condition','wind_dir_string']] = \
                 lineup_df['weather'].apply(parse_custom_weather_string_v2)
@@ -204,14 +241,12 @@ with tab1:
             lineup_df['pitcher_id'] = np.nan
 
         # ==== STATCAST EVENT-LEVEL ENGINEERING ====
-        df.columns = [str(c).strip().lower().replace(" ", "_") for c in df.columns]
-        if 'game_date' in df.columns:
-            df['game_date'] = pd.to_datetime(df['game_date'], errors='coerce').dt.strftime("%Y-%m-%d")
-        for col in ['batter_id', 'mlb_id', 'pitcher_id']:
+        # Clean and standardize IDs in event-level data
+        for col in ['batter_id', 'mlb_id', 'pitcher_id', 'team_code']:
             if col in df.columns:
                 df[col] = df[col].astype(str).str.replace('.0','',regex=False).str.strip()
 
-        # Add park, city, etc.
+        # Add park, city, context
         if 'home_team_code' in df.columns:
             df['team_code'] = df['home_team_code']
             df['park'] = df['home_team_code'].map(team_code_to_park)
@@ -245,14 +280,21 @@ with tab1:
         ]
         df = df[df['events_clean'].isin(valid_events)].copy()
 
-        # Rolling stat features (per deep research)
-        roll_windows = [3, 7, 14, 20]
+        # Rolling stat features (deep research: all statcast rolling + context)
+        roll_windows = [3, 5, 7, 14, 20]
         main_pitch_types = ["ff", "sl", "cu", "ch", "si", "fc", "fs", "st", "sinker", "splitter", "sweeper"]
-        # Batters
-        batter_event = fast_rolling_stats(df, "batter_id", "game_date", roll_windows, main_pitch_types, prefix="")
+        for col in ['batter', 'batter_id']:
+            if col in df.columns:
+                df['batter_id'] = df[col]
+        for col in ['pitcher', 'pitcher_id']:
+            if col in df.columns:
+                df['pitcher_id'] = df[col]
+
+        # --- Batters (primary rolling stats) ---
+        batter_event = fast_rolling_stats(df, "batter_id", "game_date", roll_windows, main_pitch_types, prefix="b_")
         if not batter_event.empty:
             batter_event = batter_event.set_index('batter_id')
-        # Pitchers
+        # --- Pitchers ---
         pitcher_event = fast_rolling_stats(
             df.rename(columns={"pitcher_id":"batter_id"}), "batter_id", "game_date", roll_windows, main_pitch_types, prefix="p_"
         )
@@ -279,6 +321,7 @@ with tab1:
         df = pd.merge(df, weather_merge, how='left', on=['game_date','team_code'])
         df = dedup_columns(df)
 
+        # =================== OUTPUTS =======================
         st.success(f"Feature engineering complete! {len(df)} batted ball events.")
         st.markdown("#### Download Event-Level CSV (all features, 1 row per batted ball event):")
         st.dataframe(df.head(20))
@@ -289,94 +332,36 @@ with tab1:
             key="download_event_level"
         )
 
-        # ==================== TODAY CSV: 1 row per batter ======================
-        cols_for_today = [
-            "game_date", "batter_id", "player_name", "pitcher_id", "temp", "humidity",
-            "wind_mph", "wind_dir_string", "condition",
-            "avg_exit_velo_7", "avg_exit_velo_14",
-            "hard_hit_rate_7", "hard_hit_rate_14",
-            "barrel_rate_7", "barrel_rate_14",
-            "fb_rate_7", "fb_rate_14",
-            "sweet_spot_rate_7", "sweet_spot_rate_14",
-            "p_avg_exit_velo_7", "p_hard_hit_rate_7", "p_barrel_rate_7", "p_fb_rate_7", "p_sweet_spot_rate_7",
-            "park", "park_hr_rate", "park_altitude", "roof_status"
-        ]
+        # ===== TODAY CSV: 1 row per batter with all rolling/context features =====
+        # These features match the rolling/context set from training
+        # You can adjust/expand these to include more, per research
+        rolling_feature_cols = [col for col in df.columns if (
+            col.startswith('b_') or col.startswith('p_')
+        ) and any(str(w) in col for w in roll_windows)]
+        today_cols = ['game_date', 'batter_id', 'player_name', 'pitcher_id', 'temp', 'humidity', 'wind_mph', 'wind_dir_string', 'condition'] + rolling_feature_cols
         today_rows = []
-        missing_weather = 0
         for idx, row in lineup_df.iterrows():
             this_batter_id = str(row['batter_id']).split(".")[0]
             filter_df = df[df['batter_id'].astype(str).str.split('.').str[0] == this_batter_id]
+            # Get most recent stats/context/weather for this batter
             if not filter_df.empty:
                 last_row = filter_df.iloc[-1]
-                t = last_row.get("temp", np.nan)
-                h = last_row.get("humidity", np.nan)
-                if pd.isna(t) or pd.isna(h):
-                    missing_weather += 1
-                this_row = {
-                    "game_date": row.get('game_date', np.nan),
-                    "batter_id": this_batter_id,
-                    "player_name": row.get('player_name', np.nan),
-                    "pitcher_id": row.get('pitcher_id', np.nan),
-                    "temp": t,
-                    "humidity": h,
-                    "wind_mph": last_row.get("wind_mph", np.nan),
-                    "wind_dir_string": last_row.get("wind_dir_string", np.nan),
-                    "condition": last_row.get("condition", np.nan),
-                    "avg_exit_velo_7": last_row.get("avg_exit_velo_7", np.nan),
-                    "avg_exit_velo_14": last_row.get("avg_exit_velo_14", np.nan),
-                    "hard_hit_rate_7": last_row.get("hard_hit_rate_7", np.nan),
-                    "hard_hit_rate_14": last_row.get("hard_hit_rate_14", np.nan),
-                    "barrel_rate_7": last_row.get("barrel_rate_7", np.nan),
-                    "barrel_rate_14": last_row.get("barrel_rate_14", np.nan),
-                    "fb_rate_7": last_row.get("fb_rate_7", np.nan),
-                    "fb_rate_14": last_row.get("fb_rate_14", np.nan),
-                    "sweet_spot_rate_7": last_row.get("sweet_spot_rate_7", np.nan),
-                    "sweet_spot_rate_14": last_row.get("sweet_spot_rate_14", np.nan),
-                    "p_avg_exit_velo_7": last_row.get("p_avg_exit_velo_7", np.nan),
-                    "p_hard_hit_rate_7": last_row.get("p_hard_hit_rate_7", np.nan),
-                    "p_barrel_rate_7": last_row.get("p_barrel_rate_7", np.nan),
-                    "p_fb_rate_7": last_row.get("p_fb_rate_7", np.nan),
-                    "p_sweet_spot_rate_7": last_row.get("p_sweet_spot_rate_7", np.nan),
-                    "park": last_row.get("park", np.nan),
-                    "park_hr_rate": last_row.get("park_hr_rate", np.nan),
-                    "park_altitude": last_row.get("park_altitude", np.nan),
-                    "roof_status": last_row.get("roof_status", np.nan),
-                }
-                today_rows.append(this_row)
+                today_rows.append({c: last_row.get(c, np.nan) for c in today_cols})
+                today_rows[-1]['player_name'] = row.get('player_name', np.nan)
+                today_rows[-1]['batter_id'] = this_batter_id
+                today_rows[-1]['pitcher_id'] = row.get('pitcher_id', np.nan)
+                today_rows[-1]['game_date'] = row.get('game_date', np.nan)
             else:
-                today_rows.append({
-                    "game_date": row.get('game_date', np.nan),
-                    "batter_id": this_batter_id,
-                    "player_name": row.get('player_name', np.nan),
-                    "pitcher_id": row.get('pitcher_id', np.nan),
-                    "temp": np.nan,
-                    "humidity": np.nan,
-                    "wind_mph": np.nan,
-                    "wind_dir_string": np.nan,
-                    "condition": np.nan,
-                    "avg_exit_velo_7": np.nan,
-                    "avg_exit_velo_14": np.nan,
-                    "hard_hit_rate_7": np.nan,
-                    "hard_hit_rate_14": np.nan,
-                    "barrel_rate_7": np.nan,
-                    "barrel_rate_14": np.nan,
-                    "fb_rate_7": np.nan,
-                    "fb_rate_14": np.nan,
-                    "sweet_spot_rate_7": np.nan,
-                    "sweet_spot_rate_14": np.nan,
-                    "p_avg_exit_velo_7": np.nan,
-                    "p_hard_hit_rate_7": np.nan,
-                    "p_barrel_rate_7": np.nan,
-                    "p_fb_rate_7": np.nan,
-                    "p_sweet_spot_rate_7": np.nan,
-                    "park": np.nan,
-                    "park_hr_rate": np.nan,
-                    "park_altitude": np.nan,
-                    "roof_status": np.nan,
-                })
+                # If no history, fill with nan or static info
+                this_out = {c: np.nan for c in today_cols}
+                this_out['player_name'] = row.get('player_name', np.nan)
+                this_out['batter_id'] = this_batter_id
+                this_out['pitcher_id'] = row.get('pitcher_id', np.nan)
+                this_out['game_date'] = row.get('game_date', np.nan)
+                today_rows.append(this_out)
 
-        today_df = pd.DataFrame(today_rows, columns=cols_for_today)
-        st.markdown("#### Download TODAY CSV (1 row per batter, matchup & context):")
+        today_df = pd.DataFrame(today_rows, columns=today_cols)
+        st.markdown("#### Download TODAY CSV (1 row per batter, matchup, rolling features & weather):")
         st.dataframe(today_df.head(20))
         st.download_button(
             "⬇️ Download TODAY CSV",
@@ -384,8 +369,5 @@ with tab1:
             file_name="today_hr_features.csv",
             key="download_today_csv"
         )
-        if missing_weather > 0:
-            st.warning(f"Weather info missing for {missing_weather} of today's batters. Check weather string in lineups.")
-
     else:
         st.info("Upload a Matchups/Lineups CSV and select a date range to generate the event-level and TODAY CSVs.")
