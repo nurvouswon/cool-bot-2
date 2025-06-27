@@ -5,7 +5,8 @@ import re
 from pybaseball import statcast
 from datetime import datetime, timedelta
 
-# ========== CONTEXT MAPS ==========
+# ===================== CONTEXT MAPS & RATES =====================
+
 park_hr_rate_map = {
     'angels_stadium': 1.05, 'angel_stadium': 1.05, 'minute_maid_park': 1.06, 'coors_field': 1.30,
     'yankee_stadium': 1.19, 'fenway_park': 0.97, 'rogers_centre': 1.10, 'tropicana_field': 0.85,
@@ -16,6 +17,21 @@ park_hr_rate_map = {
     'pnc_park': 0.87, 'busch_stadium': 0.87, 'truist_park': 1.06, 'loan_depot_park': 0.86,
     'loandepot_park': 0.86, 'citi_field': 1.05, 'nationals_park': 1.05, 'petco_park': 0.85,
     'chase_field': 1.06, 'citizens_bank_park': 1.19, 'sutter_health_park': 1.12, 'target_field': 1.05
+}
+park_hand_hr_rate = {
+    'yankee_stadium': {'L': 1.28, 'R': 1.12},
+    'fenway_park': {'L': 0.93, 'R': 1.01},
+    'coors_field': {'L': 1.37, 'R': 1.26},
+    'rogers_centre': {'L': 1.12, 'R': 1.10},
+    'guaranteed_rate_field': {'L': 1.14, 'R': 1.22},
+    'camden_yards': {'L': 1.16, 'R': 1.09},
+    'dodger_stadium': {'L': 1.14, 'R': 1.08},
+    'busch_stadium': {'L': 0.85, 'R': 0.89},
+    'wrigley_field': {'L': 1.16, 'R': 1.10},
+    'petco_park': {'L': 0.83, 'R': 0.86},
+    'minute_maid_park': {'L': 1.08, 'R': 1.04},
+    't-mobile_park': {'L': 0.88, 'R': 0.84},
+    'oracle_park': {'L': 0.80, 'R': 0.85},
 }
 park_altitude_map = {
     'coors_field': 5280, 'chase_field': 1100, 'dodger_stadium': 338, 'minute_maid_park': 50,
@@ -35,24 +51,36 @@ roof_status_map = {
 team_code_to_park = {
     'PHI': 'citizens_bank_park', 'ATL': 'truist_park', 'NYM': 'citi_field',
     'BOS': 'fenway_park', 'NYY': 'yankee_stadium', 'CHC': 'wrigley_field',
-    'LAD': 'dodger_stadium', 'OAK': 'sutter_health_park', 'CIN': 'great_american_ball_park',
-    'DET': 'comerica_park', 'HOU': 'minute_maid_park', 'MIA': 'loandepot_park',
-    'TB': 'tropicana_field', 'MIL': 'american_family_field', 'SD': 'petco_park',
-    'SF': 'oracle_park', 'TOR': 'rogers_centre', 'CLE': 'progressive_field',
+    'LAD': 'dodger_stadium', 'OAK': 'sutter_health_park', 'ATH': 'sutter_health_park',
+    'CIN': 'great_american_ball_park', 'DET': 'comerica_park', 'HOU': 'minute_maid_park',
+    'MIA': 'loandepot_park', 'TB': 'tropicana_field', 'MIL': 'american_family_field',
+    'SD': 'petco_park', 'SF': 'oracle_park', 'TOR': 'rogers_centre', 'CLE': 'progressive_field',
     'MIN': 'target_field', 'KC': 'kauffman_stadium', 'CWS': 'guaranteed_rate_field',
-    'LAA': 'angel_stadium', 'SEA': 't-mobile_park', 'TEX': 'globe_life_field',
-    'ARI': 'chase_field', 'COL': 'coors_field', 'PIT': 'pnc_park', 'STL': 'busch_stadium',
-    'BAL': 'camden_yards', 'WSH': 'nationals_park', 'ATH': 'sutter_health_park'
+    'CHW': 'guaranteed_rate_field', 'LAA': 'angel_stadium', 'SEA': 't-mobile_park',
+    'TEX': 'globe_life_field', 'ARI': 'chase_field', 'COL': 'coors_field', 'PIT': 'pnc_park',
+    'STL': 'busch_stadium', 'BAL': 'camden_yards', 'WSH': 'nationals_park', 'WAS': 'nationals_park'
 }
 mlb_team_city_map = {
     'ANA': 'Anaheim', 'ARI': 'Phoenix', 'ATL': 'Atlanta', 'BAL': 'Baltimore', 'BOS': 'Boston',
     'CHC': 'Chicago', 'CIN': 'Cincinnati', 'CLE': 'Cleveland', 'COL': 'Denver', 'CWS': 'Chicago',
-    'DET': 'Detroit', 'HOU': 'Houston', 'KC': 'Kansas City', 'LAA': 'Anaheim', 'LAD': 'Los Angeles',
-    'MIA': 'Miami', 'MIL': 'Milwaukee', 'MIN': 'Minneapolis', 'NYM': 'New York', 'NYY': 'New York',
-    'OAK': 'Oakland', 'PHI': 'Philadelphia', 'PIT': 'Pittsburgh', 'SD': 'San Diego', 'SEA': 'Seattle',
-    'SF': 'San Francisco', 'STL': 'St. Louis', 'TB': 'St. Petersburg', 'TEX': 'Arlington', 'TOR': 'Toronto',
-    'WSH': 'Washington'
+    'CHW': 'Chicago', 'DET': 'Detroit', 'HOU': 'Houston', 'KC': 'Kansas City', 'LAA': 'Anaheim',
+    'LAD': 'Los Angeles', 'MIA': 'Miami', 'MIL': 'Milwaukee', 'MIN': 'Minneapolis', 'NYM': 'New York',
+    'NYY': 'New York', 'OAK': 'Oakland', 'PHI': 'Philadelphia', 'PIT': 'Pittsburgh', 'SD': 'San Diego',
+    'SEA': 'Seattle', 'SF': 'San Francisco', 'STL': 'St. Louis', 'TB': 'St. Petersburg',
+    'TEX': 'Arlington', 'TOR': 'Toronto', 'WSH': 'Washington', 'WAS': 'Washington', 'ATH': 'Sacramento'
 }
+league_avg_hr_rate = 0.030  # 2023 MLB: ~3% HR/PA
+pitchtype_hr_rate = {
+    'ff': 0.040, 'sl': 0.033, 'cu': 0.024, 'ch': 0.019, 'si': 0.029,
+    'fc': 0.027, 'fs': 0.020, 'st': 0.018, 'sinker': 0.029, 'splitter': 0.021, 'sweeper': 0.017
+}
+pitchtype_hr_rate_by_hand = {
+    'ff': {'L': 0.043, 'R': 0.038}, 'sl': {'L': 0.029, 'R': 0.036},
+    'cu': {'L': 0.022, 'R': 0.025}, 'ch': {'L': 0.021, 'R': 0.018}, 'si': {'L': 0.031, 'R': 0.028}
+}
+platoon_hr_rate = {'L_vs_R': 0.035, 'L_vs_L': 0.025, 'R_vs_L': 0.041, 'R_vs_R': 0.027}
+
+# ===================== HELPER FUNCTIONS =========================
 
 def dedup_columns(df):
     return df.loc[:, ~df.columns.duplicated()]
@@ -82,7 +110,6 @@ def parse_custom_weather_string_v2(s):
 @st.cache_data(show_spinner=True)
 def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix=""):
     df = df.copy()
-    # Dedup only if columns exist
     if id_col in df.columns and date_col in df.columns:
         df = df.drop_duplicates(subset=[id_col, date_col], keep='last')
         df = df.sort_values([id_col, date_col])
@@ -97,7 +124,6 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
     for name, group in grouped:
         out_row = {}
         for w in windows:
-            # All statcast rolling metrics per deep research plan
             if 'launch_speed' in group.columns:
                 out_row[f"{prefix}avg_exit_velo_{w}"] = group['launch_speed'].rolling(w, min_periods=1).mean().iloc[-1]
                 out_row[f"{prefix}hard_hit_rate_{w}"] = (group['launch_speed'].rolling(w, min_periods=1)
@@ -112,11 +138,9 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
                                                         (group['launch_angle'] >= 26) &
                                                         (group['launch_angle'] <= 30))
                                                         .rolling(w, min_periods=1).mean().iloc[-1])
-            # Extend to more columns if you wish (woba_value, distance, etc)
             for feat in ['hit_distance_sc', 'woba_value', 'release_speed', 'release_spin_rate', 'spin_axis', 'pfx_x', 'pfx_z']:
                 if feat in group.columns:
                     out_row[f"{prefix}{feat}_{w}"] = group[feat].rolling(w, min_periods=1).mean().iloc[-1]
-        # Per pitch type rolling rates
         if pitch_types is not None and "pitch_type" in group.columns:
             for pt in pitch_types:
                 pt_group = group[group['pitch_type'] == pt]
@@ -143,6 +167,8 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
         out_row[id_col] = name
         feature_frames.append(out_row)
     return pd.DataFrame(feature_frames)
+
+# ===================== STREAMLIT UI =============================
 
 st.set_page_config("MLB HR Analyzer", layout="wide")
 tab1, tab2 = st.tabs(["1️⃣ Fetch & Feature Engineer Data", "2️⃣ Upload & Analyze"])
@@ -172,14 +198,12 @@ with tab1:
         if 'game_date' in df.columns:
             df['game_date'] = pd.to_datetime(df['game_date'], errors='coerce').dt.strftime('%Y-%m-%d')
 
-        # --- Read and clean lineups ---
         try:
             lineup_df = pd.read_csv(uploaded_lineups)
         except Exception as e:
             st.error(f"Could not read lineup CSV: {e}")
             st.stop()
         lineup_df.columns = [str(c).strip().lower().replace(" ", "_") for c in lineup_df.columns]
-        # Clean columns
         for col in ['mlb_id', 'batter_id', 'batter']:
             if col in lineup_df.columns and 'batter_id' not in lineup_df.columns:
                 lineup_df['batter_id'] = lineup_df[col]
@@ -195,7 +219,7 @@ with tab1:
         if 'batting_order' in lineup_df.columns:
             lineup_df['batting_order'] = lineup_df['batting_order'].astype(str).str.upper().str.strip()
         if 'team_code' in lineup_df.columns:
-            lineup_df['team_code'] = lineup_df['team_code'].astype(str).str.strip()
+            lineup_df['team_code'] = lineup_df['team_code'].astype(str).str.strip().str.upper()
         if 'game_number' in lineup_df.columns:
             lineup_df['game_number'] = lineup_df['game_number'].astype(str).str.strip()
         for col in ['batter_id', 'mlb_id']:
@@ -245,16 +269,16 @@ with tab1:
         for col in ['batter_id', 'mlb_id', 'pitcher_id', 'team_code']:
             if col in df.columns:
                 df[col] = df[col].astype(str).str.replace('.0','',regex=False).str.strip()
-
         # Add park, city, context
         if 'home_team_code' in df.columns:
-            df['team_code'] = df['home_team_code']
+            df['team_code'] = df['home_team_code'].str.upper()
             df['park'] = df['home_team_code'].map(team_code_to_park)
         if 'home_team' in df.columns and 'park' not in df.columns:
             df['park'] = df['home_team'].str.lower().str.replace(' ', '_')
         if 'team_code' not in df.columns and 'park' in df.columns:
             park_to_team = {v:k for k,v in team_code_to_park.items()}
             df['team_code'] = df['park'].map(park_to_team)
+        df['team_code'] = df['team_code'].astype(str).str.upper()
         df['park_hr_rate'] = df['park'].map(park_hr_rate_map).fillna(1.0)
         df['park_altitude'] = df['park'].map(park_altitude_map).fillna(0)
         df['roof_status'] = df['park'].map(roof_status_map).fillna("open")
@@ -298,7 +322,6 @@ with tab1:
         df_for_pitchers = df.copy()
         if 'batter_id' in df_for_pitchers.columns:
             df_for_pitchers = df_for_pitchers.drop(columns=['batter_id'])
-
         df_for_pitchers = df_for_pitchers.rename(columns={"pitcher_id": "batter_id"})
         pitcher_event = fast_rolling_stats(
             df_for_pitchers, "batter_id", "game_date", roll_windows, main_pitch_types, prefix="p_"
@@ -318,8 +341,8 @@ with tab1:
             if c not in lineup_df.columns:
                 lineup_df[c] = np.nan
         weather_merge = lineup_df[weather_cols].drop_duplicates()
-        df['team_code'] = df['team_code'].astype(str).str.strip()
-        weather_merge['team_code'] = weather_merge['team_code'].astype(str).str.strip()
+        df['team_code'] = df['team_code'].astype(str).str.upper()
+        weather_merge['team_code'] = weather_merge['team_code'].astype(str).str.upper()
         df['game_date'] = df['game_date'].astype(str).str.strip()
         weather_merge['game_date'] = weather_merge['game_date'].astype(str).str.strip()
         df = pd.merge(df, weather_merge, how='left', on=['game_date','team_code'])
@@ -337,8 +360,6 @@ with tab1:
         )
 
         # ===== TODAY CSV: 1 row per batter with all rolling/context features =====
-        # These features match the rolling/context set from training
-        # You can adjust/expand these to include more, per research
         rolling_feature_cols = [col for col in df.columns if (
             col.startswith('b_') or col.startswith('p_')
         ) and any(str(w) in col for w in roll_windows)]
