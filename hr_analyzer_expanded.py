@@ -5,7 +5,7 @@ import re
 from pybaseball import statcast
 from datetime import datetime, timedelta
 
-# ========== CONTEXT MAPS ==========
+# =================== CONTEXT MAPS ===================
 park_hr_rate_map = {
     'angels_stadium': 1.05, 'angel_stadium': 1.05, 'minute_maid_park': 1.06, 'coors_field': 1.30,
     'yankee_stadium': 1.19, 'fenway_park': 0.97, 'rogers_centre': 1.10, 'tropicana_field': 0.85,
@@ -54,6 +54,7 @@ mlb_team_city_map = {
     'WSH': 'Washington'
 }
 
+# =========== UTILITY FUNCTIONS ===========
 def dedup_columns(df):
     return df.loc[:, ~df.columns.duplicated()]
 
@@ -137,6 +138,7 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
         feature_frames.append(out_row)
     return pd.DataFrame(feature_frames)
 
+# ==================== STREAMLIT APP ====================
 st.set_page_config("MLB HR Analyzer", layout="wide")
 tab1, tab2 = st.tabs(["1️⃣ Fetch & Feature Engineer Data", "2️⃣ Upload & Analyze"])
 
@@ -172,7 +174,6 @@ with tab1:
             st.stop()
 
         # ==== Column Fixes and String Cleans ====
-        # Always work in lower/underscored columns for easy handling
         lineup_df.columns = [str(c).strip().lower().replace(" ", "_") for c in lineup_df.columns]
         for possible_col in ['mlb_id', 'batter_id', 'batter']:
             if possible_col in lineup_df.columns and 'batter_id' not in lineup_df.columns:
@@ -277,7 +278,7 @@ with tab1:
         ]
         df = df[df['events_clean'].isin(valid_events)].copy()
 
-        # Rolling stat features
+        # Rolling stat features (batter and pitcher)
         roll_windows = [3, 5, 7, 14, 20]
         main_pitch_types = ["ff", "sl", "cu", "ch", "si", "fc", "fs", "st", "sinker", "splitter", "sweeper"]
         for col in ['batter', 'batter_id']:
