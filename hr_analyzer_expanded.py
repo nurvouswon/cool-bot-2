@@ -280,7 +280,7 @@ with tab1:
         if 'home_team' in df.columns and 'park' not in df.columns:
             df['park'] = df['home_team'].str.lower().str.replace(' ', '_')
         if 'team_code' not in df.columns and 'park' in df.columns:
-            park_to_team = {v: k for k, v in team_code_to_park.items()}
+            park_to_team = {v:k for k,v in team_code_to_park.items()}
             df['team_code'] = df['park'].map(park_to_team).str.upper()
         df['team_code'] = df['team_code'].astype(str).str.upper()
         df['park'] = df['team_code'].map(team_code_to_park).str.lower()
@@ -397,12 +397,11 @@ with tab1:
             key="download_event_level"
         )
 
-        # ===== TODAY CSV: 1 row per batter with all rolling/context features =====
+        # ===== TODAY CSV: 1 row per batter with all rolling/context/weather features =====
         progress.progress(95, "Generating TODAY batter rows and context merges...")
         rolling_feature_cols = [col for col in df.columns if (
             col.startswith('b_') or col.startswith('p_')
         ) and any(str(w) in col for w in roll_windows)]
-        # All context/weather columns you want in final
         extra_context_cols = [
             'park', 'park_hr_rate', 'park_altitude', 'roof_status', 'city',
             'park_hand_hr_rate', 'pitchtype_hr_rate', 'pitchtype_hr_rate_hand', 'platoon_hr_rate'
@@ -411,14 +410,23 @@ with tab1:
             'game_date', 'batter_id', 'player_name', 'pitcher_id',
             'temp', 'humidity', 'wind_mph', 'wind_dir_string', 'condition'
         ] + extra_context_cols + rolling_feature_cols
+
+        # --- Merge lineup_df with weather_merge so every batter row in TODAY gets correct weather ---
+        lineup_today = pd.merge(
+            lineup_df, weather_merge, on=['game_date', 'team_code'], how='left', suffixes=('', '_wx')
+        )
+
         today_rows = []
-        for idx, row in lineup_df.iterrows():
+        for idx, row in lineup_today.iterrows():
             this_batter_id = str(row['batter_id']).split(".")[0]
             filter_df = df[df['batter_id'].astype(str).str.split('.').str[0] == this_batter_id]
             # Get most recent stats/context/weather for this batter
             if not filter_df.empty:
                 last_row = filter_df.iloc[-1]
                 row_out = {c: last_row.get(c, np.nan) for c in today_cols}
+                # Always overwrite weather columns with the lineup/team weather, not the last event!
+                for wxcol in ['temp','humidity','wind_mph','wind_dir_string','condition']:
+                    row_out[wxcol] = row.get(wxcol, np.nan)
                 row_out['player_name'] = row.get('player_name', np.nan)
                 row_out['batter_id'] = this_batter_id
                 row_out['pitcher_id'] = row.get('pitcher_id', np.nan)
@@ -430,6 +438,9 @@ with tab1:
                 this_out['batter_id'] = this_batter_id
                 this_out['pitcher_id'] = row.get('pitcher_id', np.nan)
                 this_out['game_date'] = row.get('game_date', np.nan)
+                # Always assign weather even for missing stat batters
+                for wxcol in ['temp','humidity','wind_mph','wind_dir_string','condition']:
+                    this_out[wxcol] = row.get(wxcol, np.nan)
                 today_rows.append(this_out)
 
         today_df = pd.DataFrame(today_rows, columns=today_cols)
