@@ -295,12 +295,16 @@ with tab1:
         if not batter_event.empty:
             batter_event = batter_event.set_index('batter_id')
         # --- Pitchers ---
+        df_for_pitchers = df.copy()
+        if 'batter_id' in df_for_pitchers.columns:
+            df_for_pitchers = df_for_pitchers.drop(columns=['batter_id'])
+
+        df_for_pitchers = df_for_pitchers.rename(columns={"pitcher_id": "batter_id"})
         pitcher_event = fast_rolling_stats(
-            df.rename(columns={"pitcher_id":"batter_id"}), "batter_id", "game_date", roll_windows, main_pitch_types, prefix="p_"
+            df_for_pitchers, "batter_id", "game_date", roll_windows, main_pitch_types, prefix="p_"
         )
         if not pitcher_event.empty:
             pitcher_event = pitcher_event.set_index('batter_id')
-
         # Merge features into Statcast event data
         df = pd.merge(df, batter_event.reset_index(), how="left", left_on="batter_id", right_on="batter_id")
         df = pd.merge(df, pitcher_event.reset_index(), how="left", left_on="pitcher_id", right_on="batter_id", suffixes=('', '_pitcherstat'))
