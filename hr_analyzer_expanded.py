@@ -57,31 +57,28 @@ mlb_team_city_map = {
 def dedup_columns(df):
     return df.loc[:, ~df.columns.duplicated()]
 
-# ----------- WEATHER PARSER for "92 O CF 12-14 30% outdoor" -----------
+def wind_dir_to_angle_custom(vector, field_dir):
+    if pd.isna(vector) or pd.isna(field_dir): return np.nan
+    base = {'CF':0, 'LF':-45, 'RF':45, 'L':-45, 'R':45}.get(str(field_dir).upper(), 0)
+    return (base if str(vector).upper() == 'O' else (base+180)%360)
+
 def parse_custom_weather_string_v2(s):
-    """Parse weather string like '92 O CF 12-14 30% outdoor'."""
     if pd.isna(s): return pd.Series([np.nan]*7, index=['temp','wind_vector','wind_field_dir','wind_mph','humidity','condition','wind_dir_string'])
     s = str(s)
-    # Temp
     temp_match = re.search(r'(\d{2,3})\s*[OI]\s', s)
     temp = int(temp_match.group(1)) if temp_match else np.nan
-    # Wind O/I
     wind_vector_match = re.search(r'\d{2,3}\s*([OI])\s', s)
     wind_vector = wind_vector_match.group(1) if wind_vector_match else np.nan
-    # Field direction
     wind_field_dir_match = re.search(r'\s([A-Z]{2})\s*\d', s)
     wind_field_dir = wind_field_dir_match.group(1) if wind_field_dir_match else np.nan
-    # Wind mph (midpoint)
     mph = re.search(r'(\d{1,3})\s*-\s*(\d{1,3})', s)
     if mph:
         wind_mph = (int(mph.group(1)) + int(mph.group(2))) / 2
     else:
         mph = re.search(r'([1-9][0-9]?)\s*(?:mph)?', s)
         wind_mph = int(mph.group(1)) if mph else np.nan
-    # Humidity
     humidity_match = re.search(r'(\d{1,3})%', s)
     humidity = int(humidity_match.group(1)) if humidity_match else np.nan
-    # Condition
     condition = "outdoor" if "outdoor" in s.lower() else ("indoor" if "indoor" in s.lower() else np.nan)
     wind_dir_string = f"{wind_vector} {wind_field_dir}".strip()
     return pd.Series([temp, wind_vector, wind_field_dir, wind_mph, humidity, condition, wind_dir_string],
@@ -173,11 +170,14 @@ with tab1:
         except Exception as e:
             st.error(f"Could not read lineup CSV: {e}")
             st.stop()
-        # Standardize key columns and all string conversions
-        for possible_col in ['mlb id', 'mlb_id', 'batter_id', 'batter']:
+
+        # ==== Column Fixes and String Cleans ====
+        # Always work in lower/underscored columns for easy handling
+        lineup_df.columns = [str(c).strip().lower().replace(" ", "_") for c in lineup_df.columns]
+        for possible_col in ['mlb_id', 'batter_id', 'batter']:
             if possible_col in lineup_df.columns and 'batter_id' not in lineup_df.columns:
                 lineup_df['batter_id'] = lineup_df[possible_col]
-        for possible_col in ['player name', 'player_name', 'name']:
+        for possible_col in ['player_name', 'player name', 'name']:
             if possible_col in lineup_df.columns and 'player_name' not in lineup_df.columns:
                 lineup_df['player_name'] = lineup_df[possible_col]
         if 'game_date' not in lineup_df.columns:
@@ -186,25 +186,26 @@ with tab1:
                     lineup_df['game_date'] = lineup_df[date_col]
         if 'game_date' in lineup_df.columns:
             lineup_df['game_date'] = pd.to_datetime(lineup_df['game_date'], errors='coerce').dt.strftime("%Y-%m-%d")
-        # Ensure team_code and game_number are string
+        if 'batting_order' in lineup_df.columns:
+            lineup_df['batting_order'] = lineup_df['batting_order'].astype(str).str.upper().str.strip()
         if 'team_code' in lineup_df.columns:
-            lineup_df['team_code'] = lineup_df['team_code'].astype(str)
+            lineup_df['team_code'] = lineup_df['team_code'].astype(str).str.strip()
         if 'game_number' in lineup_df.columns:
-            lineup_df['game_number'] = lineup_df['game_number'].astype(str)
-        if 'batter_id' in lineup_df.columns:
-            lineup_df['batter_id'] = lineup_df['batter_id'].astype(str)
-        if 'mlb_id' in lineup_df.columns:
-            lineup_df['mlb_id'] = lineup_df['mlb_id'].astype(str)
+            lineup_df['game_number'] = lineup_df['game_number'].astype(str).str.strip()
+        for col in ['batter_id', 'mlb_id']:
+            if col in lineup_df.columns:
+                lineup_df[col] = lineup_df[col].astype(str).str.replace('.0','',regex=False).str.strip()
 
-        # Parse weather string into all columns
+        # ==== Parse Weather Fields from Weather String ====
         if 'weather' in lineup_df.columns:
             lineup_df[['temp','wind_vector','wind_field_dir','wind_mph','humidity','condition','wind_dir_string']] = \
                 lineup_df['weather'].apply(parse_custom_weather_string_v2)
         st.write("Lineup Weather Debug:")
         st.dataframe(lineup_df[['weather','temp','wind_vector','wind_field_dir','wind_mph','humidity','condition','wind_dir_string']].head(10))
 
-        # ---- Assign pitcher_id for each batter from opponent SP logic (if available) ----
-        if all(col in lineup_df.columns for col in ['game_number', 'team_code', 'mlb_id', 'batting_order']):
+        # ==== Assign Opposing SP for Each Batter ====
+        pitcher_col_assigned = False
+        if {'game_date', 'game_number', 'team_code', 'mlb_id', 'batting_order'}.issubset(set(lineup_df.columns)):
             games = lineup_df[['game_date', 'game_number']].drop_duplicates()
             opp_pitcher_map = {}
             for _, game in games.iterrows():
@@ -222,105 +223,102 @@ with tab1:
                         (lineup_df['team_code'] == opp_team) &
                         (lineup_df['game_date'] == game_date) &
                         (lineup_df['game_number'] == game_number) &
-                        (lineup_df['batting_order'].astype(str).str.upper().str.strip() == "SP")
+                        (lineup_df['batting_order'] == "SP")
                     ]
                     if not opp_sp.empty:
                         opp_pitcher_map[(game_date, game_number, team)] = str(opp_sp.iloc[0]['mlb_id'])
             lineup_df['pitcher_id'] = lineup_df.apply(
                 lambda row: opp_pitcher_map.get((row['game_date'], row['game_number'], row['team_code']), np.nan), axis=1
             )
+            pitcher_col_assigned = True
         else:
             lineup_df['pitcher_id'] = np.nan
 
-        # ---------- Statcast Event-level Feature Engineering -----------
+        # ==== STATCAST EVENT-LEVEL ENGINEERING ====
+        # Clean Statcast columns
+        df.columns = [str(c).strip().lower().replace(" ", "_") for c in df.columns]
+        if 'game_date' in df.columns:
+            df['game_date'] = pd.to_datetime(df['game_date'], errors='coerce').dt.strftime("%Y-%m-%d")
+        for col in ['batter_id', 'mlb_id', 'pitcher_id']:
+            if col in df.columns:
+                df[col] = df[col].astype(str).str.replace('.0','',regex=False).str.strip()
+
+        # Add park, city, etc.
+        if 'home_team_code' in df.columns:
+            df['team_code'] = df['home_team_code']
+            df['park'] = df['home_team_code'].map(team_code_to_park)
+        if 'home_team' in df.columns and 'park' not in df.columns:
+            df['park'] = df['home_team'].str.lower().str.replace(' ', '_')
+        if 'team_code' not in df.columns and 'park' in df.columns:
+            park_to_team = {v:k for k,v in team_code_to_park.items()}
+            df['team_code'] = df['park'].map(park_to_team)
+        df['park_hr_rate'] = df['park'].map(park_hr_rate_map).fillna(1.0)
+        df['park_altitude'] = df['park'].map(park_altitude_map).fillna(0)
+        df['roof_status'] = df['park'].map(roof_status_map).fillna("open")
+        if 'city' not in df.columns:
+            df['city'] = df['team_code'].map(mlb_team_city_map).fillna("")
+        for col in ['batter_id', 'mlb_id', 'pitcher_id', 'team_code']:
+            if col in df.columns:
+                df[col] = df[col].astype(str).str.replace('.0','',regex=False).str.strip()
+
+        # HR outcome flag
+        if 'events' in df.columns:
+            df['events_clean'] = df['events'].astype(str).str.lower().str.replace(' ', '')
+        else:
+            df['events_clean'] = ""
+        if 'hr_outcome' not in df.columns:
+            df['hr_outcome'] = df['events_clean'].isin(['homerun', 'home_run']).astype(int)
+
+        # Filter for valid events only
         valid_events = [
             'single', 'double', 'triple', 'homerun', 'home_run', 'field_out',
             'force_out', 'grounded_into_double_play', 'fielders_choice_out',
             'pop_out', 'lineout', 'flyout', 'sac_fly', 'sac_fly_double_play'
         ]
-        if 'events' in df.columns:
-            df['events_clean'] = df['events'].astype(str).str.lower().str.replace(' ', '')
-            df = df[df['events_clean'].isin(valid_events)].copy()
+        df = df[df['events_clean'].isin(valid_events)].copy()
 
-        # All string fixes for merge columns
-        for col in ['game_date', 'team_code', 'batter_id', 'pitcher_id']:
-            if col in df.columns:
-                df[col] = df[col].astype(str)
-        if 'game_date' in lineup_df.columns:
-            lineup_df['game_date'] = lineup_df['game_date'].astype(str)
-        if 'team_code' in lineup_df.columns:
-            lineup_df['team_code'] = lineup_df['team_code'].astype(str)
-
-        # Identify home_team_code for park mapping
-        if 'home_team_code' in df.columns:
-            df['park'] = df['home_team_code'].map(team_code_to_park)
-        elif 'home_team' in df.columns:
-            df['park'] = df['home_team'].str.lower().str.replace(' ', '_').map(park_hr_rate_map).index
-
-        df['park_hr_rate'] = df['park'].map(park_hr_rate_map).fillna(1.0)
-        df['park_altitude'] = df['park'].map(park_altitude_map).fillna(0)
-        df['roof_status'] = df['park'].map(roof_status_map).fillna("open")
-
-        # If city not present, try from park
-        if 'city' not in df.columns:
-            df['city'] = df['park'].map({k: v for k, v in team_code_to_park.items() if k in mlb_team_city_map}).fillna("")
-
-        # ------- Statcast Rolling and Custom Features --------
+        # Rolling stat features
         roll_windows = [3, 5, 7, 14, 20]
         main_pitch_types = ["ff", "sl", "cu", "ch", "si", "fc", "fs", "st", "sinker", "splitter", "sweeper"]
-
-        # For demo: assume basic columns
-        if 'batter' in df.columns and 'batter_id' not in df.columns:
-            df['batter_id'] = df['batter']
-        if 'pitcher' in df.columns and 'pitcher_id' not in df.columns:
-            df['pitcher_id'] = df['pitcher']
-
-        # If HR outcome not present, generate
-        if 'hr_outcome' not in df.columns:
-            df['hr_outcome'] = df['events_clean'].isin(['homerun', 'home_run']).astype(int)
-
-        # Rolling stat features (can be extended)
-        batter_cols = ['launch_speed', 'launch_angle', 'hit_distance_sc', 'woba_value',
-                       'release_speed', 'release_spin_rate', 'spin_axis', 'pfx_x', 'pfx_z']
-        pitcher_cols = ['launch_speed', 'launch_angle', 'hit_distance_sc', 'woba_value',
-                        'release_speed', 'release_spin_rate', 'spin_axis', 'pfx_x', 'pfx_z']
-
-        for col in batter_cols:
+        for col in ['batter', 'batter_id']:
             if col in df.columns:
-                for w in roll_windows:
-                    df[f'B_{col}_{w}'] = df.groupby('batter_id')[col].transform(lambda x: x.shift(1).rolling(w, min_periods=1).mean())
-        for col in pitcher_cols:
+                df['batter_id'] = df[col]
+        for col in ['pitcher', 'pitcher_id']:
             if col in df.columns:
-                for w in roll_windows:
-                    df[f'P_{col}_{w}'] = df.groupby('pitcher_id')[col].transform(lambda x: x.shift(1).rolling(w, min_periods=1).mean())
+                df['pitcher_id'] = df[col]
 
-        # Handedness HR rates
-        if 'stand' in df.columns and 'p_throws' in df.columns:
-            for w in roll_windows:
-                df[f'B_vsP_hand_HR_{w}'] = df.groupby(['batter_id', 'p_throws'])['hr_outcome'].transform(lambda x: x.shift(1).rolling(w, min_periods=1).mean())
-                df[f'P_vsB_hand_HR_{w}'] = df.groupby(['pitcher_id', 'stand'])['hr_outcome'].transform(lambda x: x.shift(1).rolling(w, min_periods=1).mean())
+        # Batters
+        batter_event = fast_rolling_stats(df, "batter_id", "game_date", roll_windows, main_pitch_types, prefix="")
+        if not batter_event.empty:
+            batter_event = batter_event.set_index('batter_id')
+        # Pitchers
+        pitcher_event = fast_rolling_stats(
+            df.rename(columns={"pitcher_id":"batter_id"}), "batter_id", "game_date", roll_windows, main_pitch_types, prefix="p_"
+        )
+        if not pitcher_event.empty:
+            pitcher_event = pitcher_event.set_index('batter_id')
 
-        # Park/hand split HR rates
-        if 'park' in df.columns and 'stand' in df.columns:
-            for w in [7, 14, 30]:
-                df[f'park_hand_HR_{w}'] = df.groupby(['park', 'stand'])['hr_outcome'].transform(lambda x: x.shift(1).rolling(w, min_periods=5).mean())
-
-        # =========== Merge weather/context from lineup to event data ==========
-        if 'weather' in lineup_df.columns and 'game_date' in df.columns and 'team_code' in df.columns:
-            weather_cols = ['game_date','team_code','temp','wind_vector','wind_field_dir','wind_mph','humidity','condition','wind_dir_string']
-            for c in weather_cols:
-                if c not in lineup_df.columns:
-                    lineup_df[c] = np.nan
-            weather_merge = lineup_df[weather_cols].drop_duplicates()
-            # MAKE SURE string dtypes match before merge
-            weather_merge['game_date'] = weather_merge['game_date'].astype(str)
-            weather_merge['team_code'] = weather_merge['team_code'].astype(str)
-            df['game_date'] = df['game_date'].astype(str)
-            df['team_code'] = df['team_code'].astype(str)
-            df = pd.merge(df, weather_merge, how='left', on=['game_date','team_code'])
-
-        # -- Output event-level CSV --
+        # Merge features into Statcast event data
+        df = pd.merge(df, batter_event.reset_index(), how="left", left_on="batter_id", right_on="batter_id")
+        df = pd.merge(df, pitcher_event.reset_index(), how="left", left_on="pitcher_id", right_on="batter_id", suffixes=('', '_pitcherstat'))
+        if 'batter_id_pitcherstat' in df.columns:
+            df = df.drop(columns=['batter_id_pitcherstat'])
         df = dedup_columns(df)
+
+        # ==== MERGE WEATHER/CONTEXT FROM LINEUPS ====
+        weather_cols = ['game_date','team_code','temp','wind_vector','wind_field_dir','wind_mph','humidity','condition','wind_dir_string']
+        for c in weather_cols:
+            if c not in lineup_df.columns:
+                lineup_df[c] = np.nan
+        weather_merge = lineup_df[weather_cols].drop_duplicates()
+        # Make sure both sides are string/object and clean
+        df['team_code'] = df['team_code'].astype(str).str.strip()
+        weather_merge['team_code'] = weather_merge['team_code'].astype(str).str.strip()
+        df['game_date'] = df['game_date'].astype(str).str.strip()
+        weather_merge['game_date'] = weather_merge['game_date'].astype(str).str.strip()
+        df = pd.merge(df, weather_merge, how='left', on=['game_date','team_code'])
+        df = dedup_columns(df)
+
         st.success(f"Feature engineering complete! {len(df)} batted ball events.")
         st.markdown("#### Download Event-Level CSV (all features, 1 row per batted ball event):")
         st.dataframe(df.head(20))
@@ -333,7 +331,8 @@ with tab1:
 
         # ==================== TODAY CSV: 1 row per batter ======================
         cols_for_today = [
-            "game_date", "batter_id", "player_name", "pitcher_id", "temp", "humidity", "wind_mph", "wind_dir_string", "condition", "hard_hit_rate_20", "sweet_spot_rate_20"
+            "game_date", "batter_id", "player_name", "pitcher_id", "temp", "humidity",
+            "wind_mph", "wind_dir_string", "condition", "hard_hit_rate_20", "sweet_spot_rate_20"
         ]
         today_rows = []
         missing_weather = 0
