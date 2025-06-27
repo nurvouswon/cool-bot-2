@@ -265,11 +265,9 @@ with tab1:
             lineup_df['pitcher_id'] = np.nan
 
         # ==== STATCAST EVENT-LEVEL ENGINEERING ====
-        # Clean and standardize IDs in event-level data
         for col in ['batter_id', 'mlb_id', 'pitcher_id', 'team_code']:
             if col in df.columns:
                 df[col] = df[col].astype(str).str.replace('.0','',regex=False).str.strip()
-        # Add park, city, context
         if 'home_team_code' in df.columns:
             df['team_code'] = df['home_team_code'].str.upper()
             df['park'] = df['home_team_code'].map(team_code_to_park)
@@ -335,6 +333,38 @@ with tab1:
             df = df.drop(columns=['batter_id_pitcherstat'])
         df = dedup_columns(df)
 
+        # ==== ADVANCED CONTEXTUAL MERGES (PARK, HAND, PITCHTYPE, PLATOON) ====
+        # Add park_hand_hr_rate to event-level data if handedness columns exist
+        if 'stand' in df.columns and 'park' in df.columns:
+            df['park_hand_hr_rate'] = df.apply(
+                lambda row: park_hand_hr_rate.get(row['park'], {}).get(row['stand'][0].upper(), np.nan)
+                if pd.notnull(row['park']) and pd.notnull(row.get('stand', np.nan)) else np.nan,
+                axis=1
+            )
+        else:
+            df['park_hand_hr_rate'] = np.nan
+        # Add pitchtype_hr_rate and pitchtype_hr_rate_by_hand if pitch_type and stand/p_throws exist
+        if 'pitch_type' in df.columns:
+            df['pitchtype_hr_rate'] = df['pitch_type'].map(pitchtype_hr_rate)
+            if 'stand' in df.columns and 'p_throws' in df.columns:
+                df['pitchtype_hr_rate_hand'] = df.apply(
+                    lambda row: pitchtype_hr_rate_by_hand.get(row['pitch_type'], {}).get(row['stand'][0].upper(), np.nan)
+                    if pd.notnull(row.get('stand', np.nan)) else np.nan, axis=1)
+            else:
+                df['pitchtype_hr_rate_hand'] = np.nan
+        else:
+            df['pitchtype_hr_rate'] = np.nan
+            df['pitchtype_hr_rate_hand'] = np.nan
+        # Add platoon context if both 'stand' and 'p_throws' exist
+        if 'stand' in df.columns and 'p_throws' in df.columns:
+            def platoon_lookup(row):
+                try:
+                    return platoon_hr_rate[f"{row['stand'][0].upper()}_vs_{row['p_throws'][0].upper()}"]
+                except: return np.nan
+            df['platoon_hr_rate'] = df.apply(platoon_lookup, axis=1)
+        else:
+            df['platoon_hr_rate'] = np.nan
+
         # ==== MERGE WEATHER/CONTEXT FROM LINEUPS ====
         weather_cols = ['game_date','team_code','temp','wind_vector','wind_field_dir','wind_mph','humidity','condition','wind_dir_string']
         for c in weather_cols:
@@ -363,7 +393,12 @@ with tab1:
         rolling_feature_cols = [col for col in df.columns if (
             col.startswith('b_') or col.startswith('p_')
         ) and any(str(w) in col for w in roll_windows)]
-        today_cols = ['game_date', 'batter_id', 'player_name', 'pitcher_id', 'temp', 'humidity', 'wind_mph', 'wind_dir_string', 'condition'] + rolling_feature_cols
+        today_context_cols = [
+            'park', 'park_hr_rate', 'park_altitude', 'roof_status', 'city',
+            'park_hand_hr_rate', 'pitchtype_hr_rate', 'pitchtype_hr_rate_hand', 'platoon_hr_rate'
+        ]
+        today_cols = ['game_date', 'batter_id', 'player_name', 'pitcher_id', 'temp', 'humidity', 'wind_mph', 'wind_dir_string', 'condition'] \
+                     + today_context_cols + rolling_feature_cols
         today_rows = []
         for idx, row in lineup_df.iterrows():
             this_batter_id = str(row['batter_id']).split(".")[0]
@@ -377,7 +412,6 @@ with tab1:
                 today_rows[-1]['pitcher_id'] = row.get('pitcher_id', np.nan)
                 today_rows[-1]['game_date'] = row.get('game_date', np.nan)
             else:
-                # If no history, fill with nan or static info
                 this_out = {c: np.nan for c in today_cols}
                 this_out['player_name'] = row.get('player_name', np.nan)
                 this_out['batter_id'] = this_batter_id
