@@ -2,12 +2,11 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import re
+import requests
 from pybaseball import statcast
 from datetime import datetime, timedelta
-import requests
-import time
 
-# ============= CONTEXT MAPS & RATES =============
+# ===================== CONTEXT MAPS & RATES =====================
 park_hr_rate_map = {
     'angels_stadium': 1.05, 'angel_stadium': 1.05, 'minute_maid_park': 1.06, 'coors_field': 1.30,
     'yankee_stadium': 1.19, 'fenway_park': 0.97, 'rogers_centre': 1.10, 'tropicana_field': 0.85,
@@ -18,13 +17,6 @@ park_hr_rate_map = {
     'pnc_park': 0.87, 'busch_stadium': 0.87, 'truist_park': 1.06, 'loan_depot_park': 0.86,
     'loandepot_park': 0.86, 'citi_field': 1.05, 'nationals_park': 1.05, 'petco_park': 0.85,
     'chase_field': 1.06, 'citizens_bank_park': 1.19, 'sutter_health_park': 1.12, 'target_field': 1.05
-}
-park_hand_hr_rate = {
-    'yankee_stadium': {'L': 1.28, 'R': 1.12}, 'fenway_park': {'L': 0.93, 'R': 1.01}, 'coors_field': {'L': 1.37, 'R': 1.26},
-    'rogers_centre': {'L': 1.12, 'R': 1.10}, 'guaranteed_rate_field': {'L': 1.14, 'R': 1.22}, 'camden_yards': {'L': 1.16, 'R': 1.09},
-    'dodger_stadium': {'L': 1.14, 'R': 1.08}, 'busch_stadium': {'L': 0.85, 'R': 0.89}, 'wrigley_field': {'L': 1.16, 'R': 1.10},
-    'petco_park': {'L': 0.83, 'R': 0.86}, 'minute_maid_park': {'L': 1.08, 'R': 1.04}, 't-mobile_park': {'L': 0.88, 'R': 0.84},
-    'oracle_park': {'L': 0.80, 'R': 0.85}
 }
 park_altitude_map = {
     'coors_field': 5280, 'chase_field': 1100, 'dodger_stadium': 338, 'minute_maid_park': 50,
@@ -63,22 +55,10 @@ mlb_team_city_map = {
     'TEX': 'Arlington', 'TOR': 'Toronto', 'WSH': 'Washington', 'WAS': 'Washington'
 }
 
-league_avg_hr_rate = 0.030
-pitchtype_hr_rate = {
-    'ff': 0.040, 'sl': 0.033, 'cu': 0.024, 'ch': 0.019, 'si': 0.029,
-    'fc': 0.027, 'fs': 0.020, 'st': 0.018, 'sinker': 0.029, 'splitter': 0.021, 'sweeper': 0.017
-}
-pitchtype_hr_rate_by_hand = {
-    'ff': {'L': 0.043, 'R': 0.038}, 'sl': {'L': 0.029, 'R': 0.036},
-    'cu': {'L': 0.022, 'R': 0.025}, 'ch': {'L': 0.021, 'R': 0.018}, 'si': {'L': 0.031, 'R': 0.028}
-}
-platoon_hr_rate = {'L_vs_R': 0.035, 'L_vs_L': 0.025, 'R_vs_L': 0.041, 'R_vs_R': 0.027}
-
 def dedup_columns(df):
     return df.loc[:, ~df.columns.duplicated()]
 
 def parse_custom_weather_string_v2(s):
-    # Returns: temp, wind_vector, wind_field_dir, wind_mph, humidity, condition, wind_dir_string
     if pd.isna(s): return pd.Series([np.nan]*7, index=['temp','wind_vector','wind_field_dir','wind_mph','humidity','condition','wind_dir_string'])
     s = str(s)
     temp_match = re.search(r'(\d{2,3})\s*[OI°]?\s', s)
@@ -100,56 +80,39 @@ def parse_custom_weather_string_v2(s):
     return pd.Series([temp, wind_vector, wind_field_dir, wind_mph, humidity, condition, wind_dir_string],
                      index=['temp','wind_vector','wind_field_dir','wind_mph','humidity','condition','wind_dir_string'])
 
-# ============= WEATHER API FUNCTIONS =============
-def get_weatherapi_obs(city, date, api_key):
-    # WeatherAPI expects: YYYY-MM-DD and city string
-    url = f"https://api.weatherapi.com/v1/history.json?key={api_key}&q={city}&dt={date}"
-    for _ in range(2):  # simple retry
-        try:
-            resp = requests.get(url, timeout=8)
-            if resp.status_code == 200:
-                data = resp.json()
-                if "forecast" in data:
-                    day = data["forecast"]["forecastday"][0]["day"]
-                    hour_data = data["forecast"]["forecastday"][0]["hour"]
-                    # Approx MLB game start 19:00 or nearest hour
-                    target_hour = None
-                    for h in hour_data:
-                        if int(h["time"].split(" ")[1].split(":")[0]) == 19:
-                            target_hour = h
-                            break
-                    if not target_hour:
-                        target_hour = hour_data[12]  # fallback to midday
-                    return {
-                        "temp": target_hour.get("temp_f"),
-                        "humidity": target_hour.get("humidity"),
-                        "wind_mph": target_hour.get("wind_mph"),
-                        "wind_dir_string": target_hour.get("wind_dir"),
-                        "condition": day.get("condition", {}).get("text", ""),
-                    }
-        except Exception as e:
-            time.sleep(1)
-    return {
-        "temp": np.nan, "humidity": np.nan, "wind_mph": np.nan, "wind_dir_string": np.nan, "condition": np.nan
+# ------------- WEATHER API FUNCTION (for event-level) ---------------
+def get_historical_weather_api(date, city, time="19:00"):
+    """ Fetch weather for date/city/time via WeatherAPI. Return dictionary matching our weather columns. """
+    key = st.secrets["weatherapi"]["key"]
+    endpoint = f"http://api.weatherapi.com/v1/history.json"
+    params = {
+        "key": key,
+        "q": city,
+        "dt": date,
     }
-
-@st.cache_data(show_spinner=True)
-def batch_fetch_weatherapi(df, city_col, date_col, api_key):
-    # Caches historical API pulls per city/date
-    cache = {}
-    weather_results = []
-    for idx, row in df.iterrows():
-        city = row[city_col]
-        date = row[date_col]
-        key = (city, date)
-        if key not in cache:
-            obs = get_weatherapi_obs(city, date, api_key)
-            cache[key] = obs
-            time.sleep(1.0)  # avoid rate limit
-        weather_results.append(cache[key])
-    weather_df = pd.DataFrame(weather_results)
-    weather_df.index = df.index
-    return weather_df
+    try:
+        r = requests.get(endpoint, params=params, timeout=8)
+        if r.status_code != 200:
+            return {k: np.nan for k in ['temp','wind_mph','humidity','condition','wind_dir_string']}
+        data = r.json()
+        # Find hour record closest to requested time
+        hr = int(time.split(":")[0])
+        hourly = data["forecast"]["forecastday"][0]["hour"]
+        best_hr = min(hourly, key=lambda x: abs(x["time"].split(" ")[1][:2] and int(x["time"].split(" ")[1][:2]) - hr))
+        temp = best_hr["temp_f"]
+        wind_mph = best_hr["wind_mph"]
+        humidity = best_hr["humidity"]
+        condition = best_hr["condition"]["text"].lower()
+        wind_dir_string = best_hr["wind_dir"]
+        return {
+            "temp": temp,
+            "wind_mph": wind_mph,
+            "humidity": humidity,
+            "condition": condition,
+            "wind_dir_string": wind_dir_string
+        }
+    except Exception as e:
+        return {k: np.nan for k in ['temp','wind_mph','humidity','condition','wind_dir_string']}
 
 @st.cache_data(show_spinner=True)
 def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix=""):
@@ -225,11 +188,10 @@ with tab1:
 
     st.markdown("##### Upload Today's Matchups/Lineups CSV (required for TODAY CSV)")
     uploaded_lineups = st.file_uploader("Upload Today's Matchups CSV", type="csv", key="lineupsup")
-    weatherapi_key = st.text_input("Enter your WeatherAPI key for event-level weather (required)", type="password")
     fetch_btn = st.button("Fetch Statcast, Feature Engineer, and Download", type="primary")
     progress = st.empty()
 
-    if fetch_btn and uploaded_lineups is not None and weatherapi_key:
+    if fetch_btn and uploaded_lineups is not None:
         progress.progress(3, "Fetching Statcast data...")
         df = statcast(start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
         progress.progress(10, "Loaded Statcast")
@@ -249,6 +211,8 @@ with tab1:
             st.error(f"Could not read lineup CSV: {e}")
             st.stop()
         lineup_df.columns = [str(c).strip().lower().replace(" ", "_") for c in lineup_df.columns]
+        if "park" in lineup_df.columns:
+            lineup_df["park"] = lineup_df["park"].astype(str).str.lower().str.replace(" ", "_")
         for col in ['mlb_id', 'batter_id', 'batter']:
             if col in lineup_df.columns and 'batter_id' not in lineup_df.columns:
                 lineup_df['batter_id'] = lineup_df[col]
@@ -271,7 +235,7 @@ with tab1:
             if col in lineup_df.columns:
                 lineup_df[col] = lineup_df[col].astype(str).str.replace('.0','',regex=False).str.strip()
 
-        # ==== Parse Weather Fields from Weather String (TODAY ONLY) ====
+        # ==== Parse Weather Fields from Weather String (for TODAY CSV only) ====
         if 'weather' in lineup_df.columns:
             wx_parsed = lineup_df['weather'].apply(parse_custom_weather_string_v2)
             lineup_df = pd.concat([lineup_df, wx_parsed], axis=1)
@@ -315,28 +279,21 @@ with tab1:
             if col in df.columns:
                 df[col] = df[col].astype(str).str.replace('.0','',regex=False).str.strip()
 
-        # Add park, city, context (UPPER for all codes)
-        # Park from matchup CSV preferred
-        if 'park' not in lineup_df.columns and 'team_code' in lineup_df.columns:
-            lineup_df['park'] = lineup_df['team_code'].map(team_code_to_park).str.replace("_", " ").str.title()
-        elif 'park' in lineup_df.columns:
-            lineup_df['park'] = lineup_df['park'].astype(str).str.strip()
-        # Map city from team code (for weather)
-        if 'city' not in lineup_df.columns and 'team_code' in lineup_df.columns:
-            lineup_df['city'] = lineup_df['team_code'].map(mlb_team_city_map)
-
-        # Fill missing parks in Statcast using mapped team code
+        # Add park/city/context from team code
         if 'home_team_code' in df.columns:
             df['team_code'] = df['home_team_code'].str.upper()
-        df['park'] = df['team_code'].map(team_code_to_park).str.replace("_", " ").str.title()
-        df['city'] = df['team_code'].map(mlb_team_city_map)
-        df['park_hr_rate'] = df['park'].str.lower().str.replace(" ", "_").map(park_hr_rate_map).fillna(1.0)
-        df['park_altitude'] = df['park'].str.lower().str.replace(" ", "_").map(park_altitude_map).fillna(0)
-        df['roof_status'] = df['park'].str.lower().str.replace(" ", "_").map(roof_status_map).fillna("open")
-        df['park_hand_hr_rate'] = df['park'].str.lower().str.replace(" ", "_").map(park_hand_hr_rate)
-        df['pitchtype_hr_rate'] = str(pitchtype_hr_rate)
-        df['pitchtype_hr_rate_hand'] = str(pitchtype_hr_rate_by_hand)
-        df['platoon_hr_rate'] = str(platoon_hr_rate)
+            df['park'] = df['home_team_code'].str.lower().str.replace(' ', '_')
+        if 'home_team' in df.columns and 'park' not in df.columns:
+            df['park'] = df['home_team'].str.lower().str.replace(' ', '_')
+        if 'team_code' not in df.columns and 'park' in df.columns:
+            park_to_team = {v:k for k,v in team_code_to_park.items()}
+            df['team_code'] = df['park'].map(park_to_team).str.upper()
+        df['team_code'] = df['team_code'].astype(str).str.upper()
+        df['park'] = df['team_code'].map(team_code_to_park).str.lower()
+        df['park_hr_rate'] = df['park'].map(park_hr_rate_map).fillna(1.0)
+        df['park_altitude'] = df['park'].map(park_altitude_map).fillna(0)
+        df['roof_status'] = df['park'].map(roof_status_map).fillna("open")
+        df['city'] = df['team_code'].map(mlb_team_city_map).fillna("")
 
         # HR outcome flag
         if 'events' in df.columns:
@@ -382,49 +339,59 @@ with tab1:
             df = df.drop(columns=['batter_id_pitcherstat'])
         df = dedup_columns(df)
 
-        # ==== EVENT-LEVEL WEATHER: WeatherAPI historical by city/date ====
-        progress.progress(30, "Fetching historical weather for event-level features...")
-        # Fill city if missing
-        if "city" not in df.columns and "team_code" in df.columns:
-            df['city'] = df['team_code'].map(mlb_team_city_map)
-        wx_df = batch_fetch_weatherapi(df, "city", "game_date", weatherapi_key)
-        for col in wx_df.columns:
-            df[col] = wx_df[col]
-        df = dedup_columns(df)
-
-        # ========== WEATHER AUDIT REPORT (EVENT-LEVEL, ONLY) ===========
-        weather_cols = ['temp','humidity','wind_mph','wind_dir_string','condition']
-        event_weather_audit = []
+        # ==== EVENT-LEVEL WEATHER MERGE (WeatherAPI) ====
+        progress.progress(30, "Merging WeatherAPI weather to events and running audit...")
+        event_weather = []
         for idx, row in df.iterrows():
-            wx_status = "FOUND"
+            city = row.get("city", "")
+            date = row.get("game_date", "")
+            wx_dict = get_historical_weather_api(date, city)
+            out_row = {
+                "event_idx": idx,
+                "batter_id": row.get("batter_id", ""),
+                "player_name": row.get("player_name", ""),
+                "team_code": row.get("team_code", ""),
+                "game_date": row.get("game_date", ""),
+                "park": row.get("park", ""),
+                "city": row.get("city", ""),
+            }
+            out_row.update(wx_dict)
+            event_weather.append(out_row)
+            # Optional: st.write(f"Fetched weather for event {idx}: {wx_dict}")
+        wx_event_df = pd.DataFrame(event_weather)
+        # Merge event weather back into event df
+        df = pd.concat([df.reset_index(drop=True), wx_event_df[['temp','humidity','wind_mph','condition','wind_dir_string']]], axis=1)
+        df = dedup_columns(df)
+        
+        # === EVENT LEVEL WEATHER AUDIT ===
+        weather_audit_rows = []
+        for idx, row in df.iterrows():
             missing_cols = []
-            for wxcol in weather_cols:
-                val = row.get(wxcol, np.nan)
+            for c in ['temp', 'humidity', 'wind_mph', 'condition', 'wind_dir_string']:
+                val = row.get(c, np.nan)
                 if pd.isna(val) or val == "":
-                    wx_status = "MISSING"
-                    missing_cols.append(wxcol)
-            event_weather_audit.append({
-                'event_idx': idx,
-                'batter_id': row.get('batter_id', ''),
-                'player_name': row.get('player_name',''),
-                'team_code': row.get('team_code',''),
-                'game_date': row.get('game_date',''),
-                'park': row.get('park',''),
-                'city': row.get('city',''),
-                'weather_status': wx_status,
-                'missing_weather_cols': ", ".join(missing_cols)
+                    missing_cols.append(c)
+            weather_audit_rows.append({
+                "event_idx": idx,
+                "batter_id": row.get("batter_id", ""),
+                "player_name": row.get("player_name", ""),
+                "team_code": row.get("team_code", ""),
+                "game_date": row.get("game_date", ""),
+                "park": row.get("park", ""),
+                "city": row.get("city", ""),
+                "weather_status": "MISSING" if missing_cols else "FOUND",
+                "missing_weather_cols": ", ".join(missing_cols)
             })
-        weather_audit_df = pd.DataFrame(event_weather_audit)
-        st.markdown("##### Weather & Context Merge Audit (first 15 rows):")
+        weather_audit_df = pd.DataFrame(weather_audit_rows)
+        st.markdown("##### Event-Level Weather Audit (first 15 rows):")
         st.dataframe(weather_audit_df.head(15))
         st.download_button(
-            "⬇️ Download Full Weather Audit CSV",
+            "⬇️ Download Full Event-Level Weather Audit CSV",
             data=weather_audit_df.to_csv(index=False),
             file_name="event_level_weather_audit.csv",
             key="download_event_level_weather_audit"
         )
 
-        df = dedup_columns(df)
         progress.progress(80, "Event-level feature engineering/merges complete.")
 
         # =================== OUTPUTS =======================
@@ -438,14 +405,13 @@ with tab1:
             key="download_event_level"
         )
 
-        # ===== TODAY CSV: 1 row per batter, all rolling/context features, WEATHER ONLY FROM LINEUP CSV PARSED STRING =====
+        # ===== TODAY CSV: 1 row per batter with all rolling/context features and WEATHER FROM LINEUP CSV =====
         progress.progress(95, "Generating TODAY batter rows and context merges...")
         rolling_feature_cols = [col for col in df.columns if (
             col.startswith('b_') or col.startswith('p_')
         ) and any(str(w) in col for w in roll_windows)]
         extra_context_cols = [
-            'park', 'park_hr_rate', 'park_altitude', 'roof_status', 'city',
-            'park_hand_hr_rate', 'pitchtype_hr_rate', 'pitchtype_hr_rate_hand', 'platoon_hr_rate'
+            'park', 'park_hr_rate', 'park_altitude', 'roof_status', 'city'
         ]
         today_cols = [
             'game_date', 'batter_id', 'player_name', 'pitcher_id',
@@ -455,23 +421,34 @@ with tab1:
         today_rows = []
         for idx, row in lineup_df.iterrows():
             this_batter_id = str(row['batter_id']).split(".")[0]
+            park = row.get("park", np.nan)
+            city = row.get("city", np.nan)
+            team_code = row.get("team_code", np.nan)
+            game_date = row.get("game_date", np.nan)
+            pitcher_id = row.get("pitcher_id", np.nan)
+            player_name = row.get("player_name", np.nan)
+            # Rolling/context: from last available event
             filter_df = df[df['batter_id'].astype(str).str.split('.').str[0] == this_batter_id]
-            # Get most recent stats/context/weather for this batter
-            row_out = {c: np.nan for c in today_cols}
             if not filter_df.empty:
                 last_row = filter_df.iloc[-1]
-                for c in extra_context_cols + rolling_feature_cols:
-                    row_out[c] = last_row.get(c, np.nan)
-            # Now, grab weather ONLY from lineup_df parsed weather string
-            for wcol in ['temp','humidity','wind_mph','wind_dir_string','condition']:
-                if wcol in row:
-                    row_out[wcol] = row[wcol]
-            row_out['player_name'] = row.get('player_name', np.nan)
-            row_out['batter_id'] = this_batter_id
-            row_out['pitcher_id'] = row.get('pitcher_id', np.nan)
-            row_out['game_date'] = row.get('game_date', np.nan)
-            row_out['park'] = row.get('park', np.nan)
-            row_out['city'] = row.get('city', np.nan)
+                row_out = {c: last_row.get(c, np.nan) for c in rolling_feature_cols}
+            else:
+                row_out = {c: np.nan for c in rolling_feature_cols}
+            # Context
+            row_out.update({
+                "game_date": game_date,
+                "batter_id": this_batter_id,
+                "player_name": player_name,
+                "pitcher_id": pitcher_id,
+                "park": park,
+                "park_hr_rate": park_hr_rate_map.get(str(park).lower(), 1.0) if not pd.isna(park) else 1.0,
+                "park_altitude": park_altitude_map.get(str(park).lower(), 0) if not pd.isna(park) else 0,
+                "roof_status": roof_status_map.get(str(park).lower(), "open") if not pd.isna(park) else "open",
+                "city": city if not pd.isna(city) else mlb_team_city_map.get(team_code, ""),
+            })
+            # Weather: from parsed weather string in lineup_df
+            for c in ['temp', 'humidity', 'wind_mph', 'wind_dir_string', 'condition']:
+                row_out[c] = row.get(c, np.nan)
             today_rows.append(row_out)
 
         today_df = pd.DataFrame(today_rows, columns=today_cols)
@@ -488,4 +465,4 @@ with tab1:
         progress.progress(100, "All complete.")
 
     else:
-        st.info("Upload a Matchups/Lineups CSV, enter your WeatherAPI key, and select a date range to generate the event-level and TODAY CSVs.")
+        st.info("Upload a Matchups/Lineups CSV and select a date range to generate the event-level and TODAY CSVs.")
