@@ -426,7 +426,8 @@ with tab1:
                     row_out[c] = np.nan
             today_rows.append(row_out)
         today_df = pd.DataFrame(today_rows, columns=today_cols)
-
+        today_df = pd.DataFrame(today_rows, columns=today_cols)
+        today_df = today_df.loc[:, ~today_df.columns.duplicated()]  # <--- ADD THIS LINE
         # ==== TODAY CSV Diagnostics ====
         st.markdown("##### TODAY CSV Weather/Context Audit (first 15 rows):")
         context_null = today_df[['batter_id', 'player_name', 'game_date', 'park', 'city', 'temp', 'humidity', 'wind_mph', 'wind_dir_string', 'condition']].isnull().sum()
