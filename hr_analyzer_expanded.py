@@ -5,7 +5,11 @@ import re
 from pybaseball import statcast
 from datetime import datetime, timedelta
 
-# ===================== CONTEXT MAPS & RATES =====================
+# ========== CONTEXT MAPS & RATES ==========
+def to_snake_case(x):
+    if pd.isna(x): return ""
+    return str(x).lower().replace(" ", "_").replace("-", "_").replace(".", "").replace("'", "")
+
 park_hr_rate_map = {
     'angels_stadium': 1.05, 'angel_stadium': 1.05, 'minute_maid_park': 1.06, 'coors_field': 1.30,
     'yankee_stadium': 1.19, 'fenway_park': 0.97, 'rogers_centre': 1.10, 'tropicana_field': 0.85,
@@ -18,12 +22,18 @@ park_hr_rate_map = {
     'chase_field': 1.06, 'citizens_bank_park': 1.19, 'sutter_health_park': 1.12, 'target_field': 1.05
 }
 park_hand_hr_rate = {
-    'yankee_stadium': {'L': 1.28, 'R': 1.12}, 'fenway_park': {'L': 0.93, 'R': 1.01},
-    'coors_field': {'L': 1.37, 'R': 1.26}, 'rogers_centre': {'L': 1.12, 'R': 1.10},
-    'guaranteed_rate_field': {'L': 1.14, 'R': 1.22}, 'camden_yards': {'L': 1.16, 'R': 1.09},
-    'dodger_stadium': {'L': 1.14, 'R': 1.08}, 'busch_stadium': {'L': 0.85, 'R': 0.89},
-    'wrigley_field': {'L': 1.16, 'R': 1.10}, 'petco_park': {'L': 0.83, 'R': 0.86},
-    'minute_maid_park': {'L': 1.08, 'R': 1.04}, 't-mobile_park': {'L': 0.88, 'R': 0.84},
+    'yankee_stadium': {'L': 1.28, 'R': 1.12},
+    'fenway_park': {'L': 0.93, 'R': 1.01},
+    'coors_field': {'L': 1.37, 'R': 1.26},
+    'rogers_centre': {'L': 1.12, 'R': 1.10},
+    'guaranteed_rate_field': {'L': 1.14, 'R': 1.22},
+    'camden_yards': {'L': 1.16, 'R': 1.09},
+    'dodger_stadium': {'L': 1.14, 'R': 1.08},
+    'busch_stadium': {'L': 0.85, 'R': 0.89},
+    'wrigley_field': {'L': 1.16, 'R': 1.10},
+    'petco_park': {'L': 0.83, 'R': 0.86},
+    'minute_maid_park': {'L': 1.08, 'R': 1.04},
+    't-mobile_park': {'L': 0.88, 'R': 0.84},
     'oracle_park': {'L': 0.80, 'R': 0.85},
 }
 park_altitude_map = {
@@ -77,6 +87,7 @@ def dedup_columns(df):
     return df.loc[:, ~df.columns.duplicated()]
 
 def parse_custom_weather_string_v2(s):
+    # Returns: temp, wind_vector, wind_field_dir, wind_mph, humidity, condition, wind_dir_string
     if pd.isna(s): return pd.Series([np.nan]*7, index=['temp','wind_vector','wind_field_dir','wind_mph','humidity','condition','wind_dir_string'])
     s = str(s)
     temp_match = re.search(r'(\d{2,3})\s*[OI°]?\s', s)
@@ -187,6 +198,7 @@ with tab1:
             df['game_date'] = pd.to_datetime(df['game_date'], errors='coerce').dt.strftime('%Y-%m-%d')
         progress.progress(12, "Loaded and formatted Statcast columns.")
 
+        # --- Read and clean lineups ---
         try:
             lineup_df = pd.read_csv(uploaded_lineups)
         except Exception as e:
@@ -214,13 +226,15 @@ with tab1:
         for col in ['batter_id', 'mlb_id']:
             if col in lineup_df.columns:
                 lineup_df[col] = lineup_df[col].astype(str).str.replace('.0','',regex=False).str.strip()
+        if 'park' in lineup_df.columns:
+            lineup_df['park'] = lineup_df['park'].astype(str).apply(to_snake_case)
 
-        # ==== Parse Weather Fields from Weather String ====
+        # Parse weather
         if 'weather' in lineup_df.columns:
             wx_parsed = lineup_df['weather'].apply(parse_custom_weather_string_v2)
             lineup_df = pd.concat([lineup_df, wx_parsed], axis=1)
 
-        # ==== Assign Opposing SP for Each Batter ====
+        # Assign opposing pitcher
         progress.progress(14, "Assigning opposing pitcher for each batter in lineup...")
         pitcher_col_assigned = False
         if {'game_date', 'game_number', 'team_code', 'mlb_id', 'batting_order'}.issubset(set(lineup_df.columns)):
@@ -254,10 +268,10 @@ with tab1:
 
         # ==== STATCAST EVENT-LEVEL ENGINEERING ====
         progress.progress(18, "Adding park/city/context and cleaning Statcast event data...")
+
         for col in ['batter_id', 'mlb_id', 'pitcher_id', 'team_code']:
             if col in df.columns:
                 df[col] = df[col].astype(str).str.replace('.0','',regex=False).str.strip()
-
         if 'home_team_code' in df.columns:
             df['team_code'] = df['home_team_code'].str.upper()
             df['park'] = df['home_team_code'].str.lower().str.replace(' ', '_')
@@ -267,7 +281,16 @@ with tab1:
             park_to_team = {v:k for k,v in team_code_to_park.items()}
             df['team_code'] = df['park'].map(park_to_team).str.upper()
         df['team_code'] = df['team_code'].astype(str).str.upper()
-        df['park'] = df['team_code'].map(team_code_to_park).str.lower()
+
+        # Always use park from lineup_df if present and not missing for merge
+        if 'park' in lineup_df.columns:
+            park_lookup = lineup_df[['game_date', 'team_code', 'park']].drop_duplicates()
+            df = pd.merge(df, park_lookup, on=['game_date', 'team_code'], how='left', suffixes=('', '_from_lineup'))
+            df['park'] = df['park_from_lineup'].combine_first(df['park'])
+            if 'park_from_lineup' in df.columns:
+                df = df.drop(columns=['park_from_lineup'])
+
+        df['park'] = df['park'].astype(str).apply(to_snake_case)
         df['park_hr_rate'] = df['park'].map(park_hr_rate_map).fillna(1.0)
         df['park_altitude'] = df['park'].map(park_altitude_map).fillna(0)
         df['roof_status'] = df['park'].map(roof_status_map).fillna("open")
@@ -322,22 +345,20 @@ with tab1:
         df = dedup_columns(df)
 
         # ==== MERGE WEATHER/CONTEXT FROM LINEUPS ====
-        progress.progress(30, "Merging weather/context from lineups to events and auditing merge...")
+        progress.progress(30, "Merging weather/context from lineups to events and auditing weather...")
         weather_cols = ['game_date','team_code','temp','wind_vector','wind_field_dir','wind_mph','humidity','condition','wind_dir_string']
         for c in weather_cols:
             if c not in lineup_df.columns:
                 lineup_df[c] = np.nan
-        weather_merge = lineup_df[weather_cols + ['park', 'city']].drop_duplicates()
+        weather_merge = lineup_df[weather_cols].drop_duplicates()
         df['team_code'] = df['team_code'].astype(str).str.upper()
         weather_merge['team_code'] = weather_merge['team_code'].astype(str).str.upper()
         df['game_date'] = df['game_date'].astype(str).str.strip()
         weather_merge['game_date'] = weather_merge['game_date'].astype(str).str.strip()
 
-        merged_df = pd.merge(df, weather_merge, how='left', on=['game_date','team_code'], suffixes=('','_wx'))
-        merged_df = dedup_columns(merged_df)
-
         # ========== WEATHER AUDIT REPORT ===========
         event_weather_audit = []
+        merged_df = pd.merge(df, weather_merge, how='left', on=['game_date','team_code'], suffixes=('','_wx'))
         for idx, row in merged_df.iterrows():
             wx_status = "FOUND"
             missing_cols = []
@@ -358,72 +379,100 @@ with tab1:
                 'missing_weather_cols': ", ".join(missing_cols)
             })
         weather_audit_df = pd.DataFrame(event_weather_audit)
-        st.markdown("#### Event-Level Weather & Context Merge Audit (first 15 rows):")
+        st.markdown("#### Weather & Context Merge Audit (first 15 rows):")
         st.dataframe(weather_audit_df.head(15))
         st.download_button(
-            "⬇️ Download Full Event Weather Audit CSV",
+            "⬇️ Download Full Weather Audit CSV",
             data=weather_audit_df.to_csv(index=False),
-            file_name="event_weather_audit_report.csv",
-            key="download_event_weather_audit"
+            file_name="weather_audit_report.csv",
+            key="download_weather_audit"
         )
 
-        merged_df = dedup_columns(merged_df)
+        df = merged_df
+        df = dedup_columns(df)
         progress.progress(80, "Event-level feature engineering/merges complete.")
 
         # =================== OUTPUTS =======================
-        st.success(f"Feature engineering complete! {len(merged_df)} batted ball events.")
+        st.success(f"Feature engineering complete! {len(df)} batted ball events.")
         st.markdown("#### Download Event-Level CSV (all features, 1 row per batted ball event):")
-        st.dataframe(merged_df.head(20))
+        st.dataframe(df.head(20))
         st.download_button(
             "⬇️ Download Event-Level CSV",
-            data=merged_df.to_csv(index=False),
+            data=df.to_csv(index=False),
             file_name="event_level_hr_features.csv",
             key="download_event_level"
         )
 
         # ===== TODAY CSV: 1 row per batter with all rolling/context features =====
         progress.progress(95, "Generating TODAY batter rows and context merges...")
-        roll_windows = [3, 5, 7, 14, 20]
-        rolling_feature_cols = [col for col in merged_df.columns if (
-            col.startswith('b_') or col.startswith('p_')
-        ) and any(str(w) in col for w in roll_windows)]
+
+        # Get park/context columns from lineup_df if present
+        park_map_cols = [
+            'batter_id', 'player_name', 'team_code', 'game_date', 'park'
+        ]
+        # Make a mapping of park to all context (hr_rate, altitude, etc.)
+        def get_park_context(park_str, team_code):
+            pkey = to_snake_case(park_str)
+            return {
+                'park': park_str if park_str else "",
+                'park_hr_rate': park_hr_rate_map.get(pkey, 1.0),
+                'park_altitude': park_altitude_map.get(pkey, 0),
+                'roof_status': roof_status_map.get(pkey, "open"),
+                'city': mlb_team_city_map.get(str(team_code).upper(), ""),
+                'park_hand_hr_rate': park_hand_hr_rate.get(pkey, np.nan)
+            }
+
         extra_context_cols = [
             'park', 'park_hr_rate', 'park_altitude', 'roof_status', 'city',
             'park_hand_hr_rate', 'pitchtype_hr_rate', 'pitchtype_hr_rate_hand', 'platoon_hr_rate'
         ]
+
+        rolling_feature_cols = [col for col in df.columns if (
+            col.startswith('b_') or col.startswith('p_')
+        ) and any(str(w) in col for w in [3,5,7,14,20])]
         today_cols = [
             'game_date', 'batter_id', 'player_name', 'pitcher_id',
             'temp', 'humidity', 'wind_mph', 'wind_dir_string', 'condition'
         ] + extra_context_cols + rolling_feature_cols
 
-        # Get park and city from lineup, not merged_df
         today_rows = []
         for idx, row in lineup_df.iterrows():
             this_batter_id = str(row['batter_id']).split(".")[0]
-            filter_df = merged_df[merged_df['batter_id'].astype(str).str.split('.').str[0] == this_batter_id]
-            row_out = {}
+            filter_df = df[df['batter_id'].astype(str).str.split('.').str[0] == this_batter_id]
+            # Get most recent stats/context/weather for this batter
             if not filter_df.empty:
                 last_row = filter_df.iloc[-1]
-                for c in today_cols:
-                    if c in row:
-                        row_out[c] = row[c]   # Prefer from lineup_df for park/city
-                    elif c in last_row:
-                        row_out[c] = last_row[c]
-                    else:
-                        row_out[c] = np.nan
+                row_out = {c: last_row.get(c, np.nan) for c in today_cols}
                 row_out['player_name'] = row.get('player_name', np.nan)
                 row_out['batter_id'] = this_batter_id
                 row_out['pitcher_id'] = row.get('pitcher_id', np.nan)
                 row_out['game_date'] = row.get('game_date', np.nan)
+                # Now fill in park/context directly from lineup_df if present
+                park_ctx = get_park_context(row.get('park', ""), row.get('team_code', ""))
+                for pcol in ['park', 'park_hr_rate', 'park_altitude', 'roof_status', 'city', 'park_hand_hr_rate']:
+                    row_out[pcol] = park_ctx.get(pcol, np.nan)
+                # These mappings are global, always present
+                row_out['pitchtype_hr_rate'] = str(pitchtype_hr_rate)
+                row_out['pitchtype_hr_rate_hand'] = str(pitchtype_hr_rate_by_hand)
+                row_out['platoon_hr_rate'] = str(platoon_hr_rate)
+                today_rows.append(row_out)
             else:
-                for c in today_cols:
-                    row_out[c] = row.get(c, np.nan)
+                # If not found in df, fallback to lineup context for park/weather columns
+                row_out = {c: np.nan for c in today_cols}
+                row_out['player_name'] = row.get('player_name', np.nan)
                 row_out['batter_id'] = this_batter_id
-            today_rows.append(row_out)
+                row_out['pitcher_id'] = row.get('pitcher_id', np.nan)
+                row_out['game_date'] = row.get('game_date', np.nan)
+                park_ctx = get_park_context(row.get('park', ""), row.get('team_code', ""))
+                for pcol in ['park', 'park_hr_rate', 'park_altitude', 'roof_status', 'city', 'park_hand_hr_rate']:
+                    row_out[pcol] = park_ctx.get(pcol, np.nan)
+                row_out['pitchtype_hr_rate'] = str(pitchtype_hr_rate)
+                row_out['pitchtype_hr_rate_hand'] = str(pitchtype_hr_rate_by_hand)
+                row_out['platoon_hr_rate'] = str(platoon_hr_rate)
+                today_rows.append(row_out)
 
         today_df = pd.DataFrame(today_rows, columns=today_cols)
         today_df = dedup_columns(today_df)
-
         st.markdown("#### Download TODAY CSV (1 row per batter, matchup, rolling features & weather):")
         st.dataframe(today_df.head(20))
         st.download_button(
@@ -432,7 +481,7 @@ with tab1:
             file_name="today_hr_features.csv",
             key="download_today_csv"
         )
-        st.success("All files and event weather debug ready.")
+        st.success("All files and event-level weather diagnostic ready.")
         progress.progress(100, "All complete.")
 
     else:
