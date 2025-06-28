@@ -339,7 +339,7 @@ with tab1:
 
         # ==== MERGE WEATHER/CONTEXT FROM LINEUPS ====
         progress.progress(30, "Merging weather/context from lineups to events and auditing merge...")
-        weather_cols = ['game_date','team_code','temp','wind_vector','wind_field_dir','wind_mph','humidity','condition','wind_dir_string','park','city']
+        weather_cols = ['game_date','team_code','temp','wind_vector','wind_field_dir','wind_mph','humidity','condition','wind_dir_string']
         for c in weather_cols:
             if c not in lineup_df.columns:
                 lineup_df[c] = np.nan
@@ -352,10 +352,11 @@ with tab1:
         # ========== WEATHER & CONTEXT AUDIT REPORT ===========
         event_weather_audit = []
         merged_df = pd.merge(df, weather_merge, how='left', on=['game_date','team_code'], suffixes=('','_wx'))
+        merged_df = dedup_columns(merged_df)
         for idx, row in merged_df.iterrows():
             wx_status = "FOUND"
             missing_cols = []
-            for wxcol in ['temp','humidity','wind_mph','wind_dir_string','condition','park','city']:
+            for wxcol in ['temp','humidity','wind_mph','wind_dir_string','condition']:
                 val = row.get(wxcol, np.nan)
                 if pd.isna(val) or val == "":
                     wx_status = "MISSING"
@@ -375,7 +376,7 @@ with tab1:
         st.markdown("##### Weather & Context Merge Audit (first 15 rows):")
         st.dataframe(weather_audit_df.head(15))
         st.download_button(
-            "⬇️ Download Full Weather Audit CSV",
+            "⬇️ Download Full Weather & Context Audit CSV",
             data=weather_audit_df.to_csv(index=False),
             file_name="weather_audit_report.csv",
             key="download_weather_audit"
@@ -398,11 +399,12 @@ with tab1:
             key="download_event_level"
         )
 
-        # ===== TODAY CSV: 1 row per batter with all rolling/context features from lineup (not from last event row) =====
+        # ===== TODAY CSV: 1 row per batter with all rolling/context features =====
         progress.progress(95, "Generating TODAY batter rows and context merges...")
         rolling_feature_cols = [col for col in df.columns if (
             col.startswith('b_') or col.startswith('p_')
         ) and any(str(w) in col for w in roll_windows)]
+        # All context/weather columns you want in final
         extra_context_cols = [
             'park', 'park_hr_rate', 'park_altitude', 'roof_status', 'city',
             'park_hand_hr_rate', 'pitchtype_hr_rate', 'pitchtype_hr_rate_hand', 'platoon_hr_rate'
@@ -411,28 +413,63 @@ with tab1:
             'game_date', 'batter_id', 'player_name', 'pitcher_id',
             'temp', 'humidity', 'wind_mph', 'wind_dir_string', 'condition', 'park', 'city'
         ] + extra_context_cols + rolling_feature_cols
+
         today_rows = []
+        today_weather_audit = []
         for idx, row in lineup_df.iterrows():
             this_batter_id = str(row['batter_id']).split(".")[0]
             filter_df = df[df['batter_id'].astype(str).str.split('.').str[0] == this_batter_id]
-            # Merge all context/weather from lineup row, rolling features from event-level
-            row_out = {c: row.get(c, np.nan) for c in ['game_date', 'batter_id', 'player_name', 'pitcher_id', 'temp', 'humidity', 'wind_mph', 'wind_dir_string', 'condition', 'park', 'city']}
+            # Get most recent stats/context/weather for this batter
             if not filter_df.empty:
                 last_row = filter_df.iloc[-1]
-                for c in extra_context_cols + rolling_feature_cols:
-                    row_out[c] = last_row.get(c, np.nan)
+                row_out = {c: last_row.get(c, np.nan) for c in today_cols}
+                # Ensure city/park are still populated
+                if pd.isna(row_out.get('city','')) or row_out.get('city','') == '':
+                    row_out['city'] = lineup_df[lineup_df['batter_id']==row['batter_id']].get('city', np.nan)
+                if pd.isna(row_out.get('park','')) or row_out.get('park','') == '':
+                    row_out['park'] = lineup_df[lineup_df['batter_id']==row['batter_id']].get('park', np.nan)
+                row_out['player_name'] = row.get('player_name', np.nan)
+                row_out['batter_id'] = this_batter_id
+                row_out['pitcher_id'] = row.get('pitcher_id', np.nan)
+                row_out['game_date'] = row.get('game_date', np.nan)
             else:
-                for c in extra_context_cols + rolling_feature_cols:
-                    row_out[c] = np.nan
+                row_out = {c: np.nan for c in today_cols}
+                row_out['player_name'] = row.get('player_name', np.nan)
+                row_out['batter_id'] = this_batter_id
+                row_out['pitcher_id'] = row.get('pitcher_id', np.nan)
+                row_out['game_date'] = row.get('game_date', np.nan)
             today_rows.append(row_out)
+            # Weather audit for each today row
+            wx_status = "FOUND"
+            missing_cols = []
+            for wxcol in ['temp','humidity','wind_mph','wind_dir_string','condition']:
+                val = row_out.get(wxcol, np.nan)
+                if pd.isna(val) or val == "":
+                    wx_status = "MISSING"
+                    missing_cols.append(wxcol)
+            today_weather_audit.append({
+                'row_idx': idx,
+                'batter_id': row_out.get('batter_id', ''),
+                'player_name': row_out.get('player_name',''),
+                'team_code': row.get('team_code',''),
+                'game_date': row_out.get('game_date',''),
+                'park': row_out.get('park',''),
+                'city': row_out.get('city',''),
+                'weather_status': wx_status,
+                'missing_weather_cols': ", ".join(missing_cols)
+            })
+
         today_df = pd.DataFrame(today_rows, columns=today_cols)
-        today_df = pd.DataFrame(today_rows, columns=today_cols)
-        today_df = today_df.loc[:, ~today_df.columns.duplicated()]  # <--- ADD THIS LINE
-        # ==== TODAY CSV Diagnostics ====
-        st.markdown("##### TODAY CSV Weather/Context Audit (first 15 rows):")
-        context_null = today_df[['batter_id', 'player_name', 'game_date', 'park', 'city', 'temp', 'humidity', 'wind_mph', 'wind_dir_string', 'condition']].isnull().sum()
-        st.write(context_null)
-        st.dataframe(today_df.head(15))
+        today_df = dedup_columns(today_df)
+        today_weather_audit_df = pd.DataFrame(today_weather_audit)
+        st.markdown("#### TODAY CSV Weather/Context Audit (first 15 rows):")
+        st.dataframe(today_weather_audit_df.head(15))
+        st.download_button(
+            "⬇️ Download TODAY Weather & Context Audit CSV",
+            data=today_weather_audit_df.to_csv(index=False),
+            file_name="today_weather_audit_report.csv",
+            key="download_today_weather_audit"
+        )
 
         st.markdown("#### Download TODAY CSV (1 row per batter, matchup, rolling features & weather):")
         st.dataframe(today_df.head(20))
