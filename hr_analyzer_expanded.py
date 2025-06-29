@@ -106,6 +106,7 @@ def downcast_numeric(df):
         df[col] = pd.to_numeric(df[col], downcast='integer')
     return df
 
+# === OPTIMIZED FAST ROLLING STATS ===
 @st.cache_data(show_spinner=True)
 def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix=""):
     df = df.copy()
@@ -118,25 +119,21 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
         df['launch_angle'] = pd.to_numeric(df['launch_angle'], errors='coerce')
     if 'pitch_type' in df.columns:
         df['pitch_type'] = df['pitch_type'].astype(str).str.lower().str.strip()
-    feature_frames = []
-    grouped = df.groupby(id_col)
-    for name, group in grouped:
+    
+    results = []
+    for name, group in df.groupby(id_col, sort=False):
         out_row = {}
+        ls = group['launch_speed'] if 'launch_speed' in group.columns else None
+        la = group['launch_angle'] if 'launch_angle' in group.columns else None
         for w in windows:
-            if 'launch_speed' in group.columns:
-                out_row[f"{prefix}avg_exit_velo_{w}"] = group['launch_speed'].rolling(w, min_periods=1).mean().iloc[-1]
-                out_row[f"{prefix}hard_hit_rate_{w}"] = (group['launch_speed'].rolling(w, min_periods=1)
-                                                         .apply(lambda x: np.mean(x >= 95)).iloc[-1])
-            if 'launch_angle' in group.columns:
-                out_row[f"{prefix}fb_rate_{w}"] = (group['launch_angle'].rolling(w, min_periods=1)
-                                                   .apply(lambda x: np.mean(x >= 25)).iloc[-1])
-                out_row[f"{prefix}sweet_spot_rate_{w}"] = (group['launch_angle'].rolling(w, min_periods=1)
-                                                           .apply(lambda x: np.mean((x >= 8) & (x <= 32))).iloc[-1])
-            if 'launch_speed' in group.columns and 'launch_angle' in group.columns:
-                out_row[f"{prefix}barrel_rate_{w}"] = (((group['launch_speed'] >= 98) &
-                                                        (group['launch_angle'] >= 26) &
-                                                        (group['launch_angle'] <= 30))
-                                                        .rolling(w, min_periods=1).mean().iloc[-1])
+            if ls is not None:
+                out_row[f"{prefix}avg_exit_velo_{w}"] = ls.rolling(w, min_periods=1).mean().iloc[-1]
+                out_row[f"{prefix}hard_hit_rate_{w}"] = ls.rolling(w, min_periods=1).apply(lambda x: np.mean(x >= 95)).iloc[-1]
+            if la is not None:
+                out_row[f"{prefix}fb_rate_{w}"] = la.rolling(w, min_periods=1).apply(lambda x: np.mean(x >= 25)).iloc[-1]
+                out_row[f"{prefix}sweet_spot_rate_{w}"] = la.rolling(w, min_periods=1).apply(lambda x: np.mean((x >= 8) & (x <= 32))).iloc[-1]
+            if ls is not None and la is not None:
+                out_row[f"{prefix}barrel_rate_{w}"] = (((ls >= 98) & (la >= 26) & (la <= 30)).rolling(w, min_periods=1).mean().iloc[-1])
             for feat in ['hit_distance_sc', 'woba_value', 'release_speed', 'release_spin_rate', 'spin_axis', 'pfx_x', 'pfx_z']:
                 if feat in group.columns:
                     out_row[f"{prefix}{feat}_{w}"] = group[feat].rolling(w, min_periods=1).mean().iloc[-1]
@@ -149,7 +146,8 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
                         if 'launch_speed' in pt_group.columns:
                             out_row[f"{key}avg_exit_velo_{w}"] = pt_group['launch_speed'].rolling(w, min_periods=1).mean().iloc[-1]
                             out_row[f"{key}hard_hit_rate_{w}"] = (pt_group['launch_speed'].rolling(w, min_periods=1)
-                                                                   .apply(lambda x: np.mean(x >= 95)).iloc[-1])
+                                                                   .apply(lambda x: np.mean(x >= 95)).iloc[-1]
+                        )
                         if 'launch_angle' in pt_group.columns:
                             out_row[f"{key}fb_rate_{w}"] = (pt_group['launch_angle'].rolling(w, min_periods=1)
                                                            .apply(lambda x: np.mean(x >= 25)).iloc[-1])
@@ -164,8 +162,8 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
                         for feat in ['avg_exit_velo', 'hard_hit_rate', 'barrel_rate', 'fb_rate', 'sweet_spot_rate']:
                             out_row[f"{key}{feat}_{w}"] = np.nan
         out_row[id_col] = name
-        feature_frames.append(out_row)
-    return pd.DataFrame(feature_frames)
+        results.append(out_row)
+    return pd.DataFrame(results)
 
 # ======================== STREAMLIT APP START ========================
 st.set_page_config("MLB HR Analyzer", layout="wide")
