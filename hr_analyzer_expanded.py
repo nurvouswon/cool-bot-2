@@ -195,9 +195,8 @@ with tab1:
     if fetch_btn and uploaded_lineups is not None:
         progress.progress(3, "Fetching Statcast data...")
         df = fetch_statcast_data(start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
-        progress.progress(10, "Loaded Statcast")
         st.write(f"Loaded {len(df)} raw Statcast events.")
-    st.write(df.head(3))  # Debug: peek at Statcast
+        st.write(df.head(3))  # Debug: peek at Statcast
 
         if len(df) == 0:
             st.error("No data! Try different dates.")
@@ -210,59 +209,64 @@ with tab1:
         # --- Read and clean lineups ---
         try:
             lineup_df = load_lineup_csv(uploaded_lineups)
+            st.write("Loaded lineup CSV sample:")
+            st.write(lineup_df.head(3))
         except Exception as e:
             st.error(f"Could not read lineup CSV: {e}")
             st.stop()
-        st.write("Loaded lineup_df shape:", lineup_df.shape)
         lineup_df.columns = [str(c).strip().lower().replace(" ", "_") for c in lineup_df.columns]
-        st.write("Lineup columns:", lineup_df.columns.tolist())
+        st.write("Lineup columns after cleaning:", list(lineup_df.columns))
 
-        # ---- Column Normalization (to handle user samples) ----
-        if "team_code" not in lineup_df.columns and "team code" in lineup_df.columns:
-            lineup_df["team_code"] = lineup_df["team code"]
-        if "mlb_id" not in lineup_df.columns and "mlb id" in lineup_df.columns:
-            lineup_df["mlb_id"] = lineup_df["mlb id"]
-        if "game_date" not in lineup_df.columns and "game_date" not in lineup_df.columns:
-            if "game_date" in lineup_df.columns:
-                lineup_df["game_date"] = lineup_df["game_date"]
-            elif "game date" in lineup_df.columns:
-                lineup_df["game_date"] = lineup_df["game date"]
-        # Standardize game_date as string YYYY-MM-DD
+        # Normalize park/team columns
+        if "park" in lineup_df.columns:
+            lineup_df["park"] = lineup_df["park"].astype(str).str.lower().str.replace(" ", "_")
+        for col in ['mlb_id', 'batter_id', 'batter']:
+            if col in lineup_df.columns and 'batter_id' not in lineup_df.columns:
+                lineup_df['batter_id'] = lineup_df[col]
+        for col in ['player_name', 'player name', 'name']:
+            if col in lineup_df.columns and 'player_name' not in lineup_df.columns:
+                lineup_df['player_name'] = lineup_df[col]
+        if 'game_date' not in lineup_df.columns:
+            for date_col in ['game_date', 'game date']:
+                if date_col in lineup_df.columns:
+                    lineup_df['game_date'] = lineup_df[date_col]
         if 'game_date' in lineup_df.columns:
             lineup_df['game_date'] = pd.to_datetime(lineup_df['game_date'], errors='coerce').dt.strftime("%Y-%m-%d")
-        # Standardize batting_order
         if 'batting_order' in lineup_df.columns:
             lineup_df['batting_order'] = lineup_df['batting_order'].astype(str).str.upper().str.strip()
-        # MLB IDs as string
-        for col in ['mlb_id', 'batter_id']:
+        if 'team_code' in lineup_df.columns:
+            lineup_df['team_code'] = lineup_df['team_code'].astype(str).str.strip().str.upper()
+        if 'game_number' in lineup_df.columns:
+            lineup_df['game_number'] = lineup_df['game_number'].astype(str).str.strip()
+        for col in ['batter_id', 'mlb_id']:
             if col in lineup_df.columns:
                 lineup_df[col] = lineup_df[col].astype(str).str.replace('.0','',regex=False).str.strip()
+        st.write("Lineup DataFrame after all ID/col cleaning:")
+        st.write(lineup_df.head(8))
 
         # ==== Parse Weather Fields from Weather String (for TODAY CSV only) ====
         if 'weather' in lineup_df.columns:
             wx_parsed = lineup_df['weather'].apply(parse_custom_weather_string_v2)
             lineup_df = pd.concat([lineup_df, wx_parsed], axis=1)
+            st.write("Weather columns parsed and added:")
+            st.write(lineup_df[['weather','temp','wind_mph','wind_dir_string','condition']].head(3))
 
-        # ==== Assign Opposing SP for Each Batter ====
+        # ==== Assign Opposing SP for Each Batter (DEBUG) ====
         progress.progress(14, "Assigning opposing pitcher for each batter in lineup...")
-
-        # DEBUG: Show groupings before pitcher assignment
-        st.write("Pitcher assignment debug:")
-        debug_df = lineup_df[['team_code','game_date','game_number','mlb_id','player_name','batting_order']].copy()
-        st.write("Team/date/game/batting_order counts:", debug_df.groupby(['game_date','game_number','team_code']).size())
-        st.write(debug_df.head(12))
-
         pitcher_col_assigned = False
-        opp_pitcher_map = {}
+        pitcher_debug = []
+
         if {'game_date', 'game_number', 'team_code', 'mlb_id', 'batting_order'}.issubset(set(lineup_df.columns)):
             games = lineup_df[['game_date', 'game_number']].drop_duplicates()
+            st.write("DEBUG: Unique games detected:", games)
+            opp_pitcher_map = {}
             for _, game in games.iterrows():
                 game_date, game_number = game['game_date'], game['game_number']
                 teams = lineup_df[
                     (lineup_df['game_date'] == game_date) &
                     (lineup_df['game_number'] == game_number)
                 ]['team_code'].unique()
-                st.write(f"DEBUG: {game_date=} {game_number=} teams={teams}")
+                st.write(f"DEBUG: For game_date={game_date}, game_number={game_number}, teams={teams}")
                 for team in teams:
                     opp_team = [t for t in teams if t != team]
                     if not opp_team:
@@ -274,19 +278,27 @@ with tab1:
                         (lineup_df['game_number'] == game_number) &
                         (lineup_df['batting_order'].astype(str).str.upper().str.strip() == "SP")
                     ]
-                    st.write(f"For team {team}, opponent {opp_team}, opp_sp:\n", opp_sp)
+                    st.write(f"DEBUG: team={team} opp_team={opp_team} opp_sp shape={opp_sp.shape}")
                     if not opp_sp.empty:
-                        opp_pitcher_map[(game_date, game_number, team)] = str(opp_sp.iloc[0]['mlb_id'])
+                        pitcher_id = str(opp_sp.iloc[0]['mlb_id'])
+                        opp_pitcher_map[(game_date, game_number, team)] = pitcher_id
+                        pitcher_debug.append({
+                            'game_date': game_date, 'game_number': game_number,
+                            'team': team, 'opp_team': opp_team,
+                            'assigned_pitcher': pitcher_id,
+                            'sp_row': opp_sp.iloc[0].to_dict()
+                        })
             lineup_df['pitcher_id'] = lineup_df.apply(
                 lambda row: opp_pitcher_map.get((row['game_date'], row['game_number'], row['team_code']), np.nan), axis=1
             )
             pitcher_col_assigned = True
+            st.write("DEBUG: Pitcher assignment map (partial):", list(opp_pitcher_map.items())[:10])
+            st.write("DEBUG: First 8 pitcher assignment records:", pitcher_debug[:8])
+            st.write("DEBUG: Sample of pitcher_id assignment in DataFrame:", lineup_df[['team_code','player_name','batting_order','mlb_id','pitcher_id']].head(12))
+            st.write("DEBUG: Null pitcher_id count after assign:", lineup_df['pitcher_id'].isnull().sum())
         else:
             lineup_df['pitcher_id'] = np.nan
-
-        st.write("Pitcher assignment summary (first 16 rows):")
-        st.write(lineup_df[['team_code','game_date','game_number','player_name','mlb_id','batting_order','pitcher_id']].head(16))
-        st.write("Pitcher_id null count after assign:", lineup_df['pitcher_id'].isnull().sum())
+            st.write("DEBUG: pitcher_id set to NaN for all, missing key columns.")
 
         # ==== STATCAST EVENT-LEVEL ENGINEERING ====
         progress.progress(18, "Adding park/city/context and cleaning Statcast event data...")
