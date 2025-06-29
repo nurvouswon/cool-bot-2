@@ -241,38 +241,33 @@ with tab1:
             wx_parsed = lineup_df['weather'].apply(parse_custom_weather_string_v2)
             lineup_df = pd.concat([lineup_df, wx_parsed], axis=1)
 
-        # ==== Assign Opposing SP for Each Batter (robust, order-safe) ====
+        # ==== Assign Opposing SP for Each Batter (new reference code logic) ====
         progress.progress(14, "Assigning opposing pitcher for each batter in lineup...")
-        # Group by game
-        if {'game_date', 'game_number', 'team_code', 'mlb_id', 'batting_order'}.issubset(set(lineup_df.columns)):
-            games = lineup_df[['game_date', 'game_number']].drop_duplicates()
-            # For each game, get the 2 teams, assign the 'SP' of one as opposing pitcher for the other
-            lineup_df['pitcher_id'] = np.nan
-            for _, game in games.iterrows():
-                game_date, game_number = game['game_date'], game['game_number']
-                game_rows = lineup_df[
+        games = lineup_df[['game_date', 'game_number']].drop_duplicates()
+        opp_pitcher_map = {}
+        for _, game in games.iterrows():
+            game_date, game_number = game['game_date'], game['game_number']
+            teams = lineup_df[
+                (lineup_df['game_date'] == game_date) &
+                (lineup_df['game_number'] == game_number)
+            ]['team_code'].unique()
+            for team in teams:
+                opp_team = [t for t in teams if t != team]
+                if not opp_team:
+                    continue
+                opp_team = opp_team[0]
+                opp_sp = lineup_df[
+                    (lineup_df['team_code'] == opp_team) &
                     (lineup_df['game_date'] == game_date) &
-                    (lineup_df['game_number'] == game_number)
-                ].copy()
-                teams = game_rows['team_code'].unique()
-                # Get starting pitchers for both teams
-                team_sps = {}
-                for team in teams:
-                    sp_row = game_rows[(game_rows['team_code'] == team) & (game_rows['batting_order'] == "SP")]
-                    if not sp_row.empty:
-                        team_sps[team] = sp_row.iloc[0]['mlb_id']
-                # Assign opposing pitcher for each batter
-                for team in teams:
-                    opp_teams = [t for t in teams if t != team]
-                    opp_sp = team_sps.get(opp_teams[0], np.nan) if opp_teams else np.nan
-                    mask = (
-                        (lineup_df['game_date'] == game_date) &
-                        (lineup_df['game_number'] == game_number) &
-                        (lineup_df['team_code'] == team)
-                    )
-                    lineup_df.loc[mask, 'pitcher_id'] = opp_sp
-        else:
-            lineup_df['pitcher_id'] = np.nan
+                    (lineup_df['game_number'] == game_number) &
+                    (lineup_df['batting_order'].astype(str).str.upper().str.strip() == "SP")
+                ]
+                if not opp_sp.empty:
+                    opp_pitcher_map[(game_date, game_number, team)] = str(opp_sp.iloc[0]['mlb_id'])
+
+        lineup_df['pitcher_id'] = lineup_df.apply(
+            lambda row: opp_pitcher_map.get((row['game_date'], row['game_number'], row['team_code']), np.nan), axis=1
+        )
 
         # ==== STATCAST EVENT-LEVEL ENGINEERING ====
         progress.progress(18, "Adding park/city/context and cleaning Statcast event data...")
