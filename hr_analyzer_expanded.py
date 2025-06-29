@@ -4,6 +4,7 @@ import numpy as np
 import re
 from pybaseball import statcast
 from datetime import datetime, timedelta
+import io
 
 # ===================== CONTEXT MAPS & RATES =====================
 park_hr_rate_map = {
@@ -52,6 +53,45 @@ mlb_team_city_map = {
     'NYY': 'New York', 'OAK': 'Oakland', 'ATH': 'Oakland', 'PHI': 'Philadelphia', 'PIT': 'Pittsburgh',
     'SD': 'San Diego', 'SEA': 'Seattle', 'SF': 'San Francisco', 'STL': 'St. Louis', 'TB': 'St. Petersburg',
     'TEX': 'Arlington', 'TOR': 'Toronto', 'WSH': 'Washington', 'WAS': 'Washington'
+}
+
+# ==== PARK HR RATE BY BATTER HANDEDNESS ====
+# Source: 2023 Savant + FanGraphs, typical values (update with your custom values if needed)
+park_hand_hr_rate_map = {
+    'angels_stadium': {'L': 1.09, 'R': 1.02},
+    'angel_stadium': {'L': 1.09, 'R': 1.02},
+    'minute_maid_park': {'L': 1.13, 'R': 1.06},
+    'coors_field': {'L': 1.38, 'R': 1.24},
+    'yankee_stadium': {'L': 1.47, 'R': 0.98},
+    'fenway_park': {'L': 1.04, 'R': 0.97},
+    'rogers_centre': {'L': 1.08, 'R': 1.12},
+    'tropicana_field': {'L': 0.84, 'R': 0.89},
+    'camden_yards': {'L': 0.98, 'R': 1.27},
+    'guaranteed_rate_field': {'L': 1.25, 'R': 1.11},
+    'progressive_field': {'L': 0.99, 'R': 1.02},
+    'comerica_park': {'L': 1.10, 'R': 0.91},
+    'kauffman_stadium': {'L': 0.90, 'R': 1.03},
+    'globe_life_field': {'L': 1.01, 'R': 0.98},
+    'dodger_stadium': {'L': 1.02, 'R': 1.18},
+    'oakland_coliseum': {'L': 0.81, 'R': 0.85},
+    't-mobile_park': {'L': 0.81, 'R': 0.92},
+    'tmobile_park': {'L': 0.81, 'R': 0.92},
+    'oracle_park': {'L': 0.67, 'R': 0.99},
+    'wrigley_field': {'L': 1.10, 'R': 1.16},
+    'great_american_ball_park': {'L': 1.30, 'R': 1.23},
+    'american_family_field': {'L': 1.25, 'R': 1.13},
+    'pnc_park': {'L': 0.76, 'R': 0.92},
+    'busch_stadium': {'L': 0.78, 'R': 0.91},
+    'truist_park': {'L': 1.00, 'R': 1.09},
+    'loan_depot_park': {'L': 0.83, 'R': 0.91},
+    'loandepot_park': {'L': 0.83, 'R': 0.91},
+    'citi_field': {'L': 1.11, 'R': 0.98},
+    'nationals_park': {'L': 1.04, 'R': 1.06},
+    'petco_park': {'L': 0.90, 'R': 0.88},
+    'chase_field': {'L': 1.16, 'R': 1.05},
+    'citizens_bank_park': {'L': 1.22, 'R': 1.20},
+    'sutter_health_park': {'L': 1.12, 'R': 1.12},
+    'target_field': {'L': 1.09, 'R': 1.01}
 }
 
 def dedup_columns(df):
@@ -139,6 +179,11 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
         out_row[id_col] = name
         feature_frames.append(out_row)
     return pd.DataFrame(feature_frames)
+
+def get_park_hand_hr_rate(row):
+    park = str(row.get('park', '')).lower()
+    hand = str(row.get('stand', '')).upper()
+    return park_hand_hr_rate_map.get(park, {}).get(hand, 1.0)  # Fallback 1.0
 
 st.set_page_config("MLB HR Analyzer", layout="wide")
 tab1, tab2 = st.tabs(["1️⃣ Fetch & Feature Engineer Data", "2️⃣ Upload & Analyze"])
@@ -304,17 +349,34 @@ with tab1:
             df = df.drop(columns=['batter_id_pitcherstat'])
         df = dedup_columns(df)
 
+        # ====== Add park_hand_hr_rate to event-level ======
+        if 'stand' in df.columns and 'park' in df.columns:
+            df['park_hand_hr_rate'] = df.apply(get_park_hand_hr_rate, axis=1)
+        else:
+            df['park_hand_hr_rate'] = 1.0
+
         progress.progress(80, "Event-level feature engineering/merges complete.")
 
         # =================== OUTPUTS =======================
         st.success(f"Feature engineering complete! {len(df)} batted ball events.")
-        st.markdown("#### Download Event-Level CSV (all features, 1 row per batted ball event):")
+        st.markdown("#### Download Event-Level CSV / Parquet (all features, 1 row per batted ball event):")
         st.dataframe(df.head(20))
+        # CSV
         st.download_button(
             "⬇️ Download Event-Level CSV",
             data=df.to_csv(index=False),
             file_name="event_level_hr_features.csv",
             key="download_event_level"
+        )
+        # Parquet (in-memory)
+        event_parquet = io.BytesIO()
+        df.to_parquet(event_parquet, index=False)
+        st.download_button(
+            "⬇️ Download Event-Level Parquet",
+            data=event_parquet.getvalue(),
+            file_name="event_level_hr_features.parquet",
+            mime="application/octet-stream",
+            key="download_event_level_parquet"
         )
 
         # ===== TODAY CSV: 1 row per batter with all rolling/context features and WEATHER FROM LINEUP CSV =====
@@ -323,11 +385,11 @@ with tab1:
             col.startswith('b_') or col.startswith('p_')
         ) and any(str(w) in col for w in roll_windows)]
         extra_context_cols = [
-            'park', 'park_hr_rate', 'park_altitude', 'roof_status', 'city'
+            'park', 'park_hr_rate', 'park_hand_hr_rate', 'park_altitude', 'roof_status', 'city'
         ]
         today_cols = [
             'game_date', 'batter_id', 'player_name', 'pitcher_id',
-            'temp', 'humidity', 'wind_mph', 'wind_dir_string', 'condition'
+            'temp', 'humidity', 'wind_mph', 'wind_dir_string', 'condition', 'stand'
         ] + extra_context_cols + rolling_feature_cols
 
         today_rows = []
@@ -339,7 +401,7 @@ with tab1:
             game_date = row.get("game_date", np.nan)
             pitcher_id = row.get("pitcher_id", np.nan)
             player_name = row.get("player_name", np.nan)
-            # Rolling/context: from last available event
+            stand = row.get("stand", np.nan)
             filter_df = df[df['batter_id'].astype(str).str.split('.').str[0] == this_batter_id]
             if not filter_df.empty:
                 last_row = filter_df.iloc[-1]
@@ -354,24 +416,35 @@ with tab1:
                 "pitcher_id": pitcher_id,
                 "park": park,
                 "park_hr_rate": park_hr_rate_map.get(str(park).lower(), 1.0) if not pd.isna(park) else 1.0,
+                "park_hand_hr_rate": park_hand_hr_rate_map.get(str(park).lower(), {}).get(str(stand).upper(), 1.0) if not pd.isna(park) and not pd.isna(stand) else 1.0,
                 "park_altitude": park_altitude_map.get(str(park).lower(), 0) if not pd.isna(park) else 0,
                 "roof_status": roof_status_map.get(str(park).lower(), "open") if not pd.isna(park) else "open",
                 "city": city if not pd.isna(city) else mlb_team_city_map.get(team_code, ""),
+                "stand": stand
             })
-            # Weather: from parsed weather string in lineup_df
+            # Weather
             for c in ['temp', 'humidity', 'wind_mph', 'wind_dir_string', 'condition']:
                 row_out[c] = row.get(c, np.nan)
             today_rows.append(row_out)
 
         today_df = pd.DataFrame(today_rows, columns=today_cols)
         today_df = dedup_columns(today_df)
-        st.markdown("#### Download TODAY CSV (1 row per batter, matchup, rolling features & weather):")
+        st.markdown("#### Download TODAY CSV / Parquet (1 row per batter, matchup, rolling features & weather):")
         st.dataframe(today_df.head(20))
         st.download_button(
             "⬇️ Download TODAY CSV",
             data=today_df.to_csv(index=False),
             file_name="today_hr_features.csv",
             key="download_today_csv"
+        )
+        today_parquet = io.BytesIO()
+        today_df.to_parquet(today_parquet, index=False)
+        st.download_button(
+            "⬇️ Download TODAY Parquet",
+            data=today_parquet.getvalue(),
+            file_name="today_hr_features.parquet",
+            mime="application/octet-stream",
+            key="download_today_parquet"
         )
         st.success("All files and debug outputs ready.")
         progress.progress(100, "All complete.")
