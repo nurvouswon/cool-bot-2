@@ -243,35 +243,31 @@ with tab1:
 
         # ==== Assign Opposing SP for Each Batter ====
         progress.progress(14, "Assigning opposing pitcher for each batter in lineup...")
-        pitcher_col_assigned = False
-        if {'game_date', 'game_number', 'team_code', 'mlb_id', 'batting_order'}.issubset(set(lineup_df.columns)):
-            games = lineup_df[['game_date', 'game_number']].drop_duplicates()
-            opp_pitcher_map = {}
-            for _, game in games.iterrows():
-                game_date, game_number = game['game_date'], game['game_number']
-                teams = lineup_df[
-                    (lineup_df['game_date'] == game_date) &
-                    (lineup_df['game_number'] == game_number)
-                ]['team_code'].unique()
-                for team in teams:
-                    opp_team = [t for t in teams if t != team]
-                    if not opp_team:
-                        continue
-                    opp_team = opp_team[0]
-                    opp_sp = lineup_df[
-                        (lineup_df['team_code'] == opp_team) &
-                        (lineup_df['game_date'] == game_date) &
-                        (lineup_df['game_number'] == game_number) &
-                        (lineup_df['batting_order'] == "SP")
-                    ]
-                    if not opp_sp.empty:
-                        opp_pitcher_map[(game_date, game_number, team)] = str(opp_sp.iloc[0]['mlb_id'])
-            lineup_df['pitcher_id'] = lineup_df.apply(
-                lambda row: opp_pitcher_map.get((row['game_date'], row['game_number'], row['team_code']), np.nan), axis=1
-            )
-            pitcher_col_assigned = True
-        else:
-            lineup_df['pitcher_id'] = np.nan
+        # ---- Robust pitcher assignment logic ----
+        # For each game, assign each batter the first SP from the *opposing* team in that game.
+        lineup_df['pitcher_id'] = np.nan  # Default, will fill in below if possible
+        req_cols = {'game_date', 'game_number', 'team_code', 'batting_order', 'mlb_id'}
+        if req_cols.issubset(lineup_df.columns):
+            # For each game (date + number)
+            for (game_date, game_number), group in lineup_df.groupby(['game_date', 'game_number']):
+                team_codes = group['team_code'].unique()
+                # Identify starting pitcher(s) for each team in this game
+                team_sp_map = {}
+                for team in team_codes:
+                    sp_rows = group[(group['team_code'] == team) & (group['batting_order'] == 'SP')]
+                    if not sp_rows.empty:
+                        # Take first pitcher if more than one (shouldn't be)
+                        team_sp_map[team] = str(sp_rows.iloc[0]['mlb_id'])
+                # Assign to batters: for each team, give their batters the SP of the other team
+                for team in team_codes:
+                    opp_teams = [t for t in team_codes if t != team]
+                    if opp_teams and opp_teams[0] in team_sp_map:
+                        mask = (
+                            (lineup_df['game_date'] == game_date) &
+                            (lineup_df['game_number'] == game_number) &
+                            (lineup_df['team_code'] == team)
+                        )
+                        lineup_df.loc[mask, 'pitcher_id'] = team_sp_map[opp_teams[0]]
 
         # ==== STATCAST EVENT-LEVEL ENGINEERING ====
         progress.progress(18, "Adding park/city/context and cleaning Statcast event data...")
