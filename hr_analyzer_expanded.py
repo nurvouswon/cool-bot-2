@@ -2,10 +2,9 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import re
-from pybaseball import statcast
-from datetime import datetime, timedelta
 import io
 import gc
+from datetime import datetime, timedelta
 
 # ===================== CONTEXT MAPS & RATES =====================
 park_hr_rate_map = {
@@ -100,13 +99,12 @@ def parse_custom_weather_string_v2(s):
     return pd.Series([temp, wind_vector, wind_field_dir, wind_mph, humidity, condition, wind_dir_string],
                      index=['temp','wind_vector','wind_field_dir','wind_mph','humidity','condition','wind_dir_string'])
 
-@st.cache_data(show_spinner=True)
-def fetch_statcast_data(start, end):
-    return statcast(start, end)
-
-@st.cache_data(show_spinner=True)
-def load_lineup_csv(uploaded_lineups):
-    return pd.read_csv(uploaded_lineups)
+def downcast_numeric(df):
+    for col in df.select_dtypes(include=['float']):
+        df[col] = pd.to_numeric(df[col], downcast='float')
+    for col in df.select_dtypes(include=['int']):
+        df[col] = pd.to_numeric(df[col], downcast='integer')
+    return df
 
 @st.cache_data(show_spinner=True)
 def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix=""):
@@ -169,13 +167,7 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
         feature_frames.append(out_row)
     return pd.DataFrame(feature_frames)
 
-def downcast_numeric(df):
-    for col in df.select_dtypes(include=['float']):
-        df[col] = pd.to_numeric(df[col], downcast='float')
-    for col in df.select_dtypes(include=['int']):
-        df[col] = pd.to_numeric(df[col], downcast='integer')
-    return df
-
+# ======================== STREAMLIT APP START ========================
 st.set_page_config("MLB HR Analyzer", layout="wide")
 tab1, tab2 = st.tabs(["1️⃣ Fetch & Feature Engineer Data", "2️⃣ Upload & Analyze"])
 
@@ -193,11 +185,13 @@ with tab1:
     progress = st.empty()
 
     if fetch_btn and uploaded_lineups is not None:
-        progress.progress(3, "Fetching Statcast data...")
-        df = fetch_statcast_data(start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
-        st.write(f"Loaded {len(df)} raw Statcast events.")
-        st.write(df.head(3))  # Debug: peek at Statcast
+        import pybaseball
+        from pybaseball import statcast
 
+        progress.progress(3, "Fetching Statcast data...")
+        df = statcast(start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
+        progress.progress(10, "Loaded Statcast")
+        st.write(f"Loaded {len(df)} raw Statcast events.")
         if len(df) == 0:
             st.error("No data! Try different dates.")
             st.stop()
@@ -208,19 +202,15 @@ with tab1:
 
         # --- Read and clean lineups ---
         try:
-            lineup_df = load_lineup_csv(uploaded_lineups)
-            st.write("Loaded lineup CSV sample:")
-            st.write(lineup_df.head(3))
+            lineup_df = pd.read_csv(uploaded_lineups)
         except Exception as e:
             st.error(f"Could not read lineup CSV: {e}")
             st.stop()
         lineup_df.columns = [str(c).strip().lower().replace(" ", "_") for c in lineup_df.columns]
-        st.write("Lineup columns after cleaning:", list(lineup_df.columns))
-
-        # Normalize park/team columns
         if "park" in lineup_df.columns:
             lineup_df["park"] = lineup_df["park"].astype(str).str.lower().str.replace(" ", "_")
-        for col in ['mlb_id', 'batter_id', 'batter']:
+        # Map batter_id and player_name for flexibility
+        for col in ['mlb_id', 'batter_id']:
             if col in lineup_df.columns and 'batter_id' not in lineup_df.columns:
                 lineup_df['batter_id'] = lineup_df[col]
         for col in ['player_name', 'player name', 'name']:
@@ -241,64 +231,34 @@ with tab1:
         for col in ['batter_id', 'mlb_id']:
             if col in lineup_df.columns:
                 lineup_df[col] = lineup_df[col].astype(str).str.replace('.0','',regex=False).str.strip()
-        st.write("Lineup DataFrame after all ID/col cleaning:")
-        st.write(lineup_df.head(8))
 
         # ==== Parse Weather Fields from Weather String (for TODAY CSV only) ====
         if 'weather' in lineup_df.columns:
             wx_parsed = lineup_df['weather'].apply(parse_custom_weather_string_v2)
             lineup_df = pd.concat([lineup_df, wx_parsed], axis=1)
-            st.write("Weather columns parsed and added:")
-            st.write(lineup_df[['weather','temp','wind_mph','wind_dir_string','condition']].head(3))
 
-        # ==== Assign Opposing SP for Each Batter (DEBUG) ====
+        # ==== Assign Opposing SP for Each Batter (handles game_number bug/fallback) ====
         progress.progress(14, "Assigning opposing pitcher for each batter in lineup...")
-        pitcher_col_assigned = False
-        pitcher_debug = []
-
-        if {'game_date', 'game_number', 'team_code', 'mlb_id', 'batting_order'}.issubset(set(lineup_df.columns)):
-            games = lineup_df[['game_date', 'game_number']].drop_duplicates()
-            st.write("DEBUG: Unique games detected:", games)
-            opp_pitcher_map = {}
-            for _, game in games.iterrows():
-                game_date, game_number = game['game_date'], game['game_number']
-                teams = lineup_df[
-                    (lineup_df['game_date'] == game_date) &
-                    (lineup_df['game_number'] == game_number)
-                ]['team_code'].unique()
-                st.write(f"DEBUG: For game_date={game_date}, game_number={game_number}, teams={teams}")
-                for team in teams:
-                    opp_team = [t for t in teams if t != team]
-                    if not opp_team:
-                        continue
-                    opp_team = opp_team[0]
-                    opp_sp = lineup_df[
-                        (lineup_df['team_code'] == opp_team) &
-                        (lineup_df['game_date'] == game_date) &
-                        (lineup_df['game_number'] == game_number) &
-                        (lineup_df['batting_order'].astype(str).str.upper().str.strip() == "SP")
-                    ]
-                    st.write(f"DEBUG: team={team} opp_team={opp_team} opp_sp shape={opp_sp.shape}")
-                    if not opp_sp.empty:
-                        pitcher_id = str(opp_sp.iloc[0]['mlb_id'])
-                        opp_pitcher_map[(game_date, game_number, team)] = pitcher_id
-                        pitcher_debug.append({
-                            'game_date': game_date, 'game_number': game_number,
-                            'team': team, 'opp_team': opp_team,
-                            'assigned_pitcher': pitcher_id,
-                            'sp_row': opp_sp.iloc[0].to_dict()
-                        })
-            lineup_df['pitcher_id'] = lineup_df.apply(
-                lambda row: opp_pitcher_map.get((row['game_date'], row['game_number'], row['team_code']), np.nan), axis=1
-            )
-            pitcher_col_assigned = True
-            st.write("DEBUG: Pitcher assignment map (partial):", list(opp_pitcher_map.items())[:10])
-            st.write("DEBUG: First 8 pitcher assignment records:", pitcher_debug[:8])
-            st.write("DEBUG: Sample of pitcher_id assignment in DataFrame:", lineup_df[['team_code','player_name','batting_order','mlb_id','pitcher_id']].head(12))
-            st.write("DEBUG: Null pitcher_id count after assign:", lineup_df['pitcher_id'].isnull().sum())
-        else:
-            lineup_df['pitcher_id'] = np.nan
-            st.write("DEBUG: pitcher_id set to NaN for all, missing key columns.")
+        lineup_df['pitcher_id'] = np.nan
+        # For each game (date+park+time), assign the SP from the opponent team
+        grouped = lineup_df.groupby(['game_date', 'park', 'time'])
+        for (gdate, park, time_), group in grouped:
+            if 'team_code' not in group.columns: continue
+            teams = group['team_code'].unique()
+            if len(teams) < 2: continue
+            # Identify SP for each team
+            team_sps = {}
+            for team in teams:
+                sp_row = group[(group['team_code'] == team) & (group['batting_order'] == "SP")]
+                if not sp_row.empty:
+                    team_sps[team] = str(sp_row.iloc[0]['batter_id'])
+            # Now assign each batter the opponent's SP (by team)
+            for team in teams:
+                opp_teams = [t for t in teams if t != team]
+                if not opp_teams: continue
+                opp_sp = team_sps.get(opp_teams[0], np.nan)
+                idx = group[group['team_code'] == team].index
+                lineup_df.loc[idx, 'pitcher_id'] = opp_sp
 
         # ==== STATCAST EVENT-LEVEL ENGINEERING ====
         progress.progress(18, "Adding park/city/context and cleaning Statcast event data...")
