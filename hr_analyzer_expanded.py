@@ -56,7 +56,6 @@ mlb_team_city_map = {
 }
 
 # ==== PARK HR RATE BY BATTER HANDEDNESS ====
-# Source: 2023 Savant + FanGraphs, typical values (update with your custom values if needed)
 park_hand_hr_rate_map = {
     'angels_stadium': {'L': 1.09, 'R': 1.02},
     'angel_stadium': {'L': 1.09, 'R': 1.02},
@@ -118,6 +117,14 @@ def parse_custom_weather_string_v2(s):
     wind_dir_string = f"{wind_vector} {wind_field_dir}".strip()
     return pd.Series([temp, wind_vector, wind_field_dir, wind_mph, humidity, condition, wind_dir_string],
                      index=['temp','wind_vector','wind_field_dir','wind_mph','humidity','condition','wind_dir_string'])
+
+@st.cache_data(show_spinner=True)
+def fetch_statcast_data(start, end):
+    return statcast(start, end)
+
+@st.cache_data(show_spinner=True)
+def load_lineup_csv(uploaded_lineups):
+    return pd.read_csv(uploaded_lineups)
 
 @st.cache_data(show_spinner=True)
 def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix=""):
@@ -183,7 +190,7 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
 def get_park_hand_hr_rate(row):
     park = str(row.get('park', '')).lower()
     hand = str(row.get('stand', '')).upper()
-    return park_hand_hr_rate_map.get(park, {}).get(hand, 1.0)  # Fallback 1.0
+    return park_hand_hr_rate_map.get(park, {}).get(hand, 1.0)
 
 st.set_page_config("MLB HR Analyzer", layout="wide")
 tab1, tab2 = st.tabs(["1️⃣ Fetch & Feature Engineer Data", "2️⃣ Upload & Analyze"])
@@ -203,7 +210,7 @@ with tab1:
 
     if fetch_btn and uploaded_lineups is not None:
         progress.progress(3, "Fetching Statcast data...")
-        df = statcast(start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
+        df = fetch_statcast_data(start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
         progress.progress(10, "Loaded Statcast")
         st.write(f"Loaded {len(df)} raw Statcast events.")
         if len(df) == 0:
@@ -216,7 +223,7 @@ with tab1:
 
         # --- Read and clean lineups ---
         try:
-            lineup_df = pd.read_csv(uploaded_lineups)
+            lineup_df = load_lineup_csv(uploaded_lineups)
         except Exception as e:
             st.error(f"Could not read lineup CSV: {e}")
             st.stop()
