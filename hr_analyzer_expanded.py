@@ -55,42 +55,24 @@ mlb_team_city_map = {
     'SD': 'San Diego', 'SEA': 'Seattle', 'SF': 'San Francisco', 'STL': 'St. Louis', 'TB': 'St. Petersburg',
     'TEX': 'Arlington', 'TOR': 'Toronto', 'WSH': 'Washington', 'WAS': 'Washington'
 }
-# ---- PARK HR RATE BY BATTER HANDEDNESS ----
 park_hand_hr_rate_map = {
-    'angels_stadium': {'L': 1.09, 'R': 1.02},
-    'angel_stadium': {'L': 1.09, 'R': 1.02},
-    'minute_maid_park': {'L': 1.13, 'R': 1.06},
-    'coors_field': {'L': 1.38, 'R': 1.24},
-    'yankee_stadium': {'L': 1.47, 'R': 0.98},
-    'fenway_park': {'L': 1.04, 'R': 0.97},
-    'rogers_centre': {'L': 1.08, 'R': 1.12},
-    'tropicana_field': {'L': 0.84, 'R': 0.89},
-    'camden_yards': {'L': 0.98, 'R': 1.27},
-    'guaranteed_rate_field': {'L': 1.25, 'R': 1.11},
-    'progressive_field': {'L': 0.99, 'R': 1.02},
-    'comerica_park': {'L': 1.10, 'R': 0.91},
-    'kauffman_stadium': {'L': 0.90, 'R': 1.03},
-    'globe_life_field': {'L': 1.01, 'R': 0.98},
-    'dodger_stadium': {'L': 1.02, 'R': 1.18},
-    'oakland_coliseum': {'L': 0.81, 'R': 0.85},
-    't-mobile_park': {'L': 0.81, 'R': 0.92},
-    'tmobile_park': {'L': 0.81, 'R': 0.92},
-    'oracle_park': {'L': 0.67, 'R': 0.99},
-    'wrigley_field': {'L': 1.10, 'R': 1.16},
-    'great_american_ball_park': {'L': 1.30, 'R': 1.23},
-    'american_family_field': {'L': 1.25, 'R': 1.13},
-    'pnc_park': {'L': 0.76, 'R': 0.92},
-    'busch_stadium': {'L': 0.78, 'R': 0.91},
-    'truist_park': {'L': 1.00, 'R': 1.09},
-    'loan_depot_park': {'L': 0.83, 'R': 0.91},
-    'loandepot_park': {'L': 0.83, 'R': 0.91},
-    'citi_field': {'L': 1.11, 'R': 0.98},
-    'nationals_park': {'L': 1.04, 'R': 1.06},
-    'petco_park': {'L': 0.90, 'R': 0.88},
-    'chase_field': {'L': 1.16, 'R': 1.05},
-    'citizens_bank_park': {'L': 1.22, 'R': 1.20},
-    'sutter_health_park': {'L': 1.12, 'R': 1.12},
-    'target_field': {'L': 1.09, 'R': 1.01}
+    'angels_stadium': {'L': 1.09, 'R': 1.02}, 'angel_stadium': {'L': 1.09, 'R': 1.02},
+    'minute_maid_park': {'L': 1.13, 'R': 1.06}, 'coors_field': {'L': 1.38, 'R': 1.24},
+    'yankee_stadium': {'L': 1.47, 'R': 0.98}, 'fenway_park': {'L': 1.04, 'R': 0.97},
+    'rogers_centre': {'L': 1.08, 'R': 1.12}, 'tropicana_field': {'L': 0.84, 'R': 0.89},
+    'camden_yards': {'L': 0.98, 'R': 1.27}, 'guaranteed_rate_field': {'L': 1.25, 'R': 1.11},
+    'progressive_field': {'L': 0.99, 'R': 1.02}, 'comerica_park': {'L': 1.10, 'R': 0.91},
+    'kauffman_stadium': {'L': 0.90, 'R': 1.03}, 'globe_life_field': {'L': 1.01, 'R': 0.98},
+    'dodger_stadium': {'L': 1.02, 'R': 1.18}, 'oakland_coliseum': {'L': 0.81, 'R': 0.85},
+    't-mobile_park': {'L': 0.81, 'R': 0.92}, 'tmobile_park': {'L': 0.81, 'R': 0.92},
+    'oracle_park': {'L': 0.67, 'R': 0.99}, 'wrigley_field': {'L': 1.10, 'R': 1.16},
+    'great_american_ball_park': {'L': 1.30, 'R': 1.23}, 'american_family_field': {'L': 1.25, 'R': 1.13},
+    'pnc_park': {'L': 0.76, 'R': 0.92}, 'busch_stadium': {'L': 0.78, 'R': 0.91},
+    'truist_park': {'L': 1.00, 'R': 1.09}, 'loan_depot_park': {'L': 0.83, 'R': 0.91},
+    'loandepot_park': {'L': 0.83, 'R': 0.91}, 'citi_field': {'L': 1.11, 'R': 0.98},
+    'nationals_park': {'L': 1.04, 'R': 1.06}, 'petco_park': {'L': 0.90, 'R': 0.88},
+    'chase_field': {'L': 1.16, 'R': 1.05}, 'citizens_bank_park': {'L': 1.22, 'R': 1.20},
+    'sutter_health_park': {'L': 1.12, 'R': 1.12}, 'target_field': {'L': 1.09, 'R': 1.01}
 }
 
 def dedup_columns(df):
@@ -186,11 +168,6 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
         out_row[id_col] = name
         feature_frames.append(out_row)
     return pd.DataFrame(feature_frames)
-
-def get_park_hand_hr_rate(row):
-    park = str(row.get('park', '')).lower()
-    hand = str(row.get('stand', '')).upper()
-    return park_hand_hr_rate_map.get(park, {}).get(hand, 1.0)
 
 def downcast_numeric(df):
     for col in df.select_dtypes(include=['float']):
@@ -380,7 +357,7 @@ with tab1:
         # =================== OUTPUTS =======================
         st.success(f"Feature engineering complete! {len(df)} batted ball events.")
         st.markdown("#### Download Event-Level CSV / Parquet (all features, 1 row per batted ball event):")
-        st.dataframe(df.head(20), use_container_width=True, experimental_allow_arrow=True)
+        st.dataframe(df.head(20), use_container_width=True)
         # CSV
         st.download_button(
             "⬇️ Download Event-Level CSV",
@@ -454,7 +431,7 @@ with tab1:
         today_df = downcast_numeric(today_df)
 
         st.markdown("#### Download TODAY CSV / Parquet (1 row per batter, matchup, rolling features & weather):")
-        st.dataframe(today_df.head(20), use_container_width=True, experimental_allow_arrow=True)
+        st.dataframe(today_df.head(20), use_container_width=True)
         st.download_button(
             "⬇️ Download TODAY CSV",
             data=today_df.to_csv(index=False),
