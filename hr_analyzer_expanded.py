@@ -5,6 +5,7 @@ import re
 from pybaseball import statcast
 from datetime import datetime, timedelta
 import io
+import gc
 
 # ===================== CONTEXT MAPS & RATES =====================
 park_hr_rate_map = {
@@ -54,8 +55,7 @@ mlb_team_city_map = {
     'SD': 'San Diego', 'SEA': 'Seattle', 'SF': 'San Francisco', 'STL': 'St. Louis', 'TB': 'St. Petersburg',
     'TEX': 'Arlington', 'TOR': 'Toronto', 'WSH': 'Washington', 'WAS': 'Washington'
 }
-
-# ==== PARK HR RATE BY BATTER HANDEDNESS ====
+# ---- PARK HR RATE BY BATTER HANDEDNESS ----
 park_hand_hr_rate_map = {
     'angels_stadium': {'L': 1.09, 'R': 1.02},
     'angel_stadium': {'L': 1.09, 'R': 1.02},
@@ -191,6 +191,13 @@ def get_park_hand_hr_rate(row):
     park = str(row.get('park', '')).lower()
     hand = str(row.get('stand', '')).upper()
     return park_hand_hr_rate_map.get(park, {}).get(hand, 1.0)
+
+def downcast_numeric(df):
+    for col in df.select_dtypes(include=['float']):
+        df[col] = pd.to_numeric(df[col], downcast='float')
+    for col in df.select_dtypes(include=['int']):
+        df[col] = pd.to_numeric(df[col], downcast='integer')
+    return df
 
 st.set_page_config("MLB HR Analyzer", layout="wide")
 tab1, tab2 = st.tabs(["1️⃣ Fetch & Feature Engineer Data", "2️⃣ Upload & Analyze"])
@@ -358,16 +365,22 @@ with tab1:
 
         # ====== Add park_hand_hr_rate to event-level ======
         if 'stand' in df.columns and 'park' in df.columns:
-            df['park_hand_hr_rate'] = df.apply(get_park_hand_hr_rate, axis=1)
+            df['park_hand_hr_rate'] = [
+                park_hand_hr_rate_map.get(str(park).lower(), {}).get(str(stand).upper(), 1.0)
+                for park, stand in zip(df['park'], df['stand'])
+            ]
         else:
             df['park_hand_hr_rate'] = 1.0
+
+        # Downcast numerics for RAM
+        df = downcast_numeric(df)
 
         progress.progress(80, "Event-level feature engineering/merges complete.")
 
         # =================== OUTPUTS =======================
         st.success(f"Feature engineering complete! {len(df)} batted ball events.")
         st.markdown("#### Download Event-Level CSV / Parquet (all features, 1 row per batted ball event):")
-        st.dataframe(df.head(20))
+        st.dataframe(df.head(20), use_container_width=True, experimental_allow_arrow=True)
         # CSV
         st.download_button(
             "⬇️ Download Event-Level CSV",
@@ -436,8 +449,12 @@ with tab1:
 
         today_df = pd.DataFrame(today_rows, columns=today_cols)
         today_df = dedup_columns(today_df)
+
+        # Downcast numerics for RAM
+        today_df = downcast_numeric(today_df)
+
         st.markdown("#### Download TODAY CSV / Parquet (1 row per batter, matchup, rolling features & weather):")
-        st.dataframe(today_df.head(20))
+        st.dataframe(today_df.head(20), use_container_width=True, experimental_allow_arrow=True)
         st.download_button(
             "⬇️ Download TODAY CSV",
             data=today_df.to_csv(index=False),
@@ -455,6 +472,10 @@ with tab1:
         )
         st.success("All files and debug outputs ready.")
         progress.progress(100, "All complete.")
+
+        # ---- RAM Cleanup ----
+        del df, today_df, batter_event, pitcher_event, event_parquet, today_parquet
+        gc.collect()
 
     else:
         st.info("Upload a Matchups/Lineups CSV and select a date range to generate the event-level and TODAY CSVs.")
