@@ -391,17 +391,25 @@ with tab1:
             'temp', 'humidity', 'wind_mph', 'wind_dir_string', 'condition', 'stand'
         ] + extra_context_cols + rolling_feature_cols
 
-        # ----------- HAND CORRECTION AND PARK-HAND RATE LOGIC --------------
-        # Build pitcher hand lookup from lineup, using only 1 per team/game (for stability)
-        pitcher_hand_lookup = {}
-        for _, row in lineup_df.dropna(subset=['pitcher_id']).drop_duplicates(['pitcher_id']).iterrows():
-            if 'stand' in row and pd.notna(row['pitcher_id']):
-                pid = str(row['pitcher_id'])
-                hand = row.get('stand', np.nan)
-                pitcher_hand_lookup[pid] = hand
-            elif 'p_throws' in row and pd.notna(row['pitcher_id']):
-                pitcher_hand_lookup[str(row['pitcher_id'])] = row.get('p_throws', np.nan)
+        # --- Build robust pitcher_hand_map for each unique pitcher_id in today's matchups ---
+        pitcher_hand_map = {}
 
+        # 1. Try Statcast data (most reliable)
+        pitcher_hand_statcast = df[['pitcher_id', 'pitcher_hand']].drop_duplicates().dropna()
+        for _, row_p in pitcher_hand_statcast.iterrows():
+            pid = str(row_p['pitcher_id'])
+            hand = row_p['pitcher_hand']
+            if pid not in pitcher_hand_map and pd.notna(hand):
+                pitcher_hand_map[pid] = hand
+
+        # 2. Supplement with lineup if available (sometimes not present)
+        for _, row_p in lineup_df.dropna(subset=['pitcher_id']).drop_duplicates(['pitcher_id']).iterrows():
+            pid = str(row_p['pitcher_id'])
+            hand = row_p.get('p_throws') or row_p.get('stand') or row_p.get('pitcher_hand')
+            if pid not in pitcher_hand_map and pd.notna(hand):
+                pitcher_hand_map[pid] = hand
+
+        # ========== GENERATE TODAY DATAFRAME ==========
         today_rows = []
         for idx, row in lineup_df.iterrows():
             this_batter_id = str(row['batter_id']).split(".")[0]
@@ -412,7 +420,6 @@ with tab1:
             pitcher_id = str(row.get("pitcher_id", np.nan))
             player_name = row.get("player_name", np.nan)
             stand = row.get("stand", np.nan)
-            # Fetch rolling features and batter/pitcher hand from Statcast df
             filter_df = df[df['batter_id'].astype(str).str.split('.').str[0] == this_batter_id]
             if not filter_df.empty:
                 last_row = filter_df.iloc[-1]
@@ -421,10 +428,8 @@ with tab1:
                 row_out = {c: np.nan for c in rolling_feature_cols + ['batter_hand']}
             # Batter hand
             batter_hand = row.get('stand', row_out.get('batter_hand', np.nan))
-            # Pitcher hand: prefer lineup, else Statcast
-            pitcher_hand = pitcher_hand_lookup.get(pitcher_id, np.nan)
-            if pd.isna(pitcher_hand) and not filter_df.empty and 'pitcher_hand' in last_row:
-                pitcher_hand = last_row['pitcher_hand']
+            # Pitcher hand: always from pitcher_hand_map
+            pitcher_hand = pitcher_hand_map.get(pitcher_id, np.nan)
             # Park hand HR
             park_hand_rate = 1.0
             if not pd.isna(park) and not pd.isna(batter_hand):
