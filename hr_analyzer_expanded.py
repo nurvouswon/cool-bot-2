@@ -74,7 +74,29 @@ park_hand_hr_rate_map = {
     'sutter_health_park': {'L': 1.12, 'R': 1.12}, 'target_field': {'L': 1.09, 'R': 1.01}
 }
 
-# ===================== UTILITY FUNCTIONS =====================
+# ===================== HAND/FETCH UTILITIES =====================
+# Pull hand maps with pybaseball for batter and pitcher, always fresh
+def fetch_batter_pitcher_hands(batter_ids, pitcher_ids):
+    import pybaseball
+    from pybaseball.playerid_lookup import playerid_reverse_lookup
+    batter_hand_map = {}
+    pitcher_hand_map = {}
+    # Unique to minimize fetches
+    batter_ids = list(set([int(bid) for bid in batter_ids if pd.notna(bid)]))
+    pitcher_ids = list(set([int(pid) for pid in pitcher_ids if pd.notna(pid)]))
+    try:
+        batter_info = playerid_reverse_lookup(batter_ids, key_type='mlbam')
+        pitcher_info = playerid_reverse_lookup(pitcher_ids, key_type='mlbam')
+        for idx, row in batter_info.iterrows():
+            if 'bats' in row and pd.notna(row['bats']):
+                batter_hand_map[str(row['key_mlbam'])] = row['bats'][0].upper()
+        for idx, row in pitcher_info.iterrows():
+            if 'throws' in row and pd.notna(row['throws']):
+                pitcher_hand_map[str(row['key_mlbam'])] = row['throws'][0].upper()
+    except Exception as e:
+        st.warning(f"Handedness fetch error: {e}")
+    return batter_hand_map, pitcher_hand_map
+
 def dedup_columns(df):
     return df.loc[:, ~df.columns.duplicated()]
 
@@ -107,6 +129,7 @@ def downcast_numeric(df):
         df[col] = pd.to_numeric(df[col], downcast='integer')
     return df
 
+# ===================== ADVANCED ROLLING STATS & DEEP FEATURES =====================
 @st.cache_data(show_spinner=True)
 def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix=""):
     df = df.copy()
@@ -117,15 +140,20 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
         df['launch_speed'] = pd.to_numeric(df['launch_speed'], errors='coerce')
     if 'launch_angle' in df.columns:
         df['launch_angle'] = pd.to_numeric(df['launch_angle'], errors='coerce')
-    if 'pitch_type' in df.columns:
-        df['pitch_type'] = df['pitch_type'].astype(str).str.lower().str.strip()
+    if 'pull_angle' in df.columns:
+        df['pull_angle'] = pd.to_numeric(df['pull_angle'], errors='coerce')
+    if 'hard_hit' in df.columns:
+        df['hard_hit'] = pd.to_numeric(df['hard_hit'], errors='coerce')
+    if 'events' in df.columns and 'bases' not in df.columns:
+        EVENT_SLG_MAP = {'single':1,'double':2,'triple':3,'home_run':4,'homerun':4}
+        df['bases'] = df['events'].apply(lambda ev: EVENT_SLG_MAP.get(str(ev).replace(" ", "").lower(), 0) if pd.notna(ev) else 0)
     results = []
     for name, group in df.groupby(id_col, sort=False):
         out_row = {}
         ls = group['launch_speed'] if 'launch_speed' in group.columns else None
         la = group['launch_angle'] if 'launch_angle' in group.columns else None
-        pa = group['plate_x'] if 'plate_x' in group.columns else None
-        # --- DEEP RESEARCH ADDITIONS: pull%, hard hit, slg etc. ---
+        pull = group['pull_angle'] if 'pull_angle' in group.columns else None
+        hard = group['hard_hit'] if 'hard_hit' in group.columns else None
         for w in windows:
             if ls is not None:
                 out_row[f"{prefix}avg_exit_velo_{w}"] = ls.rolling(w, min_periods=1).mean().iloc[-1]
@@ -135,19 +163,16 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
                 out_row[f"{prefix}sweet_spot_rate_{w}"] = la.rolling(w, min_periods=1).apply(lambda x: np.mean((x >= 8) & (x <= 32))).iloc[-1]
             if ls is not None and la is not None:
                 out_row[f"{prefix}barrel_rate_{w}"] = (((ls >= 98) & (la >= 26) & (la <= 30)).rolling(w, min_periods=1).mean().iloc[-1])
+            # DEEP features: SLG, Pull%, HardHit%, etc
+            if 'bases' in group.columns:
+                out_row[f"{prefix}slg_{w}"] = group['bases'].rolling(w, min_periods=1).mean().iloc[-1]
+            if pull is not None:
+                out_row[f"{prefix}pull_perc_{w}"] = pull.rolling(w, min_periods=1).mean().iloc[-1]
+            if hard is not None:
+                out_row[f"{prefix}hard_contact_perc_{w}"] = hard.rolling(w, min_periods=1).mean().iloc[-1]
             for feat in ['hit_distance_sc', 'woba_value', 'release_speed', 'release_spin_rate', 'spin_axis', 'pfx_x', 'pfx_z']:
                 if feat in group.columns:
                     out_row[f"{prefix}{feat}_{w}"] = group[feat].rolling(w, min_periods=1).mean().iloc[-1]
-            # Pull% and SLG logic (if 'hc_x' or 'pull' indicators exist)
-            if 'hc_x' in group.columns:
-                out_row[f"{prefix}pull_rate_{w}"] = group['hc_x'].rolling(w, min_periods=1).apply(lambda x: np.mean(x < 125)).iloc[-1]
-            if 'events' in group.columns:
-                # crude SLG: 1B=1, 2B=2, 3B=3, HR=4
-                slg_events = group['events'].rolling(w, min_periods=1).apply(
-                    lambda evs: np.mean([{'single':1,'double':2,'triple':3,'home_run':4,'homerun':4}.get(e,0) for e in evs])
-                ).iloc[-1]
-                out_row[f"{prefix}slg_{w}"] = slg_events
-        # Per-pitch-type rolling stats
         if pitch_types is not None and "pitch_type" in group.columns:
             for pt in pitch_types:
                 pt_group = group[group['pitch_type'] == pt]
@@ -161,7 +186,10 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
                             out_row[f"{key}fb_rate_{w}"] = pt_group['launch_angle'].rolling(w, min_periods=1).apply(lambda x: np.mean(x >= 25)).iloc[-1]
                             out_row[f"{key}sweet_spot_rate_{w}"] = pt_group['launch_angle'].rolling(w, min_periods=1).apply(lambda x: np.mean((x >= 8) & (x <= 32))).iloc[-1]
                         if 'launch_speed' in pt_group.columns and 'launch_angle' in pt_group.columns:
-                            out_row[f"{key}barrel_rate_{w}"] = (((pt_group['launch_speed'] >= 98) & (pt_group['launch_angle'] >= 26) & (pt_group['launch_angle'] <= 30)).rolling(w, min_periods=1).mean().iloc[-1])
+                            out_row[f"{key}barrel_rate_{w}"] = (((pt_group['launch_speed'] >= 98) &
+                                                                (pt_group['launch_angle'] >= 26) &
+                                                                (pt_group['launch_angle'] <= 30))
+                                                                .rolling(w, min_periods=1).mean().iloc[-1])
                     else:
                         for feat in ['avg_exit_velo', 'hard_hit_rate', 'barrel_rate', 'fb_rate', 'sweet_spot_rate']:
                             out_row[f"{key}{feat}_{w}"] = np.nan
@@ -188,7 +216,7 @@ with tab1:
 
     if fetch_btn and uploaded_lineups is not None:
         import pybaseball
-        from pybaseball import statcast, playerid_reverse_lookup, playerid_lookup
+        from pybaseball import statcast
 
         progress.progress(3, "Fetching Statcast data...")
         df = statcast(start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
@@ -239,7 +267,7 @@ with tab1:
             wx_parsed = lineup_df['weather'].apply(parse_custom_weather_string_v2)
             lineup_df = pd.concat([lineup_df, wx_parsed], axis=1)
 
-        # ==== Assign Opposing SP for Each Batter (handles game_number bug/fallback) ====
+        # ==== Assign Opposing SP for Each Batter ====
         progress.progress(14, "Assigning opposing pitcher for each batter in lineup...")
         lineup_df['pitcher_id'] = np.nan
         grouped = lineup_df.groupby(['game_date', 'park', 'time'])
@@ -247,13 +275,11 @@ with tab1:
             if 'team_code' not in group.columns: continue
             teams = group['team_code'].unique()
             if len(teams) < 2: continue
-            # Identify SP for each team
             team_sps = {}
             for team in teams:
                 sp_row = group[(group['team_code'] == team) & (group['batting_order'] == "SP")]
                 if not sp_row.empty:
                     team_sps[team] = str(sp_row.iloc[0]['batter_id'])
-            # Now assign each batter the opponent's SP (by team)
             for team in teams:
                 opp_teams = [t for t in teams if t != team]
                 if not opp_teams: continue
@@ -284,15 +310,14 @@ with tab1:
         df['roof_status'] = df['park'].map(roof_status_map).fillna("open")
         df['city'] = df['team_code'].map(mlb_team_city_map).fillna("")
 
-        # --- Add batter and pitcher handedness for event-level ---
-        if 'stand' in df.columns:
-            df['batter_hand'] = df['stand']
-        else:
-            df['batter_hand'] = np.nan
-        if 'p_throws' in df.columns:
-            df['pitcher_hand'] = df['p_throws']
-        else:
-            df['pitcher_hand'] = np.nan
+        # --- Add batter and pitcher handedness ---
+        all_batters = pd.concat([df['batter_id'], lineup_df['batter_id']]).dropna().unique().tolist()
+        all_pitchers = pd.concat([df['pitcher_id'], lineup_df['pitcher_id']]).dropna().unique().tolist()
+        hand_map, p_hand_map = fetch_batter_pitcher_hands(all_batters, all_pitchers)
+        df['batter_hand'] = df['batter_id'].map(hand_map)
+        df['pitcher_hand'] = df['pitcher_id'].map(p_hand_map)
+        lineup_df['batter_hand'] = lineup_df['batter_id'].map(hand_map)
+        lineup_df['pitcher_hand'] = lineup_df['pitcher_id'].map(p_hand_map)
 
         # HR outcome flag
         if 'events' in df.columns:
@@ -309,9 +334,9 @@ with tab1:
         ]
         df = df[df['events_clean'].isin(valid_events)].copy()
 
-        # Rolling stat features (batter, pitcher, pitch type, deep windows)
+        # Rolling stat features (deep research windows)
         progress.progress(22, "Computing rolling Statcast features (batter & pitcher, pitch type, deep windows)...")
-        roll_windows = [3, 5, 7, 14, 20]
+        roll_windows = [3, 5, 7, 14, 20, 28, 40]
         main_pitch_types = ["ff", "sl", "cu", "ch", "si", "fc", "fs", "st", "sinker", "splitter", "sweeper"]
         for col in ['batter', 'batter_id']:
             if col in df.columns:
@@ -327,9 +352,7 @@ with tab1:
         if 'batter_id' in df_for_pitchers.columns:
             df_for_pitchers = df_for_pitchers.drop(columns=['batter_id'])
         df_for_pitchers = df_for_pitchers.rename(columns={"pitcher_id": "batter_id"})
-        pitcher_event = fast_rolling_stats(
-            df_for_pitchers, "batter_id", "game_date", roll_windows, main_pitch_types, prefix="p_"
-        )
+        pitcher_event = fast_rolling_stats(df_for_pitchers, "batter_id", "game_date", roll_windows, main_pitch_types, prefix="p_")
         if not pitcher_event.empty:
             pitcher_event = pitcher_event.set_index('batter_id')
         df = pd.merge(df, batter_event.reset_index(), how="left", left_on="batter_id", right_on="batter_id")
@@ -339,10 +362,10 @@ with tab1:
         df = dedup_columns(df)
 
         # ====== Add park_hand_hr_rate to event-level ======
-        if 'stand' in df.columns and 'park' in df.columns:
+        if 'batter_hand' in df.columns and 'park' in df.columns:
             df['park_hand_hr_rate'] = [
-                park_hand_hr_rate_map.get(str(park).lower(), {}).get(str(stand).upper(), 1.0)
-                for park, stand in zip(df['park'], df['stand'])
+                park_hand_hr_rate_map.get(str(park).lower(), {}).get(str(bh).upper(), 1.0)
+                for park, bh in zip(df['park'], df['batter_hand'])
             ]
         else:
             df['park_hand_hr_rate'] = 1.0
@@ -374,38 +397,17 @@ with tab1:
             key="download_event_level_parquet"
         )
 
-        # ==== HAND FETCH FOR TODAY CSV: batter/pitcher handedness ====
-        # Attempt to fill stand (batter hand) and pitcher_hand for each batter in lineup
-        def fetch_handness_lookup(batter_ids, pitcher_ids):
-            all_ids = list(set(list(batter_ids) + list(pitcher_ids)))
-            lookup = pd.DataFrame()
-            # Use pybaseball to look up handedness for all ids
-            for chunk in [all_ids[x:x+50] for x in range(0, len(all_ids), 50)]:
-                try:
-                    sub = playerid_reverse_lookup(chunk)
-                    lookup = pd.concat([lookup, sub], ignore_index=True)
-                except Exception:
-                    continue
-            lookup['key_mlbam'] = lookup['key_mlbam'].astype(str)
-            hand_map = lookup.set_index('key_mlbam')['bats'].to_dict()
-            p_hand_map = lookup.set_index('key_mlbam')['throws'].to_dict()
-            return hand_map, p_hand_map
-
-        batter_ids = lineup_df['batter_id'].astype(str).unique().tolist() if 'batter_id' in lineup_df.columns else []
-        pitcher_ids = lineup_df['pitcher_id'].astype(str).unique().tolist() if 'pitcher_id' in lineup_df.columns else []
-        hand_map, p_hand_map = fetch_handness_lookup(batter_ids, pitcher_ids)
-
         # ===== TODAY CSV: 1 row per batter with all rolling/context features and WEATHER FROM LINEUP CSV =====
         progress.progress(95, "Generating TODAY batter rows and context merges...")
         rolling_feature_cols = [col for col in df.columns if (
             col.startswith('b_') or col.startswith('p_')
         ) and any(str(w) in col for w in roll_windows)]
         extra_context_cols = [
-            'park', 'park_hr_rate', 'park_hand_hr_rate', 'park_altitude', 'roof_status', 'city'
+            'park', 'park_hr_rate', 'park_hand_hr_rate', 'park_altitude', 'roof_status', 'city', 'batter_hand', 'pitcher_hand'
         ]
         today_cols = [
             'game_date', 'batter_id', 'player_name', 'pitcher_id',
-            'temp', 'humidity', 'wind_mph', 'wind_dir_string', 'condition', 'stand', 'batter_hand', 'pitcher_hand'
+            'temp', 'humidity', 'wind_mph', 'wind_dir_string', 'condition', 'stand'
         ] + extra_context_cols + rolling_feature_cols
 
         today_rows = []
@@ -418,9 +420,8 @@ with tab1:
             pitcher_id = row.get("pitcher_id", np.nan)
             player_name = row.get("player_name", np.nan)
             stand = row.get("stand", np.nan)
-            # Handedness overrides/fill
-            batter_hand = hand_map.get(this_batter_id, np.nan)
-            pitcher_hand = p_hand_map.get(str(pitcher_id), np.nan)
+            batter_hand = row.get("batter_hand", np.nan)
+            pitcher_hand = row.get("pitcher_hand", np.nan)
             filter_df = df[df['batter_id'].astype(str).str.split('.').str[0] == this_batter_id]
             if not filter_df.empty:
                 last_row = filter_df.iloc[-1]
@@ -435,13 +436,13 @@ with tab1:
                 "pitcher_id": pitcher_id,
                 "park": park,
                 "park_hr_rate": park_hr_rate_map.get(str(park).lower(), 1.0) if not pd.isna(park) else 1.0,
-                "park_hand_hr_rate": park_hand_hr_rate_map.get(str(park).lower(), {}).get(str(stand).upper(), 1.0) if not pd.isna(park) and not pd.isna(stand) else 1.0,
+                "park_hand_hr_rate": park_hand_hr_rate_map.get(str(park).lower(), {}).get(str(batter_hand).upper(), 1.0) if not pd.isna(park) and not pd.isna(batter_hand) else 1.0,
                 "park_altitude": park_altitude_map.get(str(park).lower(), 0) if not pd.isna(park) else 0,
                 "roof_status": roof_status_map.get(str(park).lower(), "open") if not pd.isna(park) else "open",
                 "city": city if not pd.isna(city) else mlb_team_city_map.get(team_code, ""),
-                "stand": stand,
                 "batter_hand": batter_hand,
-                "pitcher_hand": pitcher_hand
+                "pitcher_hand": pitcher_hand,
+                "stand": stand
             })
             # Weather
             for c in ['temp', 'humidity', 'wind_mph', 'wind_dir_string', 'condition']:
@@ -450,8 +451,6 @@ with tab1:
 
         today_df = pd.DataFrame(today_rows, columns=today_cols)
         today_df = dedup_columns(today_df)
-
-        # Downcast numerics for RAM
         today_df = downcast_numeric(today_df)
 
         st.markdown("#### Download TODAY CSV / Parquet (1 row per batter, matchup, rolling features & weather):")
@@ -477,6 +476,5 @@ with tab1:
         # ---- RAM Cleanup ----
         del df, today_df, batter_event, pitcher_event, event_parquet, today_parquet
         gc.collect()
-
     else:
         st.info("Upload a Matchups/Lineups CSV and select a date range to generate the event-level and TODAY CSVs.")
