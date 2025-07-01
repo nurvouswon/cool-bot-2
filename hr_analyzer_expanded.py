@@ -106,7 +106,7 @@ def downcast_numeric(df):
         df[col] = pd.to_numeric(df[col], downcast='integer')
     return df
 
-# ================== ADVANCED ROLLING STATS WITH ALL FEATURES ================
+# ================== ADVANCED ROLLING STATS (patched SLG) ==================
 @st.cache_data(show_spinner=True)
 def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix=""):
     df = df.copy()
@@ -121,12 +121,6 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
         df['pull'] = ((df['hc_x'] > 200) & (df['hc_x'] < 300)).astype(float)
     if 'hit_distance_sc' in df.columns:
         df['hard_hit'] = (df['launch_speed'] >= 95).astype(float)
-    # Add FB, HR flags
-    if 'launch_angle' in df.columns:
-        df['fb'] = (df['launch_angle'] >= 25).astype(float)
-        df['sweet_spot'] = ((df['launch_angle'] >= 8) & (df['launch_angle'] <= 32)).astype(float)
-    if 'events_clean' in df.columns:
-        df['hr'] = df['events_clean'].isin(['home_run', 'homerun']).astype(float)
     results = []
     for name, group in df.groupby(id_col, sort=False):
         out_row = {}
@@ -135,39 +129,49 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
         hd = group['hit_distance_sc'] if 'hit_distance_sc' in group.columns else None
         pull = group['pull'] if 'pull' in group.columns else None
         hard = group['hard_hit'] if 'hard_hit' in group.columns else None
-        hr = group['hr'] if 'hr' in group.columns else None
-        fb = group['fb'] if 'fb' in group.columns else None
-        sweet = group['sweet_spot'] if 'sweet_spot' in group.columns else None
-        slg_map = {'single':1,'double':2,'triple':3,'home_run':4,'homerun':4}
+        slg = group['slg_numeric'] if 'slg_numeric' in group.columns else None
         for w in windows:
             if ls is not None:
                 out_row[f"{prefix}avg_exit_velo_{w}"] = ls.rolling(w, min_periods=1).mean().iloc[-1]
-                out_row[f"{prefix}hard_hit_rate_{w}"] = hard.rolling(w, min_periods=1).mean().iloc[-1] if hard is not None else np.nan
+                out_row[f"{prefix}hard_hit_rate_{w}"] = ls.rolling(w, min_periods=1).apply(lambda x: np.mean(x >= 95)).iloc[-1]
             if la is not None:
-                out_row[f"{prefix}fb_rate_{w}"] = fb.rolling(w, min_periods=1).mean().iloc[-1] if fb is not None else np.nan
-                out_row[f"{prefix}sweet_spot_rate_{w}"] = sweet.rolling(w, min_periods=1).mean().iloc[-1] if sweet is not None else np.nan
+                out_row[f"{prefix}fb_rate_{w}"] = la.rolling(w, min_periods=1).apply(lambda x: np.mean(x >= 25)).iloc[-1]
+                out_row[f"{prefix}sweet_spot_rate_{w}"] = la.rolling(w, min_periods=1).apply(lambda x: np.mean((x >= 8) & (x <= 32))).iloc[-1]
             if ls is not None and la is not None:
-                barrel_mask = (ls >= 98) & (la >= 26) & (la <= 30)
-                out_row[f"{prefix}barrel_rate_{w}"] = barrel_mask.rolling(w, min_periods=1).mean().iloc[-1]
+                out_row[f"{prefix}barrel_rate_{w}"] = (((ls >= 98) & (la >= 26) & (la <= 30)).rolling(w, min_periods=1).mean().iloc[-1])
             if hd is not None:
                 out_row[f"{prefix}hit_dist_avg_{w}"] = hd.rolling(w, min_periods=1).mean().iloc[-1]
             if pull is not None:
                 out_row[f"{prefix}pull_rate_{w}"] = pull.rolling(w, min_periods=1).mean().iloc[-1]
-            # HR/FB
-            if hr is not None and fb is not None and fb.sum() > 0:
-                hr_fb = hr.rolling(w, min_periods=1).sum() / fb.rolling(w, min_periods=1).sum()
-                out_row[f"{prefix}hr_fb_{w}"] = hr_fb.iloc[-1] if not hr_fb.empty else np.nan
-            # SLG (needs events)
-            if 'events_clean' in group.columns:
-                evs = group['events_clean']
-                slg_events = evs.rolling(w, min_periods=1).apply(
-                    lambda evs: np.mean([slg_map.get(e,0) for e in evs]), raw=False)
-                out_row[f"{prefix}slg_{w}"] = slg_events.iloc[-1] if not slg_events.empty else np.nan
+            if hard is not None:
+                out_row[f"{prefix}hard_contact_rate_{w}"] = hard.rolling(w, min_periods=1).mean().iloc[-1]
+            # Patched SLG
+            if slg is not None:
+                out_row[f"{prefix}slg_{w}"] = slg.rolling(w, min_periods=1).mean().iloc[-1]
+        if pitch_types is not None and "pitch_type" in group.columns:
+            for pt in pitch_types:
+                pt_group = group[group['pitch_type'] == pt]
+                for w in windows:
+                    key = f"{prefix}{pt}_"
+                    if not pt_group.empty:
+                        if 'launch_speed' in pt_group.columns:
+                            out_row[f"{key}avg_exit_velo_{w}"] = pt_group['launch_speed'].rolling(w, min_periods=1).mean().iloc[-1]
+                            out_row[f"{key}hard_hit_rate_{w}"] = pt_group['launch_speed'].rolling(w, min_periods=1).apply(lambda x: np.mean(x >= 95)).iloc[-1]
+                        if 'launch_angle' in pt_group.columns:
+                            out_row[f"{key}fb_rate_{w}"] = pt_group['launch_angle'].rolling(w, min_periods=1).apply(lambda x: np.mean(x >= 25)).iloc[-1]
+                            out_row[f"{key}sweet_spot_rate_{w}"] = pt_group['launch_angle'].rolling(w, min_periods=1).apply(lambda x: np.mean((x >= 8) & (x <= 32))).iloc[-1]
+                        if 'launch_speed' in pt_group.columns and 'launch_angle' in pt_group.columns:
+                            out_row[f"{key}barrel_rate_{w}"] = (((pt_group['launch_speed'] >= 98) &
+                                                                 (pt_group['launch_angle'] >= 26) &
+                                                                 (pt_group['launch_angle'] <= 30)).rolling(w, min_periods=1).mean().iloc[-1])
+                    else:
+                        for feat in ['avg_exit_velo', 'hard_hit_rate', 'barrel_rate', 'fb_rate', 'sweet_spot_rate']:
+                            out_row[f"{key}{feat}_{w}"] = np.nan
         out_row[id_col] = name
         results.append(out_row)
     return pd.DataFrame(results)
 
-# =============== STREAMLIT APP LAYOUT START ====================
+# ======================== STREAMLIT APP START ========================
 st.set_page_config("MLB HR Analyzer", layout="wide")
 tab1, tab2 = st.tabs(["1️⃣ Fetch & Feature Engineer Data", "2️⃣ Upload & Analyze"])
 
@@ -178,7 +182,6 @@ with tab1:
         start_date = st.date_input("Start Date", value=datetime.today() - timedelta(days=7))
     with col2:
         end_date = st.date_input("End Date", value=datetime.today())
-
     st.markdown("##### Upload Today's Matchups/Lineups CSV (required for TODAY CSV)")
     uploaded_lineups = st.file_uploader("Upload Today's Matchups CSV", type="csv", key="lineupsup")
     fetch_btn = st.button("Fetch Statcast, Feature Engineer, and Download", type="primary")
@@ -209,7 +212,6 @@ with tab1:
         lineup_df.columns = [str(c).strip().lower().replace(" ", "_") for c in lineup_df.columns]
         if "park" in lineup_df.columns:
             lineup_df["park"] = lineup_df["park"].astype(str).str.lower().str.replace(" ", "_")
-        # Map batter_id and player_name for flexibility
         for col in ['mlb_id', 'batter_id']:
             if col in lineup_df.columns and 'batter_id' not in lineup_df.columns:
                 lineup_df['batter_id'] = lineup_df[col]
@@ -237,39 +239,27 @@ with tab1:
             wx_parsed = lineup_df['weather'].apply(parse_custom_weather_string_v2)
             lineup_df = pd.concat([lineup_df, wx_parsed], axis=1)
 
-        # ==== Assign Opposing SP for Each Batter (handles game_number bug/fallback) ====
+        # ==== Assign Opposing SP for Each Batter ====
         progress.progress(14, "Assigning opposing pitcher for each batter in lineup...")
         lineup_df['pitcher_id'] = np.nan
-        lineup_df['pitcher_hand'] = np.nan
         grouped = lineup_df.groupby(['game_date', 'park', 'time']) if 'time' in lineup_df.columns else lineup_df.groupby(['game_date', 'park'])
         for group_key, group in grouped:
             if 'team_code' not in group.columns: continue
             teams = group['team_code'].unique()
             if len(teams) < 2: continue
-            # Identify SP for each team
             team_sps = {}
-            team_sp_hand = {}
             for team in teams:
                 sp_row = group[(group['team_code'] == team) & (group['batting_order'] == "SP")]
                 if not sp_row.empty:
                     team_sps[team] = str(sp_row.iloc[0]['batter_id'])
-                    if 'stand' in sp_row.columns:
-                        team_sp_hand[team] = sp_row.iloc[0]['stand']
-                    elif 'hand' in sp_row.columns:
-                        team_sp_hand[team] = sp_row.iloc[0]['hand']
-                    else:
-                        team_sp_hand[team] = np.nan
-            # Assign each batter the opponent's SP and SP's handedness
             for team in teams:
                 opp_teams = [t for t in teams if t != team]
                 if not opp_teams: continue
                 opp_sp = team_sps.get(opp_teams[0], np.nan)
-                opp_hand = team_sp_hand.get(opp_teams[0], np.nan)
                 idx = group[group['team_code'] == team].index
                 lineup_df.loc[idx, 'pitcher_id'] = opp_sp
-                lineup_df.loc[idx, 'pitcher_hand'] = opp_hand
 
-        # ==== STATCAST EVENT-LEVEL ENGINEERING ====
+        # =================== STATCAST EVENT-LEVEL ENGINEERING ===================
         progress.progress(18, "Adding park/city/context and cleaning Statcast event data...")
 
         for col in ['batter_id', 'mlb_id', 'pitcher_id', 'team_code']:
@@ -304,11 +294,16 @@ with tab1:
         else:
             df['pitcher_hand'] = np.nan
 
-        # HR outcome flag and events_clean
+        # ================== SLG NUMERIC FOR ROLLING ==================
+        # Map single/double/triple/hr for SLG
+        slg_map = {'single':1, 'double':2, 'triple':3, 'home_run':4, 'homerun':4}
         if 'events' in df.columns:
             df['events_clean'] = df['events'].astype(str).str.lower().str.replace(' ', '')
         else:
             df['events_clean'] = ""
+        df['slg_numeric'] = df['events_clean'].map(slg_map).astype(float)
+        df['slg_numeric'] = df['slg_numeric'].fillna(0)
+
         if 'hr_outcome' not in df.columns:
             df['hr_outcome'] = df['events_clean'].isin(['homerun', 'home_run']).astype(int)
 
@@ -319,7 +314,7 @@ with tab1:
         ]
         df = df[df['events_clean'].isin(valid_events)].copy()
 
-        # Rolling stat features
+        # ========== ADVANCED ROLLING FEATURES ==========
         progress.progress(22, "Computing rolling Statcast features (batter & pitcher, pitch type, deep windows)...")
         roll_windows = [3, 5, 7, 14, 20, 30, 60]
         main_pitch_types = ["ff", "sl", "cu", "ch", "si", "fc", "fs", "st", "sinker", "splitter", "sweeper"]
@@ -330,7 +325,6 @@ with tab1:
             if col in df.columns:
                 df['pitcher_id'] = df[col]
 
-        # ========== ADVANCED ROLLING FEATURES ==========
         batter_event = fast_rolling_stats(df, "batter_id", "game_date", roll_windows, main_pitch_types, prefix="b_")
         if not batter_event.empty:
             batter_event = batter_event.set_index('batter_id')
@@ -388,7 +382,6 @@ with tab1:
         rolling_feature_cols = [col for col in df.columns if (
             col.startswith('b_') or col.startswith('p_')
         ) and any(str(w) in col for w in roll_windows)]
-        # Also add advanced fields if needed
         extra_context_cols = [
             'park', 'park_hr_rate', 'park_hand_hr_rate', 'park_altitude', 'roof_status', 'city',
             'batter_hand', 'pitcher_hand'
@@ -398,6 +391,17 @@ with tab1:
             'temp', 'humidity', 'wind_mph', 'wind_dir_string', 'condition', 'stand'
         ] + extra_context_cols + rolling_feature_cols
 
+        # ----------- HAND CORRECTION AND PARK-HAND RATE LOGIC --------------
+        # Build pitcher hand lookup from lineup, using only 1 per team/game (for stability)
+        pitcher_hand_lookup = {}
+        for _, row in lineup_df.dropna(subset=['pitcher_id']).drop_duplicates(['pitcher_id']).iterrows():
+            if 'stand' in row and pd.notna(row['pitcher_id']):
+                pid = str(row['pitcher_id'])
+                hand = row.get('stand', np.nan)
+                pitcher_hand_lookup[pid] = hand
+            elif 'p_throws' in row and pd.notna(row['pitcher_id']):
+                pitcher_hand_lookup[str(row['pitcher_id'])] = row.get('p_throws', np.nan)
+
         today_rows = []
         for idx, row in lineup_df.iterrows():
             this_batter_id = str(row['batter_id']).split(".")[0]
@@ -405,18 +409,26 @@ with tab1:
             city = row.get("city", np.nan)
             team_code = row.get("team_code", np.nan)
             game_date = row.get("game_date", np.nan)
-            pitcher_id = row.get("pitcher_id", np.nan)
+            pitcher_id = str(row.get("pitcher_id", np.nan))
             player_name = row.get("player_name", np.nan)
             stand = row.get("stand", np.nan)
-            batter_hand = row.get("stand", np.nan)
-            pitcher_hand = row.get("pitcher_hand", np.nan)
+            # Fetch rolling features and batter/pitcher hand from Statcast df
             filter_df = df[df['batter_id'].astype(str).str.split('.').str[0] == this_batter_id]
             if not filter_df.empty:
                 last_row = filter_df.iloc[-1]
-                row_out = {c: last_row.get(c, np.nan) for c in rolling_feature_cols}
+                row_out = {c: last_row.get(c, np.nan) for c in rolling_feature_cols + ['batter_hand']}
             else:
-                row_out = {c: np.nan for c in rolling_feature_cols}
-            # Context
+                row_out = {c: np.nan for c in rolling_feature_cols + ['batter_hand']}
+            # Batter hand
+            batter_hand = row.get('stand', row_out.get('batter_hand', np.nan))
+            # Pitcher hand: prefer lineup, else Statcast
+            pitcher_hand = pitcher_hand_lookup.get(pitcher_id, np.nan)
+            if pd.isna(pitcher_hand) and not filter_df.empty and 'pitcher_hand' in last_row:
+                pitcher_hand = last_row['pitcher_hand']
+            # Park hand HR
+            park_hand_rate = 1.0
+            if not pd.isna(park) and not pd.isna(batter_hand):
+                park_hand_rate = park_hand_hr_rate_map.get(str(park).lower(), {}).get(str(batter_hand).upper(), 1.0)
             row_out.update({
                 "game_date": game_date,
                 "batter_id": this_batter_id,
@@ -424,11 +436,11 @@ with tab1:
                 "pitcher_id": pitcher_id,
                 "park": park,
                 "park_hr_rate": park_hr_rate_map.get(str(park).lower(), 1.0) if not pd.isna(park) else 1.0,
-                "park_hand_hr_rate": park_hand_hr_rate_map.get(str(park).lower(), {}).get(str(batter_hand).upper(), 1.0) if not pd.isna(park) and not pd.isna(batter_hand) else 1.0,
+                "park_hand_hr_rate": park_hand_rate,
                 "park_altitude": park_altitude_map.get(str(park).lower(), 0) if not pd.isna(park) else 0,
                 "roof_status": roof_status_map.get(str(park).lower(), "open") if not pd.isna(park) else "open",
                 "city": city if not pd.isna(city) else mlb_team_city_map.get(team_code, ""),
-                "stand": stand,
+                "stand": batter_hand,
                 "batter_hand": batter_hand,
                 "pitcher_hand": pitcher_hand
             })
