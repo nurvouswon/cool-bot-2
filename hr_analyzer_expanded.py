@@ -78,7 +78,8 @@ def dedup_columns(df):
     return df.loc[:, ~df.columns.duplicated()]
 
 def parse_custom_weather_string_v2(s):
-    if pd.isna(s): return pd.Series([np.nan]*7, index=['temp','wind_vector','wind_field_dir','wind_mph','humidity','condition','wind_dir_string'])
+    if pd.isna(s):
+        return pd.Series([np.nan]*7, index=['temp','wind_vector','wind_field_dir','wind_mph','humidity','condition','wind_dir_string'])
     s = str(s)
     temp_match = re.search(r'(\d{2,3})\s*[OI°]?\s', s)
     temp = int(temp_match.group(1)) if temp_match else np.nan
@@ -106,7 +107,15 @@ def downcast_numeric(df):
         df[col] = pd.to_numeric(df[col], downcast='integer')
     return df
 
-# ================== ADVANCED ROLLING STATS (patched SLG) ==================
+# =============== SPEED/ROLLING HELPERS ===============
+def rolling_apply(series, window, func):
+    """Fast rolling for custom rowwise operations."""
+    if len(series) < 1:
+        return np.nan
+    result = series.rolling(window, min_periods=1).apply(func)
+    return result.iloc[-1] if not result.empty else np.nan
+
+# ================== ADVANCED ROLLING STATS (patched SLG, optimized) ==================
 @st.cache_data(show_spinner=True)
 def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix=""):
     df = df.copy()
@@ -138,14 +147,15 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
                 out_row[f"{prefix}fb_rate_{w}"] = la.rolling(w, min_periods=1).apply(lambda x: np.mean(x >= 25)).iloc[-1]
                 out_row[f"{prefix}sweet_spot_rate_{w}"] = la.rolling(w, min_periods=1).apply(lambda x: np.mean((x >= 8) & (x <= 32))).iloc[-1]
             if ls is not None and la is not None:
-                out_row[f"{prefix}barrel_rate_{w}"] = (((ls >= 98) & (la >= 26) & (la <= 30)).rolling(w, min_periods=1).mean().iloc[-1])
+                # Barrel: >=98 EV and 26-30 LA
+                barrels = ((ls >= 98) & (la >= 26) & (la <= 30)).astype(float)
+                out_row[f"{prefix}barrel_rate_{w}"] = barrels.rolling(w, min_periods=1).mean().iloc[-1]
             if hd is not None:
                 out_row[f"{prefix}hit_dist_avg_{w}"] = hd.rolling(w, min_periods=1).mean().iloc[-1]
             if pull is not None:
                 out_row[f"{prefix}pull_rate_{w}"] = pull.rolling(w, min_periods=1).mean().iloc[-1]
             if hard is not None:
                 out_row[f"{prefix}hard_contact_rate_{w}"] = hard.rolling(w, min_periods=1).mean().iloc[-1]
-            # Patched SLG
             if slg is not None:
                 out_row[f"{prefix}slg_{w}"] = slg.rolling(w, min_periods=1).mean().iloc[-1]
         if pitch_types is not None and "pitch_type" in group.columns:
@@ -161,9 +171,12 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
                             out_row[f"{key}fb_rate_{w}"] = pt_group['launch_angle'].rolling(w, min_periods=1).apply(lambda x: np.mean(x >= 25)).iloc[-1]
                             out_row[f"{key}sweet_spot_rate_{w}"] = pt_group['launch_angle'].rolling(w, min_periods=1).apply(lambda x: np.mean((x >= 8) & (x <= 32))).iloc[-1]
                         if 'launch_speed' in pt_group.columns and 'launch_angle' in pt_group.columns:
-                            out_row[f"{key}barrel_rate_{w}"] = (((pt_group['launch_speed'] >= 98) &
-                                                                 (pt_group['launch_angle'] >= 26) &
-                                                                 (pt_group['launch_angle'] <= 30)).rolling(w, min_periods=1).mean().iloc[-1])
+                            # Barrel rate for pitch type
+                            barrel_flags = pd.concat([
+                                pt_group['launch_speed'].reset_index(drop=True),
+                                pt_group['launch_angle'].reset_index(drop=True)
+                            ], axis=1).apply(lambda row: (row[0] >= 98) & (26 <= row[1] <= 30), axis=1)
+                            out_row[f"{key}barrel_rate_{w}"] = rolling_apply(barrel_flags, w, np.mean)
                     else:
                         for feat in ['avg_exit_velo', 'hard_hit_rate', 'barrel_rate', 'fb_rate', 'sweet_spot_rate']:
                             out_row[f"{key}{feat}_{w}"] = np.nan
@@ -295,7 +308,6 @@ with tab1:
             df['pitcher_hand'] = np.nan
 
         # ================== SLG NUMERIC FOR ROLLING ==================
-        # Map single/double/triple/hr for SLG
         slg_map = {'single':1, 'double':2, 'triple':3, 'home_run':4, 'homerun':4}
         if 'events' in df.columns:
             df['events_clean'] = df['events'].astype(str).str.lower().str.replace(' ', '')
