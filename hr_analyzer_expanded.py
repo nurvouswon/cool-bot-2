@@ -495,4 +495,4 @@ with tab1:
         gc.collect()
 
     else:
-        st.info("Upload a Matchups/Lineups CSV and select a date range to generate the event-level and TODAY CSV
+        st.info("Upload a Matchups/Lineups CSV and select a date range to generate the event-level and TODAY CSVs.")
