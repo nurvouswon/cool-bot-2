@@ -6,7 +6,11 @@ import io
 import gc
 from datetime import datetime, timedelta
 
-# ===================== CONTEXT MAPS & RATES =====================
+# ==========================
+#   CONTEXT MAPS & DEEP RESEARCH HR MULTIPLIERS
+# ==========================
+
+# --- Park/Team/City/Etc ---
 park_hr_rate_map = {
     'angels_stadium': 1.05, 'angel_stadium': 1.05, 'minute_maid_park': 1.06, 'coors_field': 1.30,
     'yankee_stadium': 1.19, 'fenway_park': 0.97, 'rogers_centre': 1.10, 'tropicana_field': 0.85,
@@ -17,21 +21,6 @@ park_hr_rate_map = {
     'pnc_park': 0.87, 'busch_stadium': 0.87, 'truist_park': 1.06, 'loan_depot_park': 0.86,
     'loandepot_park': 0.86, 'citi_field': 1.05, 'nationals_park': 1.05, 'petco_park': 0.85,
     'chase_field': 1.06, 'citizens_bank_park': 1.19, 'sutter_health_park': 1.12, 'target_field': 1.05
-}
-park_altitude_map = {
-    'coors_field': 5280, 'chase_field': 1100, 'dodger_stadium': 338, 'minute_maid_park': 50,
-    'fenway_park': 19, 'wrigley_field': 594, 'great_american_ball_park': 489, 'oracle_park': 10,
-    'petco_park': 62, 'yankee_stadium': 55, 'citizens_bank_park': 30, 'kauffman_stadium': 750,
-    'guaranteed_rate_field': 600, 'progressive_field': 650, 'busch_stadium': 466, 'camden_yards': 40,
-    'rogers_centre': 250, 'angel_stadium': 160, 'tropicana_field': 3, 'citi_field': 3,
-    'oakland_coliseum': 50, 'globe_life_field': 560, 'pnc_park': 725, 'loan_depot_park': 7,
-    'loandepot_park': 7, 'nationals_park': 25, 'american_family_field': 633, 'sutter_health_park': 20,
-    'target_field': 830
-}
-roof_status_map = {
-    'rogers_centre': 'closed', 'chase_field': 'open', 'minute_maid_park': 'open',
-    'loan_depot_park': 'closed', 'loandepot_park': 'closed', 'globe_life_field': 'open',
-    'tropicana_field': 'closed', 'american_family_field': 'open'
 }
 team_code_to_park = {
     'PHI': 'citizens_bank_park', 'ATL': 'truist_park', 'NYM': 'citi_field',
@@ -54,44 +43,44 @@ mlb_team_city_map = {
     'SD': 'San Diego', 'SEA': 'Seattle', 'SF': 'San Francisco', 'STL': 'St. Louis', 'TB': 'St. Petersburg',
     'TEX': 'Arlington', 'TOR': 'Toronto', 'WSH': 'Washington', 'WAS': 'Washington'
 }
-park_hand_hr_rate_map = {
-    'angels_stadium': {'L': 1.09, 'R': 1.02}, 'angel_stadium': {'L': 1.09, 'R': 1.02},
-    'minute_maid_park': {'L': 1.13, 'R': 1.06}, 'coors_field': {'L': 1.38, 'R': 1.24},
-    'yankee_stadium': {'L': 1.47, 'R': 0.98}, 'fenway_park': {'L': 1.04, 'R': 0.97},
-    'rogers_centre': {'L': 1.08, 'R': 1.12}, 'tropicana_field': {'L': 0.84, 'R': 0.89},
-    'camden_yards': {'L': 0.98, 'R': 1.27}, 'guaranteed_rate_field': {'L': 1.25, 'R': 1.11},
-    'progressive_field': {'L': 0.99, 'R': 1.02}, 'comerica_park': {'L': 1.10, 'R': 0.91},
-    'kauffman_stadium': {'L': 0.90, 'R': 1.03}, 'globe_life_field': {'L': 1.01, 'R': 0.98},
-    'dodger_stadium': {'L': 1.02, 'R': 1.18}, 'oakland_coliseum': {'L': 0.81, 'R': 0.85},
-    't-mobile_park': {'L': 0.81, 'R': 0.92}, 'tmobile_park': {'L': 0.81, 'R': 0.92},
-    'oracle_park': {'L': 0.67, 'R': 0.99}, 'wrigley_field': {'L': 1.10, 'R': 1.16},
-    'great_american_ball_park': {'L': 1.30, 'R': 1.23}, 'american_family_field': {'L': 1.25, 'R': 1.13},
-    'pnc_park': {'L': 0.76, 'R': 0.92}, 'busch_stadium': {'L': 0.78, 'R': 0.91},
-    'truist_park': {'L': 1.00, 'R': 1.09}, 'loan_depot_park': {'L': 0.83, 'R': 0.91},
-    'loandepot_park': {'L': 0.83, 'R': 0.91}, 'citi_field': {'L': 1.11, 'R': 0.98},
-    'nationals_park': {'L': 1.04, 'R': 1.06}, 'petco_park': {'L': 0.90, 'R': 0.88},
-    'chase_field': {'L': 1.16, 'R': 1.05}, 'citizens_bank_park': {'L': 1.22, 'R': 1.20},
-    'sutter_health_park': {'L': 1.12, 'R': 1.12}, 'target_field': {'L': 1.09, 'R': 1.01}
-}
 
-# ============== DEEP RESEARCH HR MULTIPLIERS: By Team/Hand ==============
-park_hr_percent_map_all = {
+# -------------- BATTER SIDE (Deep Research: HR park multipliers by all/RHB/LHB) --------------
+batter_park_hr_percent_map_all = {
     'ARI': 0.98, 'ATL': 0.95, 'BAL': 1.11, 'BOS': 0.84, 'CHC': 1.03, 'CHW': 1.25, 'CIN': 1.27, 'CLE': 0.96, 'COL': 1.06, 'DET': 0.96,
     'HOU': 1.10, 'KC': 0.83, 'LAA': 1.01, 'LAD': 1.11, 'MIA': 0.85, 'MIL': 1.14, 'MIN': 0.94, 'NYM': 1.07, 'NYY': 1.20, 'OAK': 0.90,
     'PHI': 1.18, 'PIT': 0.83, 'SD': 1.02, 'SEA': 1.00, 'SF': 0.75, 'STL': 0.86, 'TB': 0.96, 'TEX': 1.07, 'TOR': 1.09, 'WAS': 1.00,
 }
-park_hr_percent_map_rhb = {
+batter_park_hr_percent_map_rhb = {
     'ARI': 1.00, 'ATL': 0.93, 'BAL': 1.09, 'BOS': 0.90, 'CHC': 1.09, 'CHW': 1.26, 'CIN': 1.27, 'CLE': 0.91, 'COL': 1.05,
     'DET': 0.96, 'HOU': 1.10, 'KC': 0.83, 'LAA': 1.01, 'LAD': 1.11, 'MIA': 0.84, 'MIL': 1.12, 'MIN': 0.95, 'NYM': 1.11,
     'NYY': 1.15, 'OAK': 0.91, 'PHI': 1.18, 'PIT': 0.80, 'SD': 1.02, 'SEA': 1.03, 'SF': 0.76, 'STL': 0.84, 'TB': 0.94,
     'TEX': 1.06, 'TOR': 1.11, 'WAS': 1.02,
 }
-park_hr_percent_map_lhb = {
+batter_park_hr_percent_map_lhb = {
     'ARI': 0.98, 'ATL': 0.99, 'BAL': 1.13, 'BOS': 0.75, 'CHC': 0.93, 'CHW': 1.23, 'CIN': 1.29, 'CLE': 1.01, 'COL': 1.07,
     'DET': 0.96, 'HOU': 1.09, 'KC': 0.81, 'LAA': 1.00, 'LAD': 1.12, 'MIA': 0.87, 'MIL': 1.19, 'MIN': 0.91, 'NYM': 1.06,
     'NYY': 1.28, 'OAK': 0.87, 'PHI': 1.19, 'PIT': 0.90, 'SD': 0.98, 'SEA': 0.96, 'SF': 0.73, 'STL': 0.90, 'TB': 0.99,
     'TEX': 1.11, 'TOR': 1.05, 'WAS': 0.96,
 }
+
+# -------------- PITCHER SIDE (Deep Research: HR park multipliers by all/RHB/LHB) --------------
+pitcher_park_hr_percent_map_all = {
+    'ARI': 0.98, 'ATL': 0.95, 'BAL': 1.11, 'BOS': 0.84, 'CHC': 1.03, 'CHW': 1.25, 'CIN': 1.27, 'CLE': 0.96, 'COL': 1.06, 'DET': 0.96,
+    'HOU': 1.10, 'KC': 0.83, 'LAA': 1.01, 'LAD': 1.11, 'MIA': 0.85, 'MIL': 1.14, 'MIN': 0.94, 'NYM': 1.07, 'NYY': 1.20, 'OAK': 0.90,
+    'PHI': 1.18, 'PIT': 0.83, 'SD': 1.02, 'SEA': 1.00, 'SF': 0.75, 'STL': 0.86, 'TB': 0.96, 'TEX': 1.07, 'TOR': 1.09, 'WAS': 1.00,
+}
+pitcher_park_hr_percent_map_rhb = {
+    'ARI': 0.97, 'ATL': 1.01, 'BAL': 1.16, 'BOS': 0.84, 'CHC': 1.02, 'CHW': 1.28, 'CIN': 1.27, 'CLE': 0.98, 'COL': 1.06, 'DET': 0.95,
+    'HOU': 1.11, 'KC': 0.84, 'LAA': 1.01, 'LAD': 1.11, 'MIA': 0.84, 'MIL': 1.14, 'MIN': 0.96, 'NYM': 1.07, 'NYY': 1.24, 'OAK': 0.90,
+    'PHI': 1.19, 'PIT': 0.85, 'SD': 1.02, 'SEA': 1.01, 'SF': 0.73, 'STL': 0.84, 'TB': 0.97, 'TEX': 1.10, 'TOR': 1.11, 'WAS': 1.03,
+}
+pitcher_park_hr_percent_map_lhb = {
+    'ARI': 0.99, 'ATL': 0.79, 'BAL': 0.97, 'BOS': 0.83, 'CHC': 1.03, 'CHW': 1.18, 'CIN': 1.27, 'CLE': 0.89, 'COL': 1.05, 'DET': 0.97,
+    'HOU': 1.07, 'KC': 0.79, 'LAA': 1.01, 'LAD': 1.11, 'MIA': 0.90, 'MIL': 1.14, 'MIN': 0.89, 'NYM': 1.10, 'NYY': 1.12, 'OAK': 0.89,
+    'PHI': 1.16, 'PIT': 0.78, 'SD': 1.02, 'SEA': 0.97, 'SF': 0.82, 'STL': 0.96, 'TB': 0.94, 'TEX': 1.01, 'TOR': 1.06, 'WAS': 0.90,
+}
+
+# ==================== Helper Functions ======================
 
 def dedup_columns(df):
     return df.loc[:, ~df.columns.duplicated()]
@@ -132,7 +121,7 @@ def rolling_apply(series, window, func):
     result = series.rolling(window, min_periods=1).apply(func)
     return result.iloc[-1] if not result.empty else np.nan
 
-# ================== ADVANCED ROLLING STATS (patched SLG, optimized) ==================
+# =============== ADVANCED ROLLING STATS (INCLUDES SPRAY ANGLE) ===============
 @st.cache_data(show_spinner=True)
 def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix=""):
     df = df.copy()
@@ -143,19 +132,17 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
         df['launch_speed'] = pd.to_numeric(df['launch_speed'], errors='coerce')
     if 'launch_angle' in df.columns:
         df['launch_angle'] = pd.to_numeric(df['launch_angle'], errors='coerce')
-    if 'hc_x' in df.columns and 'hc_y' in df.columns:
-        df['pull'] = ((df['hc_x'] > 200) & (df['hc_x'] < 300)).astype(float)
-    if 'hit_distance_sc' in df.columns:
-        df['hard_hit'] = (df['launch_speed'] >= 95).astype(float)
+    # SPRAY ANGLE (statcast field: 'spray_angle')
+    if 'hc_x' in df.columns and 'hc_y' in df.columns and 'spray_angle' not in df.columns:
+        # Statcast spray angle formula
+        df['spray_angle'] = np.degrees(np.arctan2(df['hc_x']-125.42, 198.27-df['hc_y']))
     results = []
     for name, group in df.groupby(id_col, sort=False):
         out_row = {}
         ls = group['launch_speed'] if 'launch_speed' in group.columns else None
         la = group['launch_angle'] if 'launch_angle' in group.columns else None
         hd = group['hit_distance_sc'] if 'hit_distance_sc' in group.columns else None
-        pull = group['pull'] if 'pull' in group.columns else None
-        hard = group['hard_hit'] if 'hard_hit' in group.columns else None
-        slg = group['slg_numeric'] if 'slg_numeric' in group.columns else None
+        spr = group['spray_angle'] if 'spray_angle' in group.columns else None
         for w in windows:
             if ls is not None:
                 out_row[f"{prefix}avg_exit_velo_{w}"] = ls.rolling(w, min_periods=1).mean().iloc[-1]
@@ -168,38 +155,16 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
                 out_row[f"{prefix}barrel_rate_{w}"] = barrels.rolling(w, min_periods=1).mean().iloc[-1]
             if hd is not None:
                 out_row[f"{prefix}hit_dist_avg_{w}"] = hd.rolling(w, min_periods=1).mean().iloc[-1]
-            if pull is not None:
-                out_row[f"{prefix}pull_rate_{w}"] = pull.rolling(w, min_periods=1).mean().iloc[-1]
-            if hard is not None:
-                out_row[f"{prefix}hard_contact_rate_{w}"] = hard.rolling(w, min_periods=1).mean().iloc[-1]
-            if slg is not None:
-                out_row[f"{prefix}slg_{w}"] = slg.rolling(w, min_periods=1).mean().iloc[-1]
-        if pitch_types is not None and "pitch_type" in group.columns:
-            for pt in pitch_types:
-                pt_group = group[group['pitch_type'] == pt]
-                for w in windows:
-                    key = f"{prefix}{pt}_"
-                    if not pt_group.empty:
-                        if 'launch_speed' in pt_group.columns:
-                            out_row[f"{key}avg_exit_velo_{w}"] = pt_group['launch_speed'].rolling(w, min_periods=1).mean().iloc[-1]
-                            out_row[f"{key}hard_hit_rate_{w}"] = pt_group['launch_speed'].rolling(w, min_periods=1).apply(lambda x: np.mean(x >= 95)).iloc[-1]
-                        if 'launch_angle' in pt_group.columns:
-                            out_row[f"{key}fb_rate_{w}"] = pt_group['launch_angle'].rolling(w, min_periods=1).apply(lambda x: np.mean(x >= 25)).iloc[-1]
-                            out_row[f"{key}sweet_spot_rate_{w}"] = pt_group['launch_angle'].rolling(w, min_periods=1).apply(lambda x: np.mean((x >= 8) & (x <= 32))).iloc[-1]
-                        if 'launch_speed' in pt_group.columns and 'launch_angle' in pt_group.columns:
-                            barrel_flags = pd.concat([
-                                pt_group['launch_speed'].reset_index(drop=True),
-                                pt_group['launch_angle'].reset_index(drop=True)
-                            ], axis=1).apply(lambda row: (row[0] >= 98) & (26 <= row[1] <= 30), axis=1)
-                            out_row[f"{key}barrel_rate_{w}"] = rolling_apply(barrel_flags, w, np.mean)
-                    else:
-                        for feat in ['avg_exit_velo', 'hard_hit_rate', 'barrel_rate', 'fb_rate', 'sweet_spot_rate']:
-                            out_row[f"{key}{feat}_{w}"] = np.nan
+            if spr is not None:
+                out_row[f"{prefix}spray_angle_avg_{w}"] = spr.rolling(w, min_periods=1).mean().iloc[-1]
+                out_row[f"{prefix}pull_rate_{w}"] = spr.rolling(w, min_periods=1).apply(lambda x: np.mean(x > 10)).iloc[-1]
+                out_row[f"{prefix}opp_rate_{w}"] = spr.rolling(w, min_periods=1).apply(lambda x: np.mean(x < -10)).iloc[-1]
         out_row[id_col] = name
         results.append(out_row)
     return pd.DataFrame(results)
 
-# ======================== STREAMLIT APP START ========================
+# ==================== STREAMLIT APP ======================
+
 st.set_page_config("MLB HR Analyzer", layout="wide")
 tab1, tab2 = st.tabs(["1️⃣ Fetch & Feature Engineer Data", "2️⃣ Upload & Analyze"])
 
@@ -322,18 +287,7 @@ with tab1:
         else:
             df['pitcher_hand'] = np.nan
 
-        # ========== DEEP RESEARCH: Park HR percent columns by hand/team ==========
-        # (For both event and TODAY: use team_code and batter_hand)
-        def get_deep_park_mult(team, stand):
-            if pd.isna(team) or team not in park_hr_percent_map_all:
-                return 1.0, 1.0, 1.0
-            stand = str(stand).upper() if pd.notna(stand) else ""
-            all_mult = park_hr_percent_map_all.get(team, 1.0)
-            rhb_mult = park_hr_percent_map_rhb.get(team, 1.0)
-            lhb_mult = park_hr_percent_map_lhb.get(team, 1.0)
-            hand_mult = rhb_mult if stand == "R" else (lhb_mult if stand == "L" else all_mult)
-            return all_mult, rhb_mult, lhb_mult, hand_mult
-
+        # ==================== PARK HR PERCENT: DEEP RESEARCH BATTER SIDE ====================
         df['park_hr_pct_all'] = df['team_code'].map(park_hr_percent_map_all).fillna(1.0)
         df['park_hr_pct_rhb'] = df['team_code'].map(park_hr_percent_map_rhb).fillna(1.0)
         df['park_hr_pct_lhb'] = df['team_code'].map(park_hr_percent_map_lhb).fillna(1.0)
@@ -344,7 +298,28 @@ with tab1:
             for team, stand in zip(df['team_code'], df['batter_hand'])
         ]
 
-        # ================== SLG NUMERIC FOR ROLLING ==================
+        # ==================== PARK HR PERCENT: DEEP RESEARCH PITCHER SIDE ====================
+        # Requires pitcher_hand and pitcher_team_code for each event (as best as can be inferred)
+        if 'pitcher_team_code' not in df.columns:
+            # Try to infer pitcher_team_code as opponent of batting team if possible
+            if 'opponent_team_code' in df.columns:
+                df['pitcher_team_code'] = df['opponent_team_code']
+            else:
+                df['pitcher_team_code'] = np.nan
+        df['pitcher_team_code'] = df['pitcher_team_code'].fillna(df['team_code'])
+        df['pitcher_hand'] = df['pitcher_hand'].fillna("R")
+
+        df['pitcher_park_hr_pct_all'] = df['pitcher_team_code'].map(pitcher_park_hr_percent_map_all).fillna(1.0)
+        df['pitcher_park_hr_pct_rhp'] = df['pitcher_team_code'].map(pitcher_park_hr_percent_map_rhp).fillna(1.0)
+        df['pitcher_park_hr_pct_lhp'] = df['pitcher_team_code'].map(pitcher_park_hr_percent_map_lhp).fillna(1.0)
+        df['pitcher_park_hr_pct_hand'] = [
+            pitcher_park_hr_percent_map_rhp.get(team, 1.0) if str(hand).upper() == "R"
+            else pitcher_park_hr_percent_map_lhp.get(team, 1.0) if str(hand).upper() == "L"
+            else pitcher_park_hr_percent_map_all.get(team, 1.0)
+            for team, hand in zip(df['pitcher_team_code'], df['pitcher_hand'])
+        ]
+
+        # ========== SLG NUMERIC FOR ROLLING ==========
         slg_map = {'single':1, 'double':2, 'triple':3, 'home_run':4, 'homerun':4}
         if 'events' in df.columns:
             df['events_clean'] = df['events'].astype(str).str.lower().str.replace(' ', '')
@@ -355,6 +330,7 @@ with tab1:
         if 'hr_outcome' not in df.columns:
             df['hr_outcome'] = df['events_clean'].isin(['homerun', 'home_run']).astype(int)
 
+        # ========== FILTER VALID EVENTS ==========
         valid_events = [
             'single', 'double', 'triple', 'homerun', 'home_run', 'field_out',
             'force_out', 'grounded_into_double_play', 'fielders_choice_out',
@@ -362,8 +338,8 @@ with tab1:
         ]
         df = df[df['events_clean'].isin(valid_events)].copy()
 
-        # ========== ADVANCED ROLLING FEATURES ==========
-        progress.progress(22, "Computing rolling Statcast features (batter & pitcher, pitch type, deep windows)...")
+        # ========== ADVANCED ROLLING FEATURES (INCL SPRAY ANGLE) ==========
+        progress.progress(22, "Computing rolling Statcast features (batter & pitcher, incl spray angle)...")
         roll_windows = [3, 5, 7, 14, 20, 30, 60]
         main_pitch_types = ["ff", "sl", "cu", "ch", "si", "fc", "fs", "st", "sinker", "splitter", "sweeper"]
         for col in ['batter', 'batter_id']:
@@ -391,18 +367,8 @@ with tab1:
             df = df.drop(columns=['batter_id_pitcherstat'])
         df = dedup_columns(df)
 
-        # ====== Add park_hand_hr_rate to event-level ======
-        if 'stand' in df.columns and 'park' in df.columns:
-            df['park_hand_hr_rate'] = [
-                park_hand_hr_rate_map.get(str(park).lower(), {}).get(str(stand).upper(), 1.0)
-                for park, stand in zip(df['park'], df['stand'])
-            ]
-        else:
-            df['park_hand_hr_rate'] = 1.0
-
-        # Downcast numerics for RAM
+        # ====== Downcast numerics for RAM
         df = downcast_numeric(df)
-
         progress.progress(80, "Event-level feature engineering/merges complete.")
 
         # =================== OUTPUTS =======================
@@ -425,7 +391,7 @@ with tab1:
             key="download_event_level_parquet"
         )
 
-        # ===== TODAY CSV: 1 row per batter with all rolling/context features and WEATHER FROM LINEUP CSV =====
+        # ================== TODAY CSV (BOTH BATTER & PITCHER PARK HR) ==================
         progress.progress(95, "Generating TODAY batter rows and context merges...")
         rolling_feature_cols = [col for col in df.columns if (
             col.startswith('b_') or col.startswith('p_')
@@ -433,14 +399,14 @@ with tab1:
         extra_context_cols = [
             'park', 'park_hr_rate', 'park_hand_hr_rate', 'park_altitude', 'roof_status', 'city',
             'batter_hand', 'pitcher_hand',
-            'park_hr_pct_all', 'park_hr_pct_rhb', 'park_hr_pct_lhb', 'park_hr_pct_hand'
+            'park_hr_pct_all', 'park_hr_pct_rhb', 'park_hr_pct_lhb', 'park_hr_pct_hand',
+            'pitcher_park_hr_pct_all', 'pitcher_park_hr_pct_rhp', 'pitcher_park_hr_pct_lhp', 'pitcher_park_hr_pct_hand'
         ]
         today_cols = [
             'game_date', 'batter_id', 'player_name', 'pitcher_id',
             'temp', 'humidity', 'wind_mph', 'wind_dir_string', 'condition', 'stand'
         ] + extra_context_cols + rolling_feature_cols
 
-        # --- Build robust pitcher_hand_map for each unique pitcher_id in today's matchups ---
         pitcher_hand_map = {}
         pitcher_hand_statcast = df[['pitcher_id', 'pitcher_hand']].drop_duplicates().dropna()
         for _, row_p in pitcher_hand_statcast.iterrows():
@@ -470,23 +436,25 @@ with tab1:
                 row_out = {c: last_row.get(c, np.nan) for c in rolling_feature_cols + [
                     'batter_hand', 'park', 'park_hr_rate', 'park_hand_hr_rate', 'park_altitude', 'roof_status',
                     'city', 'pitcher_hand',
-                    'park_hr_pct_all', 'park_hr_pct_rhb', 'park_hr_pct_lhb', 'park_hr_pct_hand'
+                    'park_hr_pct_all', 'park_hr_pct_rhb', 'park_hr_pct_lhb', 'park_hr_pct_hand',
+                    'pitcher_park_hr_pct_all', 'pitcher_park_hr_pct_rhp', 'pitcher_park_hr_pct_lhp', 'pitcher_park_hr_pct_hand'
                 ]}
             else:
                 row_out = {c: np.nan for c in rolling_feature_cols + [
                     'batter_hand', 'park', 'park_hr_rate', 'park_hand_hr_rate', 'park_altitude', 'roof_status',
                     'city', 'pitcher_hand',
-                    'park_hr_pct_all', 'park_hr_pct_rhb', 'park_hr_pct_lhb', 'park_hr_pct_hand'
+                    'park_hr_pct_all', 'park_hr_pct_rhb', 'park_hr_pct_lhb', 'park_hr_pct_hand',
+                    'pitcher_park_hr_pct_all', 'pitcher_park_hr_pct_rhp', 'pitcher_park_hr_pct_lhp', 'pitcher_park_hr_pct_hand'
                 ]}
             # Batter hand
             batter_hand = row.get('stand', row_out.get('batter_hand', np.nan))
             # Pitcher hand: always from pitcher_hand_map
             pitcher_hand = pitcher_hand_map.get(pitcher_id, np.nan)
-            # Park hand HR
+            # Batter side park HR
             park_hand_rate = 1.0
             if not pd.isna(park) and not pd.isna(batter_hand):
                 park_hand_rate = park_hand_hr_rate_map.get(str(park).lower(), {}).get(str(batter_hand).upper(), 1.0)
-            # Deep research team/hand HR multipliers
+            # Deep research team/hand HR multipliers (BATTER SIDE)
             if not pd.isna(team_code):
                 park_hr_pct_all = park_hr_percent_map_all.get(team_code, 1.0)
                 park_hr_pct_rhb = park_hr_percent_map_rhb.get(team_code, 1.0)
@@ -499,6 +467,22 @@ with tab1:
                     park_hr_pct_hand = park_hr_pct_all
             else:
                 park_hr_pct_all = park_hr_pct_rhb = park_hr_pct_lhb = park_hr_pct_hand = 1.0
+
+            # --- PITCHER SIDE HR PARK FACTORS ---
+            pitcher_team_code = row.get("pitcher_team_code", team_code)
+            if pd.isna(pitcher_team_code):
+                pitcher_team_code = team_code
+            if pd.isna(pitcher_hand):
+                pitcher_hand = "R"
+            pitcher_park_hr_pct_all = pitcher_park_hr_percent_map_all.get(pitcher_team_code, 1.0)
+            pitcher_park_hr_pct_rhp = pitcher_park_hr_percent_map_rhp.get(pitcher_team_code, 1.0)
+            pitcher_park_hr_pct_lhp = pitcher_park_hr_percent_map_lhp.get(pitcher_team_code, 1.0)
+            if str(pitcher_hand).upper() == "R":
+                pitcher_park_hr_pct_hand = pitcher_park_hr_pct_rhp
+            elif str(pitcher_hand).upper() == "L":
+                pitcher_park_hr_pct_hand = pitcher_park_hr_pct_lhp
+            else:
+                pitcher_park_hr_pct_hand = pitcher_park_hr_pct_all
 
             row_out.update({
                 "game_date": game_date,
@@ -517,7 +501,11 @@ with tab1:
                 "park_hr_pct_all": park_hr_pct_all,
                 "park_hr_pct_rhb": park_hr_pct_rhb,
                 "park_hr_pct_lhb": park_hr_pct_lhb,
-                "park_hr_pct_hand": park_hr_pct_hand
+                "park_hr_pct_hand": park_hr_pct_hand,
+                "pitcher_park_hr_pct_all": pitcher_park_hr_pct_all,
+                "pitcher_park_hr_pct_rhp": pitcher_park_hr_pct_rhp,
+                "pitcher_park_hr_pct_lhp": pitcher_park_hr_pct_lhp,
+                "pitcher_park_hr_pct_hand": pitcher_park_hr_pct_hand
             })
             for c in ['temp', 'humidity', 'wind_mph', 'wind_dir_string', 'condition']:
                 row_out[c] = row.get(c, np.nan)
