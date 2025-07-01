@@ -118,9 +118,14 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
     if 'launch_angle' in df.columns:
         df['launch_angle'] = pd.to_numeric(df['launch_angle'], errors='coerce')
     if 'hc_x' in df.columns and 'hc_y' in df.columns:
-        df['pull'] = ((df['hc_x'] > 200) & (df['hc_x'] < 300)).astype(float) # crude "pull" for demonstration
+        df['pull'] = ((df['hc_x'] > 200) & (df['hc_x'] < 300)).astype(float)
     if 'hit_distance_sc' in df.columns:
         df['hard_hit'] = (df['launch_speed'] >= 95).astype(float)
+    # ------- FIX: Map SLG to numeric before rolling ---------
+    slg_map = {'single':1, 'double':2, 'triple':3, 'home_run':4, 'homerun':4}
+    if 'events_clean' in df.columns:
+        df['events_slg_val'] = df['events_clean'].map(slg_map).fillna(0).astype(float)
+    # --------------------------------------------------------
     results = []
     for name, group in df.groupby(id_col, sort=False):
         out_row = {}
@@ -129,7 +134,6 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
         hd = group['hit_distance_sc'] if 'hit_distance_sc' in group.columns else None
         pull = group['pull'] if 'pull' in group.columns else None
         hard = group['hard_hit'] if 'hard_hit' in group.columns else None
-        slg_map = {'single':1,'double':2,'triple':3,'home_run':4,'homerun':4}
         for w in windows:
             if ls is not None:
                 out_row[f"{prefix}avg_exit_velo_{w}"] = ls.rolling(w, min_periods=1).mean().iloc[-1]
@@ -145,12 +149,9 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
                 out_row[f"{prefix}pull_rate_{w}"] = pull.rolling(w, min_periods=1).mean().iloc[-1]
             if hard is not None:
                 out_row[f"{prefix}hard_contact_rate_{w}"] = hard.rolling(w, min_periods=1).mean().iloc[-1]
-            # SLG (needs events)
-            if 'events_clean' in group.columns:
-                evs = group['events_clean']
-                slg_events = evs.rolling(w, min_periods=1).apply(
-                    lambda evs: np.mean([slg_map.get(e,0) for e in evs]), raw=False)
-                out_row[f"{prefix}slg_{w}"] = slg_events.iloc[-1] if not slg_events.empty else np.nan
+            # ------- FIX: Use numeric-mapped SLG column -------
+            if 'events_slg_val' in group.columns:
+                out_row[f"{prefix}slg_{w}"] = group['events_slg_val'].rolling(w, min_periods=1).mean().iloc[-1]
         if pitch_types is not None and "pitch_type" in group.columns:
             for pt in pitch_types:
                 pt_group = group[group['pitch_type'] == pt]
@@ -244,7 +245,7 @@ with tab1:
             wx_parsed = lineup_df['weather'].apply(parse_custom_weather_string_v2)
             lineup_df = pd.concat([lineup_df, wx_parsed], axis=1)
 
-        # ==== Assign Opposing SP for Each Batter (handles game_number bug/fallback) ====
+        # ==== Assign Opposing SP for Each Batter ====
         progress.progress(14, "Assigning opposing pitcher for each batter in lineup...")
         lineup_df['pitcher_id'] = np.nan
         grouped = lineup_df.groupby(['game_date', 'park', 'time']) if 'time' in lineup_df.columns else lineup_df.groupby(['game_date', 'park'])
@@ -252,13 +253,11 @@ with tab1:
             if 'team_code' not in group.columns: continue
             teams = group['team_code'].unique()
             if len(teams) < 2: continue
-            # Identify SP for each team
             team_sps = {}
             for team in teams:
                 sp_row = group[(group['team_code'] == team) & (group['batting_order'] == "SP")]
                 if not sp_row.empty:
                     team_sps[team] = str(sp_row.iloc[0]['batter_id'])
-            # Assign each batter the opponent's SP
             for team in teams:
                 opp_teams = [t for t in teams if t != team]
                 if not opp_teams: continue
@@ -273,7 +272,6 @@ with tab1:
             if col in df.columns:
                 df[col] = df[col].astype(str).str.replace('.0','',regex=False).str.strip()
 
-        # Add park/city/context from team code
         if 'home_team_code' in df.columns:
             df['team_code'] = df['home_team_code'].str.upper()
             df['park'] = df['home_team_code'].str.lower().str.replace(' ', '_')
@@ -301,7 +299,7 @@ with tab1:
         else:
             df['pitcher_hand'] = np.nan
 
-        # HR outcome flag and events_clean
+        # HR outcome/event fields
         if 'events' in df.columns:
             df['events_clean'] = df['events'].astype(str).str.lower().str.replace(' ', '')
         else:
@@ -316,7 +314,7 @@ with tab1:
         ]
         df = df[df['events_clean'].isin(valid_events)].copy()
 
-        # Rolling stat features
+        # Rolling stat features (batter & pitcher, with pitch types, deep windows)
         progress.progress(22, "Computing rolling Statcast features (batter & pitcher, pitch type, deep windows)...")
         roll_windows = [3, 5, 7, 14, 20, 30, 60]
         main_pitch_types = ["ff", "sl", "cu", "ch", "si", "fc", "fs", "st", "sinker", "splitter", "sweeper"]
@@ -385,7 +383,6 @@ with tab1:
         rolling_feature_cols = [col for col in df.columns if (
             col.startswith('b_') or col.startswith('p_')
         ) and any(str(w) in col for w in roll_windows)]
-        # Also add advanced fields if needed
         extra_context_cols = [
             'park', 'park_hr_rate', 'park_hand_hr_rate', 'park_altitude', 'roof_status', 'city',
             'batter_hand', 'pitcher_hand'
