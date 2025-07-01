@@ -74,6 +74,25 @@ park_hand_hr_rate_map = {
     'sutter_health_park': {'L': 1.12, 'R': 1.12}, 'target_field': {'L': 1.09, 'R': 1.01}
 }
 
+# ============== DEEP RESEARCH HR MULTIPLIERS: By Team/Hand ==============
+park_hr_percent_map_all = {
+    'ARI': 0.98, 'ATL': 0.95, 'BAL': 1.11, 'BOS': 0.84, 'CHC': 1.03, 'CHW': 1.25, 'CIN': 1.27, 'CLE': 0.96, 'COL': 1.06, 'DET': 0.96,
+    'HOU': 1.10, 'KC': 0.83, 'LAA': 1.01, 'LAD': 1.11, 'MIA': 0.85, 'MIL': 1.14, 'MIN': 0.94, 'NYM': 1.07, 'NYY': 1.20, 'OAK': 0.90,
+    'PHI': 1.18, 'PIT': 0.83, 'SD': 1.02, 'SEA': 1.00, 'SF': 0.75, 'STL': 0.86, 'TB': 0.96, 'TEX': 1.07, 'TOR': 1.09, 'WAS': 1.00,
+}
+park_hr_percent_map_rhb = {
+    'ARI': 1.00, 'ATL': 0.93, 'BAL': 1.09, 'BOS': 0.90, 'CHC': 1.09, 'CHW': 1.26, 'CIN': 1.27, 'CLE': 0.91, 'COL': 1.05,
+    'DET': 0.96, 'HOU': 1.10, 'KC': 0.83, 'LAA': 1.01, 'LAD': 1.11, 'MIA': 0.84, 'MIL': 1.12, 'MIN': 0.95, 'NYM': 1.11,
+    'NYY': 1.15, 'OAK': 0.91, 'PHI': 1.18, 'PIT': 0.80, 'SD': 1.02, 'SEA': 1.03, 'SF': 0.76, 'STL': 0.84, 'TB': 0.94,
+    'TEX': 1.06, 'TOR': 1.11, 'WAS': 1.02,
+}
+park_hr_percent_map_lhb = {
+    'ARI': 0.98, 'ATL': 0.99, 'BAL': 1.13, 'BOS': 0.75, 'CHC': 0.93, 'CHW': 1.23, 'CIN': 1.29, 'CLE': 1.01, 'COL': 1.07,
+    'DET': 0.96, 'HOU': 1.09, 'KC': 0.81, 'LAA': 1.00, 'LAD': 1.12, 'MIA': 0.87, 'MIL': 1.19, 'MIN': 0.91, 'NYM': 1.06,
+    'NYY': 1.28, 'OAK': 0.87, 'PHI': 1.19, 'PIT': 0.90, 'SD': 0.98, 'SEA': 0.96, 'SF': 0.73, 'STL': 0.90, 'TB': 0.99,
+    'TEX': 1.11, 'TOR': 1.05, 'WAS': 0.96,
+}
+
 def dedup_columns(df):
     return df.loc[:, ~df.columns.duplicated()]
 
@@ -107,9 +126,7 @@ def downcast_numeric(df):
         df[col] = pd.to_numeric(df[col], downcast='integer')
     return df
 
-# =============== SPEED/ROLLING HELPERS ===============
 def rolling_apply(series, window, func):
-    """Fast rolling for custom rowwise operations."""
     if len(series) < 1:
         return np.nan
     result = series.rolling(window, min_periods=1).apply(func)
@@ -147,7 +164,6 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
                 out_row[f"{prefix}fb_rate_{w}"] = la.rolling(w, min_periods=1).apply(lambda x: np.mean(x >= 25)).iloc[-1]
                 out_row[f"{prefix}sweet_spot_rate_{w}"] = la.rolling(w, min_periods=1).apply(lambda x: np.mean((x >= 8) & (x <= 32))).iloc[-1]
             if ls is not None and la is not None:
-                # Barrel: >=98 EV and 26-30 LA
                 barrels = ((ls >= 98) & (la >= 26) & (la <= 30)).astype(float)
                 out_row[f"{prefix}barrel_rate_{w}"] = barrels.rolling(w, min_periods=1).mean().iloc[-1]
             if hd is not None:
@@ -171,7 +187,6 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
                             out_row[f"{key}fb_rate_{w}"] = pt_group['launch_angle'].rolling(w, min_periods=1).apply(lambda x: np.mean(x >= 25)).iloc[-1]
                             out_row[f"{key}sweet_spot_rate_{w}"] = pt_group['launch_angle'].rolling(w, min_periods=1).apply(lambda x: np.mean((x >= 8) & (x <= 32))).iloc[-1]
                         if 'launch_speed' in pt_group.columns and 'launch_angle' in pt_group.columns:
-                            # Barrel rate for pitch type
                             barrel_flags = pd.concat([
                                 pt_group['launch_speed'].reset_index(drop=True),
                                 pt_group['launch_angle'].reset_index(drop=True)
@@ -307,6 +322,28 @@ with tab1:
         else:
             df['pitcher_hand'] = np.nan
 
+        # ========== DEEP RESEARCH: Park HR percent columns by hand/team ==========
+        # (For both event and TODAY: use team_code and batter_hand)
+        def get_deep_park_mult(team, stand):
+            if pd.isna(team) or team not in park_hr_percent_map_all:
+                return 1.0, 1.0, 1.0
+            stand = str(stand).upper() if pd.notna(stand) else ""
+            all_mult = park_hr_percent_map_all.get(team, 1.0)
+            rhb_mult = park_hr_percent_map_rhb.get(team, 1.0)
+            lhb_mult = park_hr_percent_map_lhb.get(team, 1.0)
+            hand_mult = rhb_mult if stand == "R" else (lhb_mult if stand == "L" else all_mult)
+            return all_mult, rhb_mult, lhb_mult, hand_mult
+
+        df['park_hr_pct_all'] = df['team_code'].map(park_hr_percent_map_all).fillna(1.0)
+        df['park_hr_pct_rhb'] = df['team_code'].map(park_hr_percent_map_rhb).fillna(1.0)
+        df['park_hr_pct_lhb'] = df['team_code'].map(park_hr_percent_map_lhb).fillna(1.0)
+        df['park_hr_pct_hand'] = [
+            park_hr_percent_map_rhb.get(team, 1.0) if str(stand).upper() == "R"
+            else park_hr_percent_map_lhb.get(team, 1.0) if str(stand).upper() == "L"
+            else park_hr_percent_map_all.get(team, 1.0)
+            for team, stand in zip(df['team_code'], df['batter_hand'])
+        ]
+
         # ================== SLG NUMERIC FOR ROLLING ==================
         slg_map = {'single':1, 'double':2, 'triple':3, 'home_run':4, 'homerun':4}
         if 'events' in df.columns:
@@ -315,7 +352,6 @@ with tab1:
             df['events_clean'] = ""
         df['slg_numeric'] = df['events_clean'].map(slg_map).astype(float)
         df['slg_numeric'] = df['slg_numeric'].fillna(0)
-
         if 'hr_outcome' not in df.columns:
             df['hr_outcome'] = df['events_clean'].isin(['homerun', 'home_run']).astype(int)
 
@@ -396,7 +432,8 @@ with tab1:
         ) and any(str(w) in col for w in roll_windows)]
         extra_context_cols = [
             'park', 'park_hr_rate', 'park_hand_hr_rate', 'park_altitude', 'roof_status', 'city',
-            'batter_hand', 'pitcher_hand'
+            'batter_hand', 'pitcher_hand',
+            'park_hr_pct_all', 'park_hr_pct_rhb', 'park_hr_pct_lhb', 'park_hr_pct_hand'
         ]
         today_cols = [
             'game_date', 'batter_id', 'player_name', 'pitcher_id',
@@ -405,23 +442,18 @@ with tab1:
 
         # --- Build robust pitcher_hand_map for each unique pitcher_id in today's matchups ---
         pitcher_hand_map = {}
-
-        # 1. Try Statcast data (most reliable)
         pitcher_hand_statcast = df[['pitcher_id', 'pitcher_hand']].drop_duplicates().dropna()
         for _, row_p in pitcher_hand_statcast.iterrows():
             pid = str(row_p['pitcher_id'])
             hand = row_p['pitcher_hand']
             if pid not in pitcher_hand_map and pd.notna(hand):
                 pitcher_hand_map[pid] = hand
-
-        # 2. Supplement with lineup if available (sometimes not present)
         for _, row_p in lineup_df.dropna(subset=['pitcher_id']).drop_duplicates(['pitcher_id']).iterrows():
             pid = str(row_p['pitcher_id'])
             hand = row_p.get('p_throws') or row_p.get('stand') or row_p.get('pitcher_hand')
             if pid not in pitcher_hand_map and pd.notna(hand):
                 pitcher_hand_map[pid] = hand
 
-        # ========== GENERATE TODAY DATAFRAME ==========
         today_rows = []
         for idx, row in lineup_df.iterrows():
             this_batter_id = str(row['batter_id']).split(".")[0]
@@ -435,9 +467,17 @@ with tab1:
             filter_df = df[df['batter_id'].astype(str).str.split('.').str[0] == this_batter_id]
             if not filter_df.empty:
                 last_row = filter_df.iloc[-1]
-                row_out = {c: last_row.get(c, np.nan) for c in rolling_feature_cols + ['batter_hand']}
+                row_out = {c: last_row.get(c, np.nan) for c in rolling_feature_cols + [
+                    'batter_hand', 'park', 'park_hr_rate', 'park_hand_hr_rate', 'park_altitude', 'roof_status',
+                    'city', 'pitcher_hand',
+                    'park_hr_pct_all', 'park_hr_pct_rhb', 'park_hr_pct_lhb', 'park_hr_pct_hand'
+                ]}
             else:
-                row_out = {c: np.nan for c in rolling_feature_cols + ['batter_hand']}
+                row_out = {c: np.nan for c in rolling_feature_cols + [
+                    'batter_hand', 'park', 'park_hr_rate', 'park_hand_hr_rate', 'park_altitude', 'roof_status',
+                    'city', 'pitcher_hand',
+                    'park_hr_pct_all', 'park_hr_pct_rhb', 'park_hr_pct_lhb', 'park_hr_pct_hand'
+                ]}
             # Batter hand
             batter_hand = row.get('stand', row_out.get('batter_hand', np.nan))
             # Pitcher hand: always from pitcher_hand_map
@@ -446,6 +486,20 @@ with tab1:
             park_hand_rate = 1.0
             if not pd.isna(park) and not pd.isna(batter_hand):
                 park_hand_rate = park_hand_hr_rate_map.get(str(park).lower(), {}).get(str(batter_hand).upper(), 1.0)
+            # Deep research team/hand HR multipliers
+            if not pd.isna(team_code):
+                park_hr_pct_all = park_hr_percent_map_all.get(team_code, 1.0)
+                park_hr_pct_rhb = park_hr_percent_map_rhb.get(team_code, 1.0)
+                park_hr_pct_lhb = park_hr_percent_map_lhb.get(team_code, 1.0)
+                if str(batter_hand).upper() == "R":
+                    park_hr_pct_hand = park_hr_pct_rhb
+                elif str(batter_hand).upper() == "L":
+                    park_hr_pct_hand = park_hr_pct_lhb
+                else:
+                    park_hr_pct_hand = park_hr_pct_all
+            else:
+                park_hr_pct_all = park_hr_pct_rhb = park_hr_pct_lhb = park_hr_pct_hand = 1.0
+
             row_out.update({
                 "game_date": game_date,
                 "batter_id": this_batter_id,
@@ -459,7 +513,11 @@ with tab1:
                 "city": city if not pd.isna(city) else mlb_team_city_map.get(team_code, ""),
                 "stand": batter_hand,
                 "batter_hand": batter_hand,
-                "pitcher_hand": pitcher_hand
+                "pitcher_hand": pitcher_hand,
+                "park_hr_pct_all": park_hr_pct_all,
+                "park_hr_pct_rhb": park_hr_pct_rhb,
+                "park_hr_pct_lhb": park_hr_pct_lhb,
+                "park_hr_pct_hand": park_hr_pct_hand
             })
             for c in ['temp', 'humidity', 'wind_mph', 'wind_dir_string', 'condition']:
                 row_out[c] = row.get(c, np.nan)
