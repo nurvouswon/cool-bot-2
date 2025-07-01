@@ -74,7 +74,7 @@ park_hand_hr_rate_map = {
     'sutter_health_park': {'L': 1.12, 'R': 1.12}, 'target_field': {'L': 1.09, 'R': 1.01}
 }
 
-# ============== DEEP RESEARCH HR MULTIPLIERS: BY TEAM/HAND — BATTER-SIDE ==============
+# ================== DEEP RESEARCH HR MULTIPLIERS: BY TEAM/HAND — BATTER-SIDE ==================
 park_hr_percent_map_all = {
     'ARI': 0.98, 'AZ': 0.98, 'ATL': 0.95, 'BAL': 1.11, 'BOS': 0.84, 'CHC': 1.03, 'CHW': 1.25, 'CWS': 1.25,
     'CIN': 1.27, 'CLE': 0.96, 'COL': 1.06, 'DET': 0.96, 'HOU': 1.10, 'KC': 0.83, 'LAA': 1.01, 'LAD': 1.11,
@@ -97,7 +97,7 @@ park_hr_percent_map_lhb = {
     'WAS': 0.96, 'WSH': 0.96
 }
 
-# ============== DEEP RESEARCH HR MULTIPLIERS: BY TEAM/HAND — PITCHER-SIDE ==============
+# ================== DEEP RESEARCH HR MULTIPLIERS: BY TEAM/HAND — PITCHER-SIDE ==================
 park_hr_percent_map_pitcher_all = {
     'ARI': 0.98, 'AZ': 0.98, 'ATL': 0.95, 'BAL': 1.11, 'BOS': 0.84, 'CHC': 1.03, 'CHW': 1.25, 'CWS': 1.25,
     'CIN': 1.27, 'CLE': 0.96, 'COL': 1.06, 'DET': 0.96, 'HOU': 1.10, 'KC': 0.83, 'LAA': 1.01, 'LAD': 1.11,
@@ -105,19 +105,18 @@ park_hr_percent_map_pitcher_all = {
     'PHI': 1.18, 'PIT': 0.83, 'SD': 1.02, 'SEA': 1.00, 'SF': 0.75, 'STL': 0.86, 'TB': 0.96, 'TEX': 1.07, 'TOR': 1.09,
     'WAS': 1.00, 'WSH': 1.00
 }
-park_hr_percent_map_rhp = {
+park_hr_percent_map_pitcher_rhp = {
     'ARI': 0.97, 'AZ': 0.97, 'ATL': 1.01, 'BAL': 1.16, 'BOS': 0.84, 'CHC': 1.02, 'CHW': 1.28, 'CWS': 1.28,
     'CIN': 1.27, 'CLE': 0.98, 'COL': 1.06, 'DET': 0.95, 'HOU': 1.11, 'KC': 0.84, 'LAA': 1.01, 'LAD': 1.11,
     'MIA': 0.84, 'MIL': 1.14, 'MIN': 0.96, 'NYM': 1.07, 'NYY': 1.24, 'OAK': 0.90, 'ATH': 0.90,
     'PHI': 1.19, 'PIT': 0.85, 'SD': 1.02, 'SEA': 1.01, 'SF': 0.73, 'STL': 0.84, 'TB': 0.97, 'TEX': 1.10, 'TOR': 1.11,
     'WAS': 1.03, 'WSH': 1.03
 }
-park_hr_percent_map_lhp = {
+park_hr_percent_map_pitcher_lhp = {
     'ARI': 0.99, 'AZ': 0.99, 'ATL': 0.79, 'BAL': 0.97, 'BOS': 0.83, 'CHC': 1.03, 'CHW': 1.18, 'CWS': 1.18,
     'CIN': 1.27, 'CLE': 0.89, 'COL': 1.05, 'DET': 0.97, 'HOU': 1.07, 'KC': 0.79, 'LAA': 1.01, 'LAD': 1.11,
-    'MIA': 0.90, 'MIL': 1.14, 'MIN': 0.89, 'NYM': 1.05, 'NYY': 1.12, 'OAK': 0.89, 'ATH': 0.89,
-    'PHI': 1.16, 'PIT': 0.78, 'SD': 1.02, 'SEA': 0.97, 'SF': 0.82, 'STL': 0.96, 'TB': 0.94, 'TEX': 1.01, 'TOR': 1.06,
-    'WAS': 0.90, 'WSH': 0.90
+    'MIA': 0.90, 'MIL': 1.14, 'MIN': 0.89, 'NYM': 1.05, 'NYY': 1.12, 'OAK': 0.89, 'ATH': 0.89, 'PHI': 1.16, 'PIT': 0.78, 'SD': 1.02, 'SEA': 0.97, 'SF': 0.82, 'STL': 0.96,
+    'TB': 0.94, 'TEX': 1.01, 'TOR': 1.06, 'WAS': 0.90, 'WSH': 0.90
 }
 
 def dedup_columns(df):
@@ -247,6 +246,7 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
 # ======================== STREAMLIT APP START ========================
 st.set_page_config("MLB HR Analyzer", layout="wide")
 tab1, tab2 = st.tabs(["1️⃣ Fetch & Feature Engineer Data", "2️⃣ Upload & Analyze"])
+
 with tab1:
     st.header("Fetch Statcast Data & Generate Features")
     col1, col2 = st.columns(2)
@@ -366,7 +366,7 @@ with tab1:
         else:
             df['pitcher_hand'] = np.nan
 
-        # ========== DEEP RESEARCH: Park HR percent columns by hand/team ==========
+        # ========== Park HR percent columns by hand/team ==========
         df['pitcher_team_code'] = np.nan
         if 'pitcher_id' in df.columns:
             # Map pitcher_team_code based on appearance
@@ -379,16 +379,15 @@ with tab1:
             elif 'team_code' in df.columns:
                 df['pitcher_team_code'] = df['team_code']
         df['pitcher_team_code'] = df['pitcher_team_code'].fillna("").astype(str).str.upper()
-
         df['pitcher_hand_final'] = df['pitcher_hand'].fillna("").astype(str).str.upper()
 
-        df['pitcher_park_hr_pct_all'] = df['pitcher_team_code'].map(park_hr_percent_map_all_pitcher).fillna(1.0)
-        df['pitcher_park_hr_pct_rhp'] = df['pitcher_team_code'].map(park_hr_percent_map_rhp).fillna(1.0)
-        df['pitcher_park_hr_pct_lhp'] = df['pitcher_team_code'].map(park_hr_percent_map_lhp).fillna(1.0)
+        df['pitcher_park_hr_pct_all'] = df['pitcher_team_code'].map(park_hr_percent_map_pitcher_all).fillna(1.0)
+        df['pitcher_park_hr_pct_rhp'] = df['pitcher_team_code'].map(park_hr_percent_map_pitcher_rhp).fillna(1.0)
+        df['pitcher_park_hr_pct_lhp'] = df['pitcher_team_code'].map(park_hr_percent_map_pitcher_lhp).fillna(1.0)
         df['pitcher_park_hr_pct_hand'] = [
-            park_hr_percent_map_rhp.get(team, 1.0) if str(hand) == "R"
-            else park_hr_percent_map_lhp.get(team, 1.0) if str(hand) == "L"
-            else park_hr_percent_map_all_pitcher.get(team, 1.0)
+            park_hr_percent_map_pitcher_rhp.get(team, 1.0) if str(hand) == "R"
+            else park_hr_percent_map_pitcher_lhp.get(team, 1.0) if str(hand) == "L"
+            else park_hr_percent_map_pitcher_all.get(team, 1.0)
             for team, hand in zip(df['pitcher_team_code'], df['pitcher_hand_final'])
         ]
 
@@ -564,9 +563,9 @@ with tab1:
             pitcher_hand_val = str(pitcher_hand).upper() if pd.notna(pitcher_hand) else ""
             # Pitcher park HR factors (pitcher side)
             if not pd.isna(pitcher_team_code):
-                pitcher_park_hr_pct_all = park_hr_percent_map_all_pitcher.get(pitcher_team_code, 1.0)
-                pitcher_park_hr_pct_rhp = park_hr_percent_map_rhp.get(pitcher_team_code, 1.0)
-                pitcher_park_hr_pct_lhp = park_hr_percent_map_lhp.get(pitcher_team_code, 1.0)
+                pitcher_park_hr_pct_all = park_hr_percent_map_pitcher_all.get(pitcher_team_code, 1.0)
+                pitcher_park_hr_pct_rhp = park_hr_percent_map_pitcher_rhp.get(pitcher_team_code, 1.0)
+                pitcher_park_hr_pct_lhp = park_hr_percent_map_pitcher_lhp.get(pitcher_team_code, 1.0)
                 if pitcher_hand_val == "R":
                     pitcher_park_hr_pct_hand = pitcher_park_hr_pct_rhp
                 elif pitcher_hand_val == "L":
