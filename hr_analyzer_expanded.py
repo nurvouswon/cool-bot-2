@@ -105,19 +105,19 @@ park_hr_percent_map_all_pitcher = {
     'PHI': 1.18, 'PIT': 0.83, 'SD': 1.02, 'SEA': 1.00, 'SF': 0.75, 'STL': 0.86, 'TB': 0.96, 'TEX': 1.07, 'TOR': 1.09,
     'WAS': 1.00, 'WSH': 1.00
 }
-park_hr_percent_map_rhp = {
+park_hr_percent_map_rhp_pitcher = {
     'ARI': 0.97, 'AZ': 0.97, 'ATL': 1.01, 'BAL': 1.16, 'BOS': 0.84, 'CHC': 1.02, 'CHW': 1.28, 'CWS': 1.28,
     'CIN': 1.27, 'CLE': 0.98, 'COL': 1.06, 'DET': 0.95, 'HOU': 1.11, 'KC': 0.84, 'LAA': 1.01, 'LAD': 1.11,
     'MIA': 0.84, 'MIL': 1.14, 'MIN': 0.96, 'NYM': 1.07, 'NYY': 1.24, 'OAK': 0.90, 'ATH': 0.90,
     'PHI': 1.19, 'PIT': 0.85, 'SD': 1.02, 'SEA': 1.01, 'SF': 0.73, 'STL': 0.84, 'TB': 0.97, 'TEX': 1.10, 'TOR': 1.11,
     'WAS': 1.03, 'WSH': 1.03
 }
-park_hr_percent_map_lhp = {
+park_hr_percent_map_lhp_pitcher = {
     'ARI': 0.99, 'AZ': 0.99, 'ATL': 0.79, 'BAL': 0.97, 'BOS': 0.83, 'CHC': 1.03, 'CHW': 1.18, 'CWS': 1.18,
     'CIN': 1.27, 'CLE': 0.89, 'COL': 1.05, 'DET': 0.97, 'HOU': 1.07, 'KC': 0.79, 'LAA': 1.01, 'LAD': 1.11,
     'MIA': 0.90, 'MIL': 1.14, 'MIN': 0.89, 'NYM': 1.05, 'NYY': 1.12, 'OAK': 0.89, 'ATH': 0.89,
-    'PHI': 1.16, 'PIT': 0.78, 'SD': 1.02, 'SEA': 0.97, 'SF': 0.82, 'STL': 0.96,
-    'TB': 0.94, 'TEX': 1.01, 'TOR': 1.06, 'WAS': 0.90, 'WSH': 0.90
+    'PHI': 1.16, 'PIT': 0.78, 'SD': 1.02, 'SEA': 0.97, 'SF': 0.82, 'STL': 0.96, 'TB': 0.94, 'TEX': 1.01, 'TOR': 1.06,
+    'WAS': 0.90, 'WSH': 0.90
 }
 
 def dedup_columns(df):
@@ -243,10 +243,10 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
         out_row[id_col] = name
         results.append(out_row)
     return pd.DataFrame(results)
-    # ======================== STREAMLIT APP START ========================
+
+# ======================== STREAMLIT APP START ========================
 st.set_page_config("MLB HR Analyzer", layout="wide")
 tab1, tab2 = st.tabs(["1️⃣ Fetch & Feature Engineer Data", "2️⃣ Upload & Analyze"])
-
 with tab1:
     st.header("Fetch Statcast Data & Generate Features")
     col1, col2 = st.columns(2)
@@ -367,17 +367,6 @@ with tab1:
             df['pitcher_hand'] = np.nan
 
         # ========== DEEP RESEARCH: Park HR percent columns by hand/team ==========
-        def get_deep_park_mult(team, stand):
-            if pd.isna(team) or team not in park_hr_percent_map_all:
-                return 1.0, 1.0, 1.0
-            stand = str(stand).upper() if pd.notna(stand) else ""
-            all_mult = park_hr_percent_map_all.get(team, 1.0)
-            rhb_mult = park_hr_percent_map_rhb.get(team, 1.0)
-            lhb_mult = park_hr_percent_map_lhb.get(team, 1.0)
-            hand_mult = rhb_mult if stand == "R" else (lhb_mult if stand == "L" else all_mult)
-            return all_mult, rhb_mult, lhb_mult, hand_mult
-
-        # ========== PITCHER PARK FACTORS ==========
         df['pitcher_team_code'] = np.nan
         if 'pitcher_id' in df.columns:
             # Map pitcher_team_code based on appearance
@@ -393,13 +382,13 @@ with tab1:
 
         df['pitcher_hand_final'] = df['pitcher_hand'].fillna("").astype(str).str.upper()
 
-        df['pitcher_park_hr_pct_all'] = df['pitcher_team_code'].map(park_hr_percent_map_pitcher_all).fillna(1.0)
+        df['pitcher_park_hr_pct_all'] = df['pitcher_team_code'].map(park_hr_percent_map_all_pitcher).fillna(1.0)
         df['pitcher_park_hr_pct_rhp'] = df['pitcher_team_code'].map(park_hr_percent_map_rhp).fillna(1.0)
         df['pitcher_park_hr_pct_lhp'] = df['pitcher_team_code'].map(park_hr_percent_map_lhp).fillna(1.0)
         df['pitcher_park_hr_pct_hand'] = [
             park_hr_percent_map_rhp.get(team, 1.0) if str(hand) == "R"
             else park_hr_percent_map_lhp.get(team, 1.0) if str(hand) == "L"
-            else park_hr_percent_map_pitcher_all.get(team, 1.0)
+            else park_hr_percent_map_all_pitcher.get(team, 1.0)
             for team, hand in zip(df['pitcher_team_code'], df['pitcher_hand_final'])
         ]
 
@@ -548,7 +537,7 @@ with tab1:
             park_hand_rate = 1.0
             if not pd.isna(park) and not pd.isna(batter_hand):
                 park_hand_rate = park_hand_hr_rate_map.get(str(park).lower(), {}).get(str(batter_hand).upper(), 1.0)
-            # Deep research team/hand HR multipliers
+            # Deep research team/hand HR multipliers (batter side)
             if not pd.isna(team_code):
                 park_hr_pct_all = park_hr_percent_map_all.get(team_code, 1.0)
                 park_hr_pct_rhb = park_hr_percent_map_rhb.get(team_code, 1.0)
@@ -565,7 +554,7 @@ with tab1:
             # Pitcher team code
             pitcher_team_code = row.get("pitcher_team_code", np.nan)
             if pd.isna(pitcher_team_code):
-                # Try to infer from merge
+                # Try to infer from merged Statcast
                 if 'pitcher_team_code' in row_out and pd.notna(row_out['pitcher_team_code']):
                     pitcher_team_code = row_out['pitcher_team_code']
                 elif 'team_code' in row and pd.notna(row['team_code']):
@@ -573,9 +562,9 @@ with tab1:
                 else:
                     pitcher_team_code = np.nan
             pitcher_hand_val = str(pitcher_hand).upper() if pd.notna(pitcher_hand) else ""
-            # Pitcher park HR factors
+            # Pitcher park HR factors (pitcher side)
             if not pd.isna(pitcher_team_code):
-                pitcher_park_hr_pct_all = park_hr_percent_map_pitcher_all.get(pitcher_team_code, 1.0)
+                pitcher_park_hr_pct_all = park_hr_percent_map_all_pitcher.get(pitcher_team_code, 1.0)
                 pitcher_park_hr_pct_rhp = park_hr_percent_map_rhp.get(pitcher_team_code, 1.0)
                 pitcher_park_hr_pct_lhp = park_hr_percent_map_lhp.get(pitcher_team_code, 1.0)
                 if pitcher_hand_val == "R":
@@ -645,3 +634,5 @@ with tab1:
 
     else:
         st.info("Upload a Matchups/Lineups CSV and select a date range to generate the event-level and TODAY CSVs.")
+
+# ---- END OF APP ----
