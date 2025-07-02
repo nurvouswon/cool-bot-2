@@ -73,7 +73,6 @@ park_hand_hr_rate_map = {
     'chase_field': {'L': 1.16, 'R': 1.05}, 'citizens_bank_park': {'L': 1.22, 'R': 1.20},
     'sutter_health_park': {'L': 1.12, 'R': 1.12}, 'target_field': {'L': 1.09, 'R': 1.01}
 }
-
 # ========== DEEP RESEARCH HR MULTIPLIERS: BATTER SIDE ===============
 park_hr_percent_map_all = {
     'ARI': 0.98, 'AZ': 0.98, 'ATL': 0.95, 'BAL': 1.11, 'BOS': 0.84, 'CHC': 1.03, 'CHW': 1.25, 'CWS': 1.25,
@@ -171,10 +170,17 @@ def calculate_spray_angle(hc_x, hc_y):
     except Exception:
         return np.nan
 
+# ============= CACHED STATCAST FETCH ==============
+@st.cache_data(show_spinner=True, max_entries=2, ttl=1800)
+def fetch_statcast(start_date_str, end_date_str):
+    import pybaseball
+    from pybaseball import statcast
+    return statcast(start_date_str, end_date_str)
+
 # ============== FAST ROLLING STATS (BOTH BATTER & PITCHER) ==============
 @st.cache_data(show_spinner=True, max_entries=4, ttl=3600)
 def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix=""):
-    # Limit memory usage and crash risk: chunk by player
+    # (full code, unchanged from above)
     df = df.copy()
     if id_col in df.columns and date_col in df.columns:
         df = df.drop_duplicates(subset=[id_col, date_col], keep='last')
@@ -263,11 +269,8 @@ with tab1:
     progress = st.empty()
 
     if fetch_btn and uploaded_lineups is not None:
-        import pybaseball
-        from pybaseball import statcast
-
         progress.progress(3, "Fetching Statcast data...")
-        df = statcast(start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
+        df = fetch_statcast(start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
         progress.progress(10, "Loaded Statcast")
         st.write(f"Loaded {len(df)} raw Statcast events.")
         if len(df) == 0:
