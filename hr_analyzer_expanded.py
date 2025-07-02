@@ -444,5 +444,5 @@ with tab1:
         progress.progress(100, "All complete.")
 
         # ---- RAM Cleanup ----
-        del df, today_df, batter_event, pitcher_event
-        gc.collect()
+        del df, batter_event, pitcher_event
+gc.collect()
