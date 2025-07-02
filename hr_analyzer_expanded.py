@@ -74,7 +74,7 @@ park_hand_hr_rate_map = {
     'sutter_health_park': {'L': 1.12, 'R': 1.12}, 'target_field': {'L': 1.09, 'R': 1.01}
 }
 
-# ================== DEEP RESEARCH HR MULTIPLIERS: BY TEAM/HAND — BATTER-SIDE ==================
+# ============== DEEP RESEARCH HR MULTIPLIERS: BY TEAM/HAND — BATTER-SIDE ==============
 park_hr_percent_map_all = {
     'ARI': 0.98, 'AZ': 0.98, 'ATL': 0.95, 'BAL': 1.11, 'BOS': 0.84, 'CHC': 1.03, 'CHW': 1.25, 'CWS': 1.25,
     'CIN': 1.27, 'CLE': 0.96, 'COL': 1.06, 'DET': 0.96, 'HOU': 1.10, 'KC': 0.83, 'LAA': 1.01, 'LAD': 1.11,
@@ -97,53 +97,60 @@ park_hr_percent_map_lhb = {
     'WAS': 0.96, 'WSH': 0.96
 }
 
-# ================== DEEP RESEARCH HR MULTIPLIERS: BY TEAM/HAND — PITCHER-SIDE ==================
-park_hr_percent_map_pitcher_all = {
+# ============== DEEP RESEARCH HR MULTIPLIERS: BY TEAM/HAND — PITCHER-SIDE ==============
+park_hr_percent_map_all_pitcher = {
     'ARI': 0.98, 'AZ': 0.98, 'ATL': 0.95, 'BAL': 1.11, 'BOS': 0.84, 'CHC': 1.03, 'CHW': 1.25, 'CWS': 1.25,
     'CIN': 1.27, 'CLE': 0.96, 'COL': 1.06, 'DET': 0.96, 'HOU': 1.10, 'KC': 0.83, 'LAA': 1.01, 'LAD': 1.11,
     'MIA': 0.85, 'MIL': 1.14, 'MIN': 0.94, 'NYM': 1.07, 'NYY': 1.20, 'OAK': 0.90, 'ATH': 0.90,
     'PHI': 1.18, 'PIT': 0.83, 'SD': 1.02, 'SEA': 1.00, 'SF': 0.75, 'STL': 0.86, 'TB': 0.96, 'TEX': 1.07, 'TOR': 1.09,
     'WAS': 1.00, 'WSH': 1.00
 }
-park_hr_percent_map_pitcher_rhp = {
+park_hr_percent_map_rhp = {
     'ARI': 0.97, 'AZ': 0.97, 'ATL': 1.01, 'BAL': 1.16, 'BOS': 0.84, 'CHC': 1.02, 'CHW': 1.28, 'CWS': 1.28,
     'CIN': 1.27, 'CLE': 0.98, 'COL': 1.06, 'DET': 0.95, 'HOU': 1.11, 'KC': 0.84, 'LAA': 1.01, 'LAD': 1.11,
     'MIA': 0.84, 'MIL': 1.14, 'MIN': 0.96, 'NYM': 1.07, 'NYY': 1.24, 'OAK': 0.90, 'ATH': 0.90,
     'PHI': 1.19, 'PIT': 0.85, 'SD': 1.02, 'SEA': 1.01, 'SF': 0.73, 'STL': 0.84, 'TB': 0.97, 'TEX': 1.10, 'TOR': 1.11,
     'WAS': 1.03, 'WSH': 1.03
 }
-park_hr_percent_map_pitcher_lhp = {
+park_hr_percent_map_lhp = {
     'ARI': 0.99, 'AZ': 0.99, 'ATL': 0.79, 'BAL': 0.97, 'BOS': 0.83, 'CHC': 1.03, 'CHW': 1.18, 'CWS': 1.18,
     'CIN': 1.27, 'CLE': 0.89, 'COL': 1.05, 'DET': 0.97, 'HOU': 1.07, 'KC': 0.79, 'LAA': 1.01, 'LAD': 1.11,
-    'MIA': 0.90, 'MIL': 1.14, 'MIN': 0.89, 'NYM': 1.05, 'NYY': 1.12, 'OAK': 0.89, 'ATH': 0.89, 'PHI': 1.16, 'PIT': 0.78, 'SD': 1.02, 'SEA': 0.97, 'SF': 0.82, 'STL': 0.96,
+    'MIA': 0.90, 'MIL': 1.14, 'MIN': 0.89, 'NYM': 1.05, 'NYY': 1.12, 'OAK': 0.89, 'ATH': 0.89,
+    'PHI': 1.16, 'PIT': 0.78, 'SD': 1.02, 'SEA': 0.97, 'SF': 0.82, 'STL': 0.96,
     'TB': 0.94, 'TEX': 1.01, 'TOR': 1.06, 'WAS': 0.90, 'WSH': 0.90
 }
 
 def dedup_columns(df):
-    return df.loc[:, ~df.columns.duplicated()]
+    try:
+        return df.loc[:, ~df.columns.duplicated()]
+    except Exception:
+        return df
 
 def parse_custom_weather_string_v2(s):
-    if pd.isna(s):
+    try:
+        if pd.isna(s):
+            return pd.Series([np.nan]*7, index=['temp','wind_vector','wind_field_dir','wind_mph','humidity','condition','wind_dir_string'])
+        s = str(s)
+        temp_match = re.search(r'(\d{2,3})\s*[OI°]?\s', s)
+        temp = int(temp_match.group(1)) if temp_match else np.nan
+        wind_vector_match = re.search(r'\d{2,3}\s*([OI])\s', s)
+        wind_vector = wind_vector_match.group(1) if wind_vector_match else np.nan
+        wind_field_dir_match = re.search(r'\s([A-Z]{2})\s*\d', s)
+        wind_field_dir = wind_field_dir_match.group(1) if wind_field_dir_match else np.nan
+        mph = re.search(r'(\d{1,3})\s*-\s*(\d{1,3})', s)
+        if mph:
+            wind_mph = (int(mph.group(1)) + int(mph.group(2))) / 2
+        else:
+            mph = re.search(r'([1-9][0-9]?)\s*(?:mph)?', s)
+            wind_mph = int(mph.group(1)) if mph else np.nan
+        humidity_match = re.search(r'(\d{1,3})%', s)
+        humidity = int(humidity_match.group(1)) if humidity_match else np.nan
+        condition = "outdoor" if "outdoor" in s.lower() else ("indoor" if "indoor" in s.lower() else np.nan)
+        wind_dir_string = f"{wind_vector} {wind_field_dir}".strip()
+        return pd.Series([temp, wind_vector, wind_field_dir, wind_mph, humidity, condition, wind_dir_string],
+                        index=['temp','wind_vector','wind_field_dir','wind_mph','humidity','condition','wind_dir_string'])
+    except Exception:
         return pd.Series([np.nan]*7, index=['temp','wind_vector','wind_field_dir','wind_mph','humidity','condition','wind_dir_string'])
-    s = str(s)
-    temp_match = re.search(r'(\d{2,3})\s*[OI°]?\s', s)
-    temp = int(temp_match.group(1)) if temp_match else np.nan
-    wind_vector_match = re.search(r'\d{2,3}\s*([OI])\s', s)
-    wind_vector = wind_vector_match.group(1) if wind_vector_match else np.nan
-    wind_field_dir_match = re.search(r'\s([A-Z]{2})\s*\d', s)
-    wind_field_dir = wind_field_dir_match.group(1) if wind_field_dir_match else np.nan
-    mph = re.search(r'(\d{1,3})\s*-\s*(\d{1,3})', s)
-    if mph:
-        wind_mph = (int(mph.group(1)) + int(mph.group(2))) / 2
-    else:
-        mph = re.search(r'([1-9][0-9]?)\s*(?:mph)?', s)
-        wind_mph = int(mph.group(1)) if mph else np.nan
-    humidity_match = re.search(r'(\d{1,3})%', s)
-    humidity = int(humidity_match.group(1)) if humidity_match else np.nan
-    condition = "outdoor" if "outdoor" in s.lower() else ("indoor" if "indoor" in s.lower() else np.nan)
-    wind_dir_string = f"{wind_vector} {wind_field_dir}".strip()
-    return pd.Series([temp, wind_vector, wind_field_dir, wind_mph, humidity, condition, wind_dir_string],
-                     index=['temp','wind_vector','wind_field_dir','wind_mph','humidity','condition','wind_dir_string'])
 
 def downcast_numeric(df):
     for col in df.select_dtypes(include=['float']):
@@ -153,14 +160,15 @@ def downcast_numeric(df):
     return df
 
 def rolling_apply(series, window, func):
-    if len(series) < 1:
+    try:
+        if len(series) < 1:
+            return np.nan
+        result = series.rolling(window, min_periods=1).apply(func)
+        return result.iloc[-1] if not result.empty else np.nan
+    except Exception:
         return np.nan
-    result = series.rolling(window, min_periods=1).apply(func)
-    return result.iloc[-1] if not result.empty else np.nan
 
 def calculate_spray_angle(hc_x, hc_y):
-    # Statcast spray angle: +45 = LF, 0 = straightaway CF, -45 = RF (LH batter, reverse for RH)
-    # Home plate is (125.42, 199.53)
     try:
         if np.isnan(hc_x) or np.isnan(hc_y):
             return np.nan
@@ -172,81 +180,83 @@ def calculate_spray_angle(hc_x, hc_y):
 @st.cache_data(show_spinner=True)
 def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix=""):
     df = df.copy()
-    if id_col in df.columns and date_col in df.columns:
-        df = df.drop_duplicates(subset=[id_col, date_col], keep='last')
-        df = df.sort_values([id_col, date_col])
-    if 'launch_speed' in df.columns:
-        df['launch_speed'] = pd.to_numeric(df['launch_speed'], errors='coerce')
-    if 'launch_angle' in df.columns:
-        df['launch_angle'] = pd.to_numeric(df['launch_angle'], errors='coerce')
-    if 'hc_x' in df.columns and 'hc_y' in df.columns:
-        df['pull'] = ((df['hc_x'] > 200) & (df['hc_x'] < 300)).astype(float)
-        df['spray_angle'] = [calculate_spray_angle(x, y) for x, y in zip(df['hc_x'], df['hc_y'])]
-    if 'hit_distance_sc' in df.columns:
-        df['hard_hit'] = (df['launch_speed'] >= 95).astype(float)
-    results = []
-    for name, group in df.groupby(id_col, sort=False):
-        out_row = {}
-        ls = group['launch_speed'] if 'launch_speed' in group.columns else None
-        la = group['launch_angle'] if 'launch_angle' in group.columns else None
-        hd = group['hit_distance_sc'] if 'hit_distance_sc' in group.columns else None
-        pull = group['pull'] if 'pull' in group.columns else None
-        hard = group['hard_hit'] if 'hard_hit' in group.columns else None
-        spray = group['spray_angle'] if 'spray_angle' in group.columns else None
-        slg = group['slg_numeric'] if 'slg_numeric' in group.columns else None
-        for w in windows:
-            if ls is not None:
-                out_row[f"{prefix}avg_exit_velo_{w}"] = ls.rolling(w, min_periods=1).mean().iloc[-1]
-                out_row[f"{prefix}hard_hit_rate_{w}"] = ls.rolling(w, min_periods=1).apply(lambda x: np.mean(x >= 95)).iloc[-1]
-            if la is not None:
-                out_row[f"{prefix}fb_rate_{w}"] = la.rolling(w, min_periods=1).apply(lambda x: np.mean(x >= 25)).iloc[-1]
-                out_row[f"{prefix}sweet_spot_rate_{w}"] = la.rolling(w, min_periods=1).apply(lambda x: np.mean((x >= 8) & (x <= 32))).iloc[-1]
-            if spray is not None:
-                out_row[f"{prefix}spray_angle_avg_{w}"] = spray.rolling(w, min_periods=1).mean().iloc[-1]
-                out_row[f"{prefix}spray_angle_std_{w}"] = spray.rolling(w, min_periods=1).std().iloc[-1]
-            if ls is not None and la is not None:
-                barrels = ((ls >= 98) & (la >= 26) & (la <= 30)).astype(float)
-                out_row[f"{prefix}barrel_rate_{w}"] = barrels.rolling(w, min_periods=1).mean().iloc[-1]
-            if hd is not None:
-                out_row[f"{prefix}hit_dist_avg_{w}"] = hd.rolling(w, min_periods=1).mean().iloc[-1]
-            if pull is not None:
-                out_row[f"{prefix}pull_rate_{w}"] = pull.rolling(w, min_periods=1).mean().iloc[-1]
-            if hard is not None:
-                out_row[f"{prefix}hard_contact_rate_{w}"] = hard.rolling(w, min_periods=1).mean().iloc[-1]
-            if slg is not None:
-                out_row[f"{prefix}slg_{w}"] = slg.rolling(w, min_periods=1).mean().iloc[-1]
-        if pitch_types is not None and "pitch_type" in group.columns:
-            for pt in pitch_types:
-                pt_group = group[group['pitch_type'] == pt]
-                for w in windows:
-                    key = f"{prefix}{pt}_"
-                    if not pt_group.empty:
-                        if 'launch_speed' in pt_group.columns:
-                            out_row[f"{key}avg_exit_velo_{w}"] = pt_group['launch_speed'].rolling(w, min_periods=1).mean().iloc[-1]
-                            out_row[f"{key}hard_hit_rate_{w}"] = pt_group['launch_speed'].rolling(w, min_periods=1).apply(lambda x: np.mean(x >= 95)).iloc[-1]
-                        if 'launch_angle' in pt_group.columns:
-                            out_row[f"{key}fb_rate_{w}"] = pt_group['launch_angle'].rolling(w, min_periods=1).apply(lambda x: np.mean(x >= 25)).iloc[-1]
-                            out_row[f"{key}sweet_spot_rate_{w}"] = pt_group['launch_angle'].rolling(w, min_periods=1).apply(lambda x: np.mean((x >= 8) & (x <= 32))).iloc[-1]
-                        if 'launch_speed' in pt_group.columns and 'launch_angle' in pt_group.columns:
-                            barrel_flags = pd.concat([
-                                pt_group['launch_speed'].reset_index(drop=True),
-                                pt_group['launch_angle'].reset_index(drop=True)
-                            ], axis=1).apply(lambda row: (row[0] >= 98) & (26 <= row[1] <= 30), axis=1)
-                            out_row[f"{key}barrel_rate_{w}"] = rolling_apply(barrel_flags, w, np.mean)
-                        if 'spray_angle' in pt_group.columns:
-                            out_row[f"{key}spray_angle_avg_{w}"] = pt_group['spray_angle'].rolling(w, min_periods=1).mean().iloc[-1]
-                            out_row[f"{key}spray_angle_std_{w}"] = pt_group['spray_angle'].rolling(w, min_periods=1).std().iloc[-1]
-                    else:
-                        for feat in ['avg_exit_velo', 'hard_hit_rate', 'barrel_rate', 'fb_rate', 'sweet_spot_rate', 'spray_angle_avg', 'spray_angle_std']:
-                            out_row[f"{key}{feat}_{w}"] = np.nan
-        out_row[id_col] = name
-        results.append(out_row)
-    return pd.DataFrame(results)
+    try:
+        if id_col in df.columns and date_col in df.columns:
+            df = df.drop_duplicates(subset=[id_col, date_col], keep='last')
+            df = df.sort_values([id_col, date_col])
+        if 'launch_speed' in df.columns:
+            df['launch_speed'] = pd.to_numeric(df['launch_speed'], errors='coerce')
+        if 'launch_angle' in df.columns:
+            df['launch_angle'] = pd.to_numeric(df['launch_angle'], errors='coerce')
+        if 'hc_x' in df.columns and 'hc_y' in df.columns:
+            df['pull'] = ((df['hc_x'] > 200) & (df['hc_x'] < 300)).astype(float)
+            df['spray_angle'] = [calculate_spray_angle(x, y) for x, y in zip(df['hc_x'], df['hc_y'])]
+        if 'hit_distance_sc' in df.columns:
+            df['hard_hit'] = (df['launch_speed'] >= 95).astype(float)
+        results = []
+        for name, group in df.groupby(id_col, sort=False):
+            out_row = {}
+            ls = group['launch_speed'] if 'launch_speed' in group.columns else None
+            la = group['launch_angle'] if 'launch_angle' in group.columns else None
+            hd = group['hit_distance_sc'] if 'hit_distance_sc' in group.columns else None
+            pull = group['pull'] if 'pull' in group.columns else None
+            hard = group['hard_hit'] if 'hard_hit' in group.columns else None
+            spray = group['spray_angle'] if 'spray_angle' in group.columns else None
+            slg = group['slg_numeric'] if 'slg_numeric' in group.columns else None
+            for w in windows:
+                if ls is not None:
+                    out_row[f"{prefix}avg_exit_velo_{w}"] = ls.rolling(w, min_periods=1).mean().iloc[-1]
+                    out_row[f"{prefix}hard_hit_rate_{w}"] = ls.rolling(w, min_periods=1).apply(lambda x: np.mean(x >= 95)).iloc[-1]
+                if la is not None:
+                    out_row[f"{prefix}fb_rate_{w}"] = la.rolling(w, min_periods=1).apply(lambda x: np.mean(x >= 25)).iloc[-1]
+                    out_row[f"{prefix}sweet_spot_rate_{w}"] = la.rolling(w, min_periods=1).apply(lambda x: np.mean((x >= 8) & (x <= 32))).iloc[-1]
+                if spray is not None:
+                    out_row[f"{prefix}spray_angle_avg_{w}"] = spray.rolling(w, min_periods=1).mean().iloc[-1]
+                    out_row[f"{prefix}spray_angle_std_{w}"] = spray.rolling(w, min_periods=1).std().iloc[-1]
+                if ls is not None and la is not None:
+                    barrels = ((ls >= 98) & (la >= 26) & (la <= 30)).astype(float)
+                    out_row[f"{prefix}barrel_rate_{w}"] = barrels.rolling(w, min_periods=1).mean().iloc[-1]
+                if hd is not None:
+                    out_row[f"{prefix}hit_dist_avg_{w}"] = hd.rolling(w, min_periods=1).mean().iloc[-1]
+                if pull is not None:
+                    out_row[f"{prefix}pull_rate_{w}"] = pull.rolling(w, min_periods=1).mean().iloc[-1]
+                if hard is not None:
+                    out_row[f"{prefix}hard_contact_rate_{w}"] = hard.rolling(w, min_periods=1).mean().iloc[-1]
+                if slg is not None:
+                    out_row[f"{prefix}slg_{w}"] = slg.rolling(w, min_periods=1).mean().iloc[-1]
+            if pitch_types is not None and "pitch_type" in group.columns:
+                for pt in pitch_types:
+                    pt_group = group[group['pitch_type'] == pt]
+                    for w in windows:
+                        key = f"{prefix}{pt}_"
+                        if not pt_group.empty:
+                            if 'launch_speed' in pt_group.columns:
+                                out_row[f"{key}avg_exit_velo_{w}"] = pt_group['launch_speed'].rolling(w, min_periods=1).mean().iloc[-1]
+                                out_row[f"{key}hard_hit_rate_{w}"] = pt_group['launch_speed'].rolling(w, min_periods=1).apply(lambda x: np.mean(x >= 95)).iloc[-1]
+                            if 'launch_angle' in pt_group.columns:
+                                out_row[f"{key}fb_rate_{w}"] = pt_group['launch_angle'].rolling(w, min_periods=1).apply(lambda x: np.mean(x >= 25)).iloc[-1]
+                                out_row[f"{key}sweet_spot_rate_{w}"] = pt_group['launch_angle'].rolling(w, min_periods=1).apply(lambda x: np.mean((x >= 8) & (x <= 32))).iloc[-1]
+                            if 'launch_speed' in pt_group.columns and 'launch_angle' in pt_group.columns:
+                                barrel_flags = pd.concat([
+                                    pt_group['launch_speed'].reset_index(drop=True),
+                                    pt_group['launch_angle'].reset_index(drop=True)
+                                ], axis=1).apply(lambda row: (row[0] >= 98) & (26 <= row[1] <= 30), axis=1)
+                                out_row[f"{key}barrel_rate_{w}"] = rolling_apply(barrel_flags, w, np.mean)
+                            if 'spray_angle' in pt_group.columns:
+                                out_row[f"{key}spray_angle_avg_{w}"] = pt_group['spray_angle'].rolling(w, min_periods=1).mean().iloc[-1]
+                                out_row[f"{key}spray_angle_std_{w}"] = pt_group['spray_angle'].rolling(w, min_periods=1).std().iloc[-1]
+                        else:
+                            for feat in ['avg_exit_velo', 'hard_hit_rate', 'barrel_rate', 'fb_rate', 'sweet_spot_rate', 'spray_angle_avg', 'spray_angle_std']:
+                                out_row[f"{key}{feat}_{w}"] = np.nan
+            out_row[id_col] = name
+            results.append(out_row)
+        return pd.DataFrame(results)
+    except Exception:
+        return pd.DataFrame()
 
 # ======================== STREAMLIT APP START ========================
 st.set_page_config("MLB HR Analyzer", layout="wide")
 tab1, tab2 = st.tabs(["1️⃣ Fetch & Feature Engineer Data", "2️⃣ Upload & Analyze"])
-
 with tab1:
     st.header("Fetch Statcast Data & Generate Features")
     col1, col2 = st.columns(2)
@@ -366,7 +376,7 @@ with tab1:
         else:
             df['pitcher_hand'] = np.nan
 
-        # ========== Park HR percent columns by hand/team ==========
+        # ========== DEEP RESEARCH: Park HR percent columns by hand/team ==========
         df['pitcher_team_code'] = np.nan
         if 'pitcher_id' in df.columns:
             # Map pitcher_team_code based on appearance
@@ -374,24 +384,23 @@ with tab1:
                 df['pitcher_team_code'] = df['fielding_team'].str.upper()
             elif 'home_team_code' in df.columns and 'inning_topbot' in df.columns:
                 df['pitcher_team_code'] = np.where(df['inning_topbot'] == "Bot",
-                                                   df['away_team_code'],
-                                                   df['home_team_code'])
+                                                df['away_team_code'],
+                                                df['home_team_code'])
             elif 'team_code' in df.columns:
                 df['pitcher_team_code'] = df['team_code']
         df['pitcher_team_code'] = df['pitcher_team_code'].fillna("").astype(str).str.upper()
         df['pitcher_hand_final'] = df['pitcher_hand'].fillna("").astype(str).str.upper()
 
         df['pitcher_park_hr_pct_all'] = df['pitcher_team_code'].map(park_hr_percent_map_pitcher_all).fillna(1.0)
-        df['pitcher_park_hr_pct_rhp'] = df['pitcher_team_code'].map(park_hr_percent_map_pitcher_rhp).fillna(1.0)
-        df['pitcher_park_hr_pct_lhp'] = df['pitcher_team_code'].map(park_hr_percent_map_pitcher_lhp).fillna(1.0)
+        df['pitcher_park_hr_pct_rhp'] = df['pitcher_team_code'].map(park_hr_percent_map_rhp).fillna(1.0)
+        df['pitcher_park_hr_pct_lhp'] = df['pitcher_team_code'].map(park_hr_percent_map_lhp).fillna(1.0)
         df['pitcher_park_hr_pct_hand'] = [
-            park_hr_percent_map_pitcher_rhp.get(team, 1.0) if str(hand) == "R"
-            else park_hr_percent_map_pitcher_lhp.get(team, 1.0) if str(hand) == "L"
+            park_hr_percent_map_rhp.get(team, 1.0) if str(hand) == "R"
+            else park_hr_percent_map_lhp.get(team, 1.0) if str(hand) == "L"
             else park_hr_percent_map_pitcher_all.get(team, 1.0)
             for team, hand in zip(df['pitcher_team_code'], df['pitcher_hand_final'])
-        ]
-
-        # ================== SLG NUMERIC FOR ROLLING ==================
+            ]
+# ================== SLG NUMERIC FOR ROLLING ==================
         slg_map = {'single':1, 'double':2, 'triple':3, 'home_run':4, 'homerun':4}
         if 'events' in df.columns:
             df['events_clean'] = df['events'].astype(str).str.lower().str.replace(' ', '')
@@ -564,8 +573,8 @@ with tab1:
             # Pitcher park HR factors (pitcher side)
             if not pd.isna(pitcher_team_code):
                 pitcher_park_hr_pct_all = park_hr_percent_map_pitcher_all.get(pitcher_team_code, 1.0)
-                pitcher_park_hr_pct_rhp = park_hr_percent_map_pitcher_rhp.get(pitcher_team_code, 1.0)
-                pitcher_park_hr_pct_lhp = park_hr_percent_map_pitcher_lhp.get(pitcher_team_code, 1.0)
+                pitcher_park_hr_pct_rhp = park_hr_percent_map_rhp.get(pitcher_team_code, 1.0)
+                pitcher_park_hr_pct_lhp = park_hr_percent_map_lhp.get(pitcher_team_code, 1.0)
                 if pitcher_hand_val == "R":
                     pitcher_park_hr_pct_hand = pitcher_park_hr_pct_rhp
                 elif pitcher_hand_val == "L":
