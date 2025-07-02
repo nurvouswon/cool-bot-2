@@ -441,13 +441,17 @@ with tab1:
         st.write("Event-level dataframe sample:", df.head(20))
         # ===== TODAY CSV: 1 row per batter with all rolling/context features and WEATHER FROM LINEUP CSV =====
         progress.progress(95, "Generating TODAY batter rows and context merges...")
+
         rolling_feature_cols = [col for col in df.columns if (
             col.startswith('b_') or col.startswith('p_')
         ) and any(str(w) in col for w in roll_windows)]
+
+        # -- NEW! Add all batter-side and pitcher-side park HR context columns --
         extra_context_cols = [
             'park', 'park_hr_rate', 'park_hand_hr_rate', 'park_altitude', 'roof_status', 'city',
             'batter_hand', 'pitcher_hand',
-            'park_hr_pct_all', 'park_hr_pct_rhb', 'park_hr_pct_lhb', 'park_hr_pct_hand'
+            'park_hr_pct_all', 'park_hr_pct_rhb', 'park_hr_pct_lhb', 'park_hr_pct_hand',
+            'pitcher_team_code', 'pitcher_park_hr_pct_all', 'pitcher_park_hr_pct_rhp', 'pitcher_park_hr_pct_lhp', 'pitcher_park_hr_pct_hand'
         ]
         today_cols = [
             'game_date', 'batter_id', 'player_name', 'pitcher_id',
@@ -484,19 +488,23 @@ with tab1:
                 row_out = {c: last_row.get(c, np.nan) for c in rolling_feature_cols + [
                     'batter_hand', 'park', 'park_hr_rate', 'park_hand_hr_rate', 'park_altitude', 'roof_status',
                     'city', 'pitcher_hand',
-                    'park_hr_pct_all', 'park_hr_pct_rhb', 'park_hr_pct_lhb', 'park_hr_pct_hand'
+                    'park_hr_pct_all', 'park_hr_pct_rhb', 'park_hr_pct_lhb', 'park_hr_pct_hand',
+                    'pitcher_team_code', 'pitcher_park_hr_pct_all', 'pitcher_park_hr_pct_rhp', 'pitcher_park_hr_pct_lhp', 'pitcher_park_hr_pct_hand'
                 ]}
             else:
                 row_out = {c: np.nan for c in rolling_feature_cols + [
                     'batter_hand', 'park', 'park_hr_rate', 'park_hand_hr_rate', 'park_altitude', 'roof_status',
                     'city', 'pitcher_hand',
-                    'park_hr_pct_all', 'park_hr_pct_rhb', 'park_hr_pct_lhb', 'park_hr_pct_hand'
+                    'park_hr_pct_all', 'park_hr_pct_rhb', 'park_hr_pct_lhb', 'park_hr_pct_hand',
+                    'pitcher_team_code', 'pitcher_park_hr_pct_all', 'pitcher_park_hr_pct_rhp', 'pitcher_park_hr_pct_lhp', 'pitcher_park_hr_pct_hand'
                 ]}
+
             batter_hand = row.get('stand', row_out.get('batter_hand', np.nan))
             pitcher_hand = pitcher_hand_map.get(pitcher_id, np.nan)
             park_hand_rate = 1.0
             if not pd.isna(park) and not pd.isna(batter_hand):
                 park_hand_rate = park_hand_hr_rate_map.get(str(park).lower(), {}).get(str(batter_hand).upper(), 1.0)
+            # Deep research team/hand HR multipliers (batter side)
             if not pd.isna(team_code):
                 park_hr_pct_all = park_hr_percent_map_all.get(team_code, 1.0)
                 park_hr_pct_rhb = park_hr_percent_map_rhb.get(team_code, 1.0)
@@ -509,6 +517,30 @@ with tab1:
                     park_hr_pct_hand = park_hr_pct_all
             else:
                 park_hr_pct_all = park_hr_pct_rhb = park_hr_pct_lhb = park_hr_pct_hand = 1.0
+
+            # Pitcher team code and pitcher-side park HR rates
+            pitcher_team_code = row.get("pitcher_team_code", np.nan)
+            if pd.isna(pitcher_team_code):
+                # Try to infer from merged Statcast
+                if 'pitcher_team_code' in row_out and pd.notna(row_out['pitcher_team_code']):
+                    pitcher_team_code = row_out['pitcher_team_code']
+                elif 'team_code' in row and pd.notna(row['team_code']):
+                    pitcher_team_code = row['team_code']
+                else:
+                    pitcher_team_code = np.nan
+            pitcher_hand_val = str(pitcher_hand).upper() if pd.notna(pitcher_hand) else ""
+            if not pd.isna(pitcher_team_code):
+                pitcher_park_hr_pct_all = park_hr_percent_map_pitcher_all.get(pitcher_team_code, 1.0)
+                pitcher_park_hr_pct_rhp = park_hr_percent_map_rhp.get(pitcher_team_code, 1.0)
+                pitcher_park_hr_pct_lhp = park_hr_percent_map_lhp.get(pitcher_team_code, 1.0)
+                if pitcher_hand_val == "R":
+                    pitcher_park_hr_pct_hand = pitcher_park_hr_pct_rhp
+                elif pitcher_hand_val == "L":
+                    pitcher_park_hr_pct_hand = pitcher_park_hr_pct_lhp
+                else:
+                    pitcher_park_hr_pct_hand = pitcher_park_hr_pct_all
+            else:
+                pitcher_park_hr_pct_all = pitcher_park_hr_pct_rhp = pitcher_park_hr_pct_lhp = pitcher_park_hr_pct_hand = 1.0
 
             row_out.update({
                 "game_date": game_date,
@@ -527,7 +559,12 @@ with tab1:
                 "park_hr_pct_all": park_hr_pct_all,
                 "park_hr_pct_rhb": park_hr_pct_rhb,
                 "park_hr_pct_lhb": park_hr_pct_lhb,
-                "park_hr_pct_hand": park_hr_pct_hand
+                "park_hr_pct_hand": park_hr_pct_hand,
+                "pitcher_team_code": pitcher_team_code,
+                "pitcher_park_hr_pct_all": pitcher_park_hr_pct_all,
+                "pitcher_park_hr_pct_rhp": pitcher_park_hr_pct_rhp,
+                "pitcher_park_hr_pct_lhp": pitcher_park_hr_pct_lhp,
+                "pitcher_park_hr_pct_hand": pitcher_park_hr_pct_hand,
             })
             for c in ['temp', 'humidity', 'wind_mph', 'wind_dir_string', 'condition']:
                 row_out[c] = row.get(c, np.nan)
@@ -564,8 +601,3 @@ with tab1:
         # ---- RAM Cleanup ----
         del df, today_df, batter_event, pitcher_event
         gc.collect()
-
-    else:
-        st.info("Upload a Matchups/Lineups CSV and select a date range to generate the event-level and TODAY CSVs.")
-
-# ---- END OF APP ----
