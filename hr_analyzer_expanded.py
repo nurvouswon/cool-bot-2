@@ -152,13 +152,23 @@ def downcast_numeric(df):
         df[col] = pd.to_numeric(df[col], downcast='integer')
     return df
 
+def calculate_spray_angle(hc_x, hc_y):
+    try:
+        if np.isnan(hc_x) or np.isnan(hc_y):
+            return np.nan
+        angle = np.degrees(np.arctan2(hc_x - 125.42, 199.53 - hc_y))
+        return angle
+    except Exception:
+        return np.nan
+
 def rolling_apply(series, window, func):
     if len(series) < 1:
         return np.nan
     result = series.rolling(window, min_periods=1).apply(func)
     return result.iloc[-1] if not result.empty else np.nan
 
-@st.cache_data(show_spinner=True)
+# ============= ADVANCED ROLLING STATS, ALL PITCH TYPES, SPRAY, HANDEDNESS =============
+@st.cache_data(show_spinner=True, max_entries=4, ttl=3600)
 def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix=""):
     df = df.copy()
     if id_col in df.columns and date_col in df.columns:
@@ -170,6 +180,7 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
         df['launch_angle'] = pd.to_numeric(df['launch_angle'], errors='coerce')
     if 'hc_x' in df.columns and 'hc_y' in df.columns:
         df['pull'] = ((df['hc_x'] > 200) & (df['hc_x'] < 300)).astype(float)
+        df['spray_angle'] = [calculate_spray_angle(x, y) for x, y in zip(df['hc_x'], df['hc_y'])]
     if 'hit_distance_sc' in df.columns:
         df['hard_hit'] = (df['launch_speed'] >= 95).astype(float)
     results = []
@@ -180,6 +191,7 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
         hd = group['hit_distance_sc'] if 'hit_distance_sc' in group.columns else None
         pull = group['pull'] if 'pull' in group.columns else None
         hard = group['hard_hit'] if 'hard_hit' in group.columns else None
+        spray = group['spray_angle'] if 'spray_angle' in group.columns else None
         slg = group['slg_numeric'] if 'slg_numeric' in group.columns else None
         for w in windows:
             if ls is not None:
@@ -188,6 +200,9 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
             if la is not None:
                 out_row[f"{prefix}fb_rate_{w}"] = la.rolling(w, min_periods=1).apply(lambda x: np.mean(x >= 25)).iloc[-1]
                 out_row[f"{prefix}sweet_spot_rate_{w}"] = la.rolling(w, min_periods=1).apply(lambda x: np.mean((x >= 8) & (x <= 32))).iloc[-1]
+            if spray is not None:
+                out_row[f"{prefix}spray_angle_avg_{w}"] = spray.rolling(w, min_periods=1).mean().iloc[-1]
+                out_row[f"{prefix}spray_angle_std_{w}"] = spray.rolling(w, min_periods=1).std().iloc[-1]
             if ls is not None and la is not None:
                 barrels = ((ls >= 98) & (la >= 26) & (la <= 30)).astype(float)
                 out_row[f"{prefix}barrel_rate_{w}"] = barrels.rolling(w, min_periods=1).mean().iloc[-1]
@@ -211,6 +226,9 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
                         if 'launch_angle' in pt_group.columns:
                             out_row[f"{key}fb_rate_{w}"] = pt_group['launch_angle'].rolling(w, min_periods=1).apply(lambda x: np.mean(x >= 25)).iloc[-1]
                             out_row[f"{key}sweet_spot_rate_{w}"] = pt_group['launch_angle'].rolling(w, min_periods=1).apply(lambda x: np.mean((x >= 8) & (x <= 32))).iloc[-1]
+                        if 'spray_angle' in pt_group.columns:
+                            out_row[f"{key}spray_angle_avg_{w}"] = pt_group['spray_angle'].rolling(w, min_periods=1).mean().iloc[-1]
+                            out_row[f"{key}spray_angle_std_{w}"] = pt_group['spray_angle'].rolling(w, min_periods=1).std().iloc[-1]
                         if 'launch_speed' in pt_group.columns and 'launch_angle' in pt_group.columns:
                             barrel_flags = pd.concat([
                                 pt_group['launch_speed'].reset_index(drop=True),
@@ -218,13 +236,13 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
                             ], axis=1).apply(lambda row: (row[0] >= 98) & (26 <= row[1] <= 30), axis=1)
                             out_row[f"{key}barrel_rate_{w}"] = rolling_apply(barrel_flags, w, np.mean)
                     else:
-                        for feat in ['avg_exit_velo', 'hard_hit_rate', 'barrel_rate', 'fb_rate', 'sweet_spot_rate']:
+                        for feat in ['avg_exit_velo', 'hard_hit_rate', 'barrel_rate', 'fb_rate', 'sweet_spot_rate', 'spray_angle_avg', 'spray_angle_std']:
                             out_row[f"{key}{feat}_{w}"] = np.nan
         out_row[id_col] = name
         results.append(out_row)
     return pd.DataFrame(results)
 
-# ======================== STREAMLIT APP START ========================
+# ======================== STREAMLIT APP MAIN ========================
 st.set_page_config("MLB HR Analyzer", layout="wide")
 tab1, tab2 = st.tabs(["1️⃣ Fetch & Feature Engineer Data", "2️⃣ Upload & Analyze"])
 
@@ -269,7 +287,6 @@ with tab1:
             lineup_df['batter_id'] = lineup_df['mlb_id']
         if 'pitcher_id' not in lineup_df.columns:
             lineup_df['pitcher_id'] = np.nan
-        # Normalize batter_id/mlb_id
         for col in ['batter_id', 'mlb_id']:
             if col in lineup_df.columns:
                 lineup_df[col] = lineup_df[col].astype(str).str.replace('.0','',regex=False).str.strip()
@@ -298,14 +315,9 @@ with tab1:
             if len(teams) < 2: continue
             team_sps = {}
             for team in teams:
-                # robust to mlb_id/batter_id
                 sp_row = group[(group['team_code'] == team) & (group['batting_order'] == "SP")]
                 if not sp_row.empty:
-                    # Use mlb_id if available, else batter_id
-                    if 'mlb_id' in sp_row.columns:
-                        sp_id = str(sp_row.iloc[0]['mlb_id'])
-                    else:
-                        sp_id = str(sp_row.iloc[0]['batter_id'])
+                    sp_id = str(sp_row.iloc[0]['mlb_id']) if 'mlb_id' in sp_row.columns else str(sp_row.iloc[0]['batter_id'])
                     team_sps[team] = sp_id
             for team in teams:
                 opp_teams = [t for t in teams if t != team]
@@ -313,11 +325,9 @@ with tab1:
                 opp_sp = team_sps.get(opp_teams[0], np.nan)
                 idx = group[group['team_code'] == team].index
                 lineup_df.loc[idx, 'pitcher_id'] = opp_sp
-
-        # Diagnostics for pitcher assignment
         st.write("Lineup sample after pitcher assignment:", lineup_df[['game_date', 'team_code', 'batter_id', 'mlb_id', 'batting_order', 'pitcher_id']].head(20))
-        
-        # ==== Parse Weather Fields from Weather String (for TODAY CSV only) ====
+
+        # ==== Weather (for TODAY output) ====
         if 'weather' in lineup_df.columns:
             wx_parsed = lineup_df['weather'].apply(parse_custom_weather_string_v2)
             lineup_df = pd.concat([lineup_df, wx_parsed], axis=1)
@@ -329,7 +339,6 @@ with tab1:
             if col in df.columns:
                 df[col] = df[col].astype(str).str.replace('.0','',regex=False).str.strip()
 
-        # Add park/city/context from team code
         if 'home_team_code' in df.columns:
             df['team_code'] = df['home_team_code'].str.upper()
             df['park'] = df['home_team_code'].str.lower().str.replace(' ', '_')
@@ -386,7 +395,7 @@ with tab1:
         df = df[df['events_clean'].isin(valid_events)].copy()
 
         # ========== ADVANCED ROLLING FEATURES ==========
-        progress.progress(22, "Computing rolling Statcast features (batter & pitcher, pitch type, deep windows)...")
+        progress.progress(22, "Computing rolling Statcast features (batter & pitcher, pitch type, deep windows, spray angle)...")
         roll_windows = [3, 5, 7, 14, 20, 30, 60]
         main_pitch_types = ["ff", "sl", "cu", "ch", "si", "fc", "fs", "st", "sinker", "splitter", "sweeper"]
         for col in ['batter', 'batter_id']:
@@ -528,6 +537,9 @@ with tab1:
         today_df = dedup_columns(today_df)
         today_df = downcast_numeric(today_df)
 
+        # Diagnostics: preview outputs
+        st.write("TODAY CSV (per-batter, all features) sample:", today_df.head(20))
+
         st.markdown("#### Download TODAY CSV / Parquet (1 row per batter, matchup, rolling features & weather):")
         st.dataframe(today_df.head(20), use_container_width=True)
         st.download_button(
@@ -545,6 +557,7 @@ with tab1:
             mime="application/octet-stream",
             key="download_today_parquet"
         )
+
         st.success("All files and debug outputs ready.")
         progress.progress(100, "All complete.")
 
