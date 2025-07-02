@@ -377,8 +377,7 @@ with tab1:
             elif 'team_code' in df.columns:
                 df['pitcher_team_code'] = df['team_code']
         df['pitcher_team_code'] = df['pitcher_team_code'].fillna("").astype(str).str.upper()
-        df['pitcher_hand_final'] = df['pitcher_hand'].fillna("").astype(str).str.upper()
-
+        df['pitcher_hand_final'] = df['pitcher_hand'].astype('string').fillna('').str.upper()
         df['pitcher_park_hr_pct_all'] = df['pitcher_team_code'].map(park_hr_percent_map_pitcher_all).fillna(1.0)
         df['pitcher_park_hr_pct_rhp'] = df['pitcher_team_code'].map(park_hr_percent_map_rhp).fillna(1.0)
         df['pitcher_park_hr_pct_lhp'] = df['pitcher_team_code'].map(park_hr_percent_map_lhp).fillna(1.0)
