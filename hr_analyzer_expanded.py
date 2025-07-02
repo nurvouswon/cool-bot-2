@@ -225,7 +225,7 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
                 for w in windows:
                     key = f"{prefix}{pt}_"
                     if not pt_group.empty:
-            if 'launch_speed' in pt_group.columns:
+                        if 'launch_speed' in pt_group.columns:
                             out_row[f"{key}avg_exit_velo_{w}"] = pt_group['launch_speed'].rolling(w, min_periods=1).mean().iloc[-1]
                             out_row[f"{key}hard_hit_rate_{w}"] = pt_group['launch_speed'].rolling(w, min_periods=1).apply(lambda x: np.mean(x >= 95)).iloc[-1]
                         if 'launch_angle' in pt_group.columns:
