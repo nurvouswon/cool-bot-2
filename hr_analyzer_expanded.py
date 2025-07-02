@@ -98,7 +98,7 @@ park_hr_percent_map_lhb = {
 }
 
 # ============== DEEP RESEARCH HR MULTIPLIERS: BY TEAM/HAND — PITCHER-SIDE ==============
-park_hr_percent_map_all_pitcher = {
+park_hr_percent_map_pitcher_all = {
     'ARI': 0.98, 'AZ': 0.98, 'ATL': 0.95, 'BAL': 1.11, 'BOS': 0.84, 'CHC': 1.03, 'CHW': 1.25, 'CWS': 1.25,
     'CIN': 1.27, 'CLE': 0.96, 'COL': 1.06, 'DET': 0.96, 'HOU': 1.10, 'KC': 0.83, 'LAA': 1.01, 'LAD': 1.11,
     'MIA': 0.85, 'MIL': 1.14, 'MIN': 0.94, 'NYM': 1.07, 'NYY': 1.20, 'OAK': 0.90, 'ATH': 0.90,
