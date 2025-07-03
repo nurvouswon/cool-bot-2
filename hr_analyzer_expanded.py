@@ -117,7 +117,6 @@ park_hr_percent_map_lhp = {
     'PHI': 1.16, 'PIT': 0.78, 'SD': 1.02, 'SEA': 0.97, 'SF': 0.82, 'STL': 0.96, 'TB': 0.94, 'TEX': 1.01, 'TOR': 1.06,
     'WAS': 0.90, 'WSH': 0.90
 }
-
 # ================== UTILITY FUNCTIONS ==================
 def dedup_columns(df):
     return df.loc[:, ~df.columns.duplicated()]
@@ -167,6 +166,39 @@ def rolling_apply(series, window, func):
     result = series.rolling(window, min_periods=1).apply(func)
     return result.iloc[-1] if not result.empty else np.nan
 
+# ================== ADVANCED HR ROLLING FEATURES ==================
+def rolling_features_hr(df, id_col, date_col, windows, group_batter=True):
+    records = []
+    for id_val, group in df.groupby(id_col, sort=False):
+        group = group.sort_values(date_col)
+        hr_outcome = group['hr_outcome'] if 'hr_outcome' in group.columns else pd.Series([0]*len(group))
+        outs = group['outs_when_up'] if 'outs_when_up' in group.columns else pd.Series([0]*len(group))
+        for w in windows:
+            roll_hr = hr_outcome.rolling(w, min_periods=1).sum().iloc[-1]
+            roll_pa = len(hr_outcome.iloc[-w:])
+            pa_per_hr = roll_pa / roll_hr if roll_hr > 0 else np.nan
+            hr_per_pa = roll_hr / roll_pa if roll_pa > 0 else 0
+            if not group_batter:
+                roll_outs = outs.rolling(w, min_periods=1).sum().iloc[-1]
+                hr9 = (roll_hr / (roll_outs/3)) * 9 if roll_outs > 0 else np.nan
+                hr_percent = roll_hr / roll_pa if roll_pa > 0 else 0
+            last_hr_idx = (hr_outcome[::-1].ne(0)).idxmax() if hr_outcome.ne(0).any() else None
+            last_hr_days = (pd.Timestamp(group[date_col].iloc[-1]) - pd.Timestamp(group[date_col].loc[last_hr_idx])).days if last_hr_idx is not None else np.nan
+            row = {
+                id_col: id_val,
+                f"{'b_' if group_batter else 'p_'}rolling_hr_{w}": roll_hr,
+                f"{'b_' if group_batter else 'p_'}rolling_pa_{w}": roll_pa,
+                f"{'b_' if group_batter else 'p_'}pa_per_hr_{w}": pa_per_hr if group_batter else np.nan,
+                f"{'b_' if group_batter else 'p_'}hr_per_pa_{w}": hr_per_pa if group_batter else np.nan,
+                f"{'b_' if group_batter else 'p_'}time_since_hr_{w}": last_hr_days,
+            }
+            if not group_batter:
+                row[f"p_rolling_hr9_{w}"] = hr9
+                row[f"p_rolling_hr_percent_{w}"] = hr_percent
+            records.append(row)
+    return pd.DataFrame(records)
+
+# ============= FAST ROLLING STATS (BATTER/PITCHER, PITCH TYPE) =============
 @st.cache_data(show_spinner=True, max_entries=4, ttl=3600)
 def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix=""):
     df = df.copy()
@@ -331,10 +363,11 @@ if fetch_btn:
     ]
     df = df[df['events_clean'].isin(valid_events)].copy()
 
-    # ========== ADVANCED ROLLING FEATURES ==========
-    progress.progress(22, "Computing rolling Statcast features (batter & pitcher, pitch type, deep windows, spray angle)...")
+    # ========== ADVANCED ROLLING HR/9, HR%, TIME-SINCE-HR FEATURES ==========
+    progress.progress(22, "Computing rolling Statcast features (batter & pitcher, pitch type, deep windows, spray angle, rolling HR/9, HR%, time-since-HR)...")
     roll_windows = [3, 5, 7, 14, 20, 30, 60]
     main_pitch_types = ["ff", "sl", "cu", "ch", "si", "fc", "fs", "st", "sinker", "splitter", "sweeper"]
+
     for col in ['batter', 'batter_id']:
         if col in df.columns:
             df['batter_id'] = df[col]
@@ -342,21 +375,30 @@ if fetch_btn:
         if col in df.columns:
             df['pitcher_id'] = df[col]
 
-    # Rolling stats (batters)
+    # Batters: full rolling Statcast & HR stats
     batter_event = fast_rolling_stats(df, "batter_id", "game_date", roll_windows, main_pitch_types, prefix="b_")
-    if not batter_event.empty:
-        batter_event = batter_event.set_index('batter_id')
-    # Rolling stats (pitchers)
+    batter_hr_rolling = rolling_features_hr(df, "batter_id", "game_date", roll_windows, group_batter=True)
+    if not batter_event.empty and not batter_hr_rolling.empty:
+        batter_merged = pd.merge(batter_event, batter_hr_rolling, how="left", on="batter_id")
+    else:
+        batter_merged = batter_event
+
+    # Pitchers: full rolling Statcast & HR stats
     df_for_pitchers = df.copy()
     if 'batter_id' in df_for_pitchers.columns:
         df_for_pitchers = df_for_pitchers.drop(columns=['batter_id'])
     df_for_pitchers = df_for_pitchers.rename(columns={"pitcher_id": "batter_id"})
     pitcher_event = fast_rolling_stats(df_for_pitchers, "batter_id", "game_date", roll_windows, main_pitch_types, prefix="p_")
-    if not pitcher_event.empty:
-        pitcher_event = pitcher_event.set_index('batter_id')
-    # Merge
-    df = pd.merge(df, batter_event.reset_index(), how="left", left_on="batter_id", right_on="batter_id")
-    df = pd.merge(df, pitcher_event.reset_index(), how="left", left_on="pitcher_id", right_on="batter_id", suffixes=('', '_pitcherstat'))
+    pitcher_hr_rolling = rolling_features_hr(df, "pitcher_id", "game_date", roll_windows, group_batter=False)
+    if not pitcher_event.empty and not pitcher_hr_rolling.empty:
+        pitcher_merged = pd.merge(pitcher_event, pitcher_hr_rolling, how="left", left_on="batter_id", right_on="pitcher_id")
+        pitcher_merged = pitcher_merged.drop(columns=["pitcher_id"], errors='ignore')
+    else:
+        pitcher_merged = pitcher_event
+
+    # Merge all advanced features into event-level dataset
+    df = pd.merge(df, batter_merged.reset_index(drop=True), how="left", left_on="batter_id", right_on="batter_id")
+    df = pd.merge(df, pitcher_merged.reset_index(drop=True), how="left", left_on="pitcher_id", right_on="batter_id", suffixes=('', '_pitcherstat'))
     if 'batter_id_pitcherstat' in df.columns:
         df = df.drop(columns=['batter_id_pitcherstat'])
     df = dedup_columns(df)
@@ -400,5 +442,5 @@ if fetch_btn:
     progress.progress(100, "All complete.")
 
     # ---- RAM Cleanup ----
-    del df, batter_event, pitcher_event
+    del df, batter_event, pitcher_event, batter_merged, pitcher_merged, batter_hr_rolling, pitcher_hr_rolling
     gc.collect()
