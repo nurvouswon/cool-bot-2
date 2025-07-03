@@ -117,9 +117,18 @@ park_hr_percent_map_lhp = {
     'PHI': 1.16, 'PIT': 0.78, 'SD': 1.02, 'SEA': 0.97, 'SF': 0.82, 'STL': 0.96, 'TB': 0.94, 'TEX': 1.01, 'TOR': 1.06,
     'WAS': 0.90, 'WSH': 0.90
 }
-# ================== UTILITY FUNCTIONS ==================
+# =================== UTILITY FUNCTIONS ===================
 def dedup_columns(df):
+    """Remove duplicate columns after merging."""
     return df.loc[:, ~df.columns.duplicated()]
+
+def downcast_numeric(df):
+    """Downcast numeric columns to save memory."""
+    for col in df.select_dtypes(include=['float']):
+        df[col] = pd.to_numeric(df[col], downcast='float')
+    for col in df.select_dtypes(include=['int']):
+        df[col] = pd.to_numeric(df[col], downcast='integer')
+    return df
 
 def parse_custom_weather_string_v2(s):
     if pd.isna(s):
@@ -144,13 +153,6 @@ def parse_custom_weather_string_v2(s):
     return pd.Series([temp, wind_vector, wind_field_dir, wind_mph, humidity, condition, wind_dir_string],
                      index=['temp','wind_vector','wind_field_dir','wind_mph','humidity','condition','wind_dir_string'])
 
-def downcast_numeric(df):
-    for col in df.select_dtypes(include=['float']):
-        df[col] = pd.to_numeric(df[col], downcast='float')
-    for col in df.select_dtypes(include=['int']):
-        df[col] = pd.to_numeric(df[col], downcast='integer')
-    return df
-
 def calculate_spray_angle(hc_x, hc_y):
     try:
         if np.isnan(hc_x) or np.isnan(hc_y):
@@ -166,7 +168,7 @@ def rolling_apply(series, window, func):
     result = series.rolling(window, min_periods=1).apply(func)
     return result.iloc[-1] if not result.empty else np.nan
 
-# ================== ADVANCED HR ROLLING FEATURES ==================
+# ========== ADVANCED HR ROLLING FEATURES ==========
 def rolling_features_hr(df, id_col, date_col, windows, group_batter=True):
     records = []
     for id_val, group in df.groupby(id_col, sort=False):
@@ -273,7 +275,7 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
         results.append(out_row)
     return pd.DataFrame(results)
 
-# ======================== STREAMLIT APP MAIN ========================
+# ==================== STREAMLIT APP MAIN ====================
 st.set_page_config("MLB HR Analyzer", layout="wide")
 st.header("Fetch Statcast Data & Generate Features")
 
@@ -308,6 +310,7 @@ if fetch_btn:
         if col in df.columns:
             df[col] = df[col].astype(str).str.replace('.0','',regex=False).str.strip()
 
+    # Map park/city/context using your provided context maps
     if 'home_team_code' in df.columns:
         df['team_code'] = df['home_team_code'].str.upper()
         df['park'] = df['home_team_code'].str.lower().str.replace(' ', '_')
@@ -412,14 +415,14 @@ if fetch_btn:
     else:
         df['park_hand_hr_rate'] = 1.0
 
-    # Downcast numerics for RAM
+    # ====== DOWNCAST NUMERICS FOR RAM OPTIMIZATION ======
     df = downcast_numeric(df)
     progress.progress(80, "Event-level feature engineering/merges complete.")
 
-    # Diagnostics: event-level output preview
+    # =================== DIAGNOSTICS: event-level output preview ===================
     st.write("Event-level dataframe sample:", df.head(20))
 
-    # Download
+    # =================== DOWNLOADS: CSV & PARQUET ===================
     st.markdown("#### Download Event-Level Feature CSV / Parquet:")
     st.dataframe(df.head(20), use_container_width=True)
     st.download_button(
