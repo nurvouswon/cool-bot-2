@@ -117,13 +117,12 @@ park_hr_percent_map_lhp = {
     'PHI': 1.16, 'PIT': 0.78, 'SD': 1.02, 'SEA': 0.97, 'SF': 0.82, 'STL': 0.96, 'TB': 0.94, 'TEX': 1.01, 'TOR': 1.06,
     'WAS': 0.90, 'WSH': 0.90
 }
+
 # =================== UTILITY FUNCTIONS ===================
 def dedup_columns(df):
-    """Remove duplicate columns after merging."""
     return df.loc[:, ~df.columns.duplicated()]
 
 def downcast_numeric(df):
-    """Downcast numeric columns to save memory."""
     for col in df.select_dtypes(include=['float']):
         df[col] = pd.to_numeric(df[col], downcast='float')
     for col in df.select_dtypes(include=['int']):
@@ -131,7 +130,6 @@ def downcast_numeric(df):
     return df
 
 def parse_custom_weather_string_v2(s):
-    # [Your function unchanged]
     if pd.isna(s):
         return pd.Series([np.nan]*7, index=['temp','wind_vector','wind_field_dir','wind_mph','humidity','condition','wind_dir_string'])
     s = str(s)
@@ -173,47 +171,54 @@ def rolling_apply(series, window, func):
 @st.cache_data(show_spinner=True, max_entries=8, ttl=7200)
 def rolling_features_hr(df, id_col, date_col, windows, group_batter=True):
     records = []
+    debug_msgs = []
     for id_val, group in df.groupby(id_col, sort=False):
         group = group.sort_values(date_col)
         hr_outcome = group['hr_outcome'] if 'hr_outcome' in group.columns else pd.Series([0]*len(group))
         outs = group['outs_when_up'] if 'outs_when_up' in group.columns else pd.Series([0]*len(group))
         for w in windows:
-            roll_hr = hr_outcome.rolling(w, min_periods=1).sum().iloc[-1]
-            roll_pa = len(hr_outcome.iloc[-w:])
-            pa_per_hr = roll_pa / roll_hr if roll_hr > 0 else np.nan
-            hr_per_pa = roll_hr / roll_pa if roll_pa > 0 else 0
-            if not group_batter:
-                roll_outs = outs.rolling(w, min_periods=1).sum().iloc[-1]
-                hr9 = (roll_hr / (roll_outs/3)) * 9 if roll_outs > 0 else np.nan
-                hr_percent = roll_hr / roll_pa if roll_pa > 0 else 0
-            # --- FIXED BLOCK FOR last_hr_idx & last_hr_days ---
-            if hr_outcome.ne(0).any():
-                reversed_nonzero = hr_outcome[::-1].ne(0)
-                last_hr_idx = reversed_nonzero.idxmax()
-                # Sometimes idxmax can return a Series if there are duplicate indices, so coerce to scalar
-                if isinstance(last_hr_idx, (pd.Series, np.ndarray)):
-                    last_hr_idx = last_hr_idx.iloc[0] if hasattr(last_hr_idx, 'iloc') else last_hr_idx[0]
-                # Defensive: check index exists
-                try:
-                    last_hr_date = group[date_col].loc[last_hr_idx]
-                    last_hr_days = (pd.Timestamp(group[date_col].iloc[-1]) - pd.Timestamp(last_hr_date)).days
-                except Exception:
+            try:
+                roll_hr = hr_outcome.rolling(w, min_periods=1).sum().iloc[-1]
+                roll_pa = len(hr_outcome.iloc[-w:])
+                pa_per_hr = roll_pa / roll_hr if roll_hr > 0 else np.nan
+                hr_per_pa = roll_hr / roll_pa if roll_pa > 0 else 0
+                if not group_batter:
+                    roll_outs = outs.rolling(w, min_periods=1).sum().iloc[-1]
+                    hr9 = (roll_hr / (roll_outs/3)) * 9 if roll_outs > 0 else np.nan
+                    hr_percent = roll_hr / roll_pa if roll_pa > 0 else 0
+                # --- last_hr_days block ---
+                if hr_outcome.ne(0).any():
+                    reversed_nonzero = hr_outcome[::-1].ne(0)
+                    last_hr_idx = reversed_nonzero.idxmax()
+                    if isinstance(last_hr_idx, (pd.Series, np.ndarray)):
+                        last_hr_idx = last_hr_idx.iloc[0] if hasattr(last_hr_idx, 'iloc') else last_hr_idx[0]
+                    try:
+                        last_hr_date = group[date_col].loc[last_hr_idx]
+                        last_hr_days = (pd.Timestamp(group[date_col].iloc[-1]) - pd.Timestamp(last_hr_date)).days
+                    except Exception as e:
+                        debug_msgs.append(f"[{id_val} | window {w}] ERROR getting last_hr_days: {e} idx:{last_hr_idx} date_col={group[date_col]}")
+                        last_hr_days = np.nan
+                else:
                     last_hr_days = np.nan
-            else:
-                last_hr_days = np.nan
-            # --- END FIXED BLOCK ---
-            row = {
-                id_col: id_val,
-                f"{'b_' if group_batter else 'p_'}rolling_hr_{w}": roll_hr,
-                f"{'b_' if group_batter else 'p_'}rolling_pa_{w}": roll_pa,
-                f"{'b_' if group_batter else 'p_'}pa_per_hr_{w}": pa_per_hr if group_batter else np.nan,
-                f"{'b_' if group_batter else 'p_'}hr_per_pa_{w}": hr_per_pa if group_batter else np.nan,
-                f"{'b_' if group_batter else 'p_'}time_since_hr_{w}": last_hr_days,
-            }
-            if not group_batter:
-                row[f"p_rolling_hr9_{w}"] = hr9
-                row[f"p_rolling_hr_percent_{w}"] = hr_percent
-            records.append(row)
+                row = {
+                    id_col: id_val,
+                    f"{'b_' if group_batter else 'p_'}rolling_hr_{w}": roll_hr,
+                    f"{'b_' if group_batter else 'p_'}rolling_pa_{w}": roll_pa,
+                    f"{'b_' if group_batter else 'p_'}pa_per_hr_{w}": pa_per_hr if group_batter else np.nan,
+                    f"{'b_' if group_batter else 'p_'}hr_per_pa_{w}": hr_per_pa if group_batter else np.nan,
+                    f"{'b_' if group_batter else 'p_'}time_since_hr_{w}": last_hr_days,
+                }
+                if not group_batter:
+                    row[f"p_rolling_hr9_{w}"] = hr9
+                    row[f"p_rolling_hr_percent_{w}"] = hr_percent
+                records.append(row)
+            except Exception as ex:
+                debug_msgs.append(f"[{id_val} window={w}] ERROR: {repr(ex)}\nGroup shape={group.shape}, group index={group.index}, date_col dtype={group[date_col].dtype}")
+    # DEBUG OUTPUT for diagnostics
+    if debug_msgs:
+        with st.expander("🔎 Rolling Feature Calculation Warnings / Errors", expanded=True):
+            for msg in debug_msgs[:100]:
+                st.write(msg)
     return pd.DataFrame(records)
 
 # ============= FAST ROLLING STATS (BATTER/PITCHER, PITCH TYPE) =============
