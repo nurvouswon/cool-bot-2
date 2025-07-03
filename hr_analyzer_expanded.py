@@ -120,9 +120,11 @@ park_hr_percent_map_lhp = {
 
 # =================== UTILITY FUNCTIONS ===================
 def dedup_columns(df):
+    """Remove duplicate columns after merging."""
     return df.loc[:, ~df.columns.duplicated()]
 
 def downcast_numeric(df):
+    """Downcast numeric columns to save memory."""
     for col in df.select_dtypes(include=['float']):
         df[col] = pd.to_numeric(df[col], downcast='float')
     for col in df.select_dtypes(include=['int']):
@@ -171,13 +173,13 @@ def rolling_apply(series, window, func):
 @st.cache_data(show_spinner=True, max_entries=8, ttl=7200)
 def rolling_features_hr(df, id_col, date_col, windows, group_batter=True):
     records = []
-    debug_msgs = []
+    errors = []
     for id_val, group in df.groupby(id_col, sort=False):
-        group = group.sort_values(date_col)
-        hr_outcome = group['hr_outcome'] if 'hr_outcome' in group.columns else pd.Series([0]*len(group))
-        outs = group['outs_when_up'] if 'outs_when_up' in group.columns else pd.Series([0]*len(group))
-        for w in windows:
-            try:
+        try:
+            group = group.sort_values(date_col)
+            hr_outcome = group['hr_outcome'] if 'hr_outcome' in group.columns else pd.Series([0]*len(group))
+            outs = group['outs_when_up'] if 'outs_when_up' in group.columns else pd.Series([0]*len(group))
+            for w in windows:
                 roll_hr = hr_outcome.rolling(w, min_periods=1).sum().iloc[-1]
                 roll_pa = len(hr_outcome.iloc[-w:])
                 pa_per_hr = roll_pa / roll_hr if roll_hr > 0 else np.nan
@@ -186,7 +188,6 @@ def rolling_features_hr(df, id_col, date_col, windows, group_batter=True):
                     roll_outs = outs.rolling(w, min_periods=1).sum().iloc[-1]
                     hr9 = (roll_hr / (roll_outs/3)) * 9 if roll_outs > 0 else np.nan
                     hr_percent = roll_hr / roll_pa if roll_pa > 0 else 0
-                # --- last_hr_days block ---
                 if hr_outcome.ne(0).any():
                     reversed_nonzero = hr_outcome[::-1].ne(0)
                     last_hr_idx = reversed_nonzero.idxmax()
@@ -195,9 +196,9 @@ def rolling_features_hr(df, id_col, date_col, windows, group_batter=True):
                     try:
                         last_hr_date = group[date_col].loc[last_hr_idx]
                         last_hr_days = (pd.Timestamp(group[date_col].iloc[-1]) - pd.Timestamp(last_hr_date)).days
-                    except Exception as e:
-                        debug_msgs.append(f"[{id_val} | window {w}] ERROR getting last_hr_days: {e} idx:{last_hr_idx} date_col={group[date_col]}")
+                    except Exception as ex:
                         last_hr_days = np.nan
+                        errors.append(f"ID: {id_val} W:{w} Group-date:{group[date_col].iloc[-1]} Err: {repr(ex)}")
                 else:
                     last_hr_days = np.nan
                 row = {
@@ -212,14 +213,9 @@ def rolling_features_hr(df, id_col, date_col, windows, group_batter=True):
                     row[f"p_rolling_hr9_{w}"] = hr9
                     row[f"p_rolling_hr_percent_{w}"] = hr_percent
                 records.append(row)
-            except Exception as ex:
-                debug_msgs.append(f"[{id_val} window={w}] ERROR: {repr(ex)}\nGroup shape={group.shape}, group index={group.index}, date_col dtype={group[date_col].dtype}")
-    # DEBUG OUTPUT for diagnostics
-    if debug_msgs:
-        with st.expander("🔎 Rolling Feature Calculation Warnings / Errors", expanded=True):
-            for msg in debug_msgs[:100]:
-                st.write(msg)
-    return pd.DataFrame(records)
+        except Exception as ex:
+            errors.append(f"ID: {id_val} Error: {repr(ex)}")
+    return pd.DataFrame(records), errors
 
 # ============= FAST ROLLING STATS (BATTER/PITCHER, PITCH TYPE) =============
 @st.cache_data(show_spinner=True, max_entries=8, ttl=7200)
@@ -388,6 +384,7 @@ if fetch_btn:
     df = df[df['events_clean'].isin(valid_events)].copy()
 
     # ========== ADVANCED ROLLING HR/9, HR%, TIME-SINCE-HR FEATURES ==========
+
     progress.progress(22, "Computing rolling Statcast features (batter & pitcher, pitch type, deep windows, spray angle, rolling HR/9, HR%, time-since-HR)...")
     roll_windows = [3, 5, 7, 14, 20, 30, 60]
     main_pitch_types = ["ff", "sl", "cu", "ch", "si", "fc", "fs", "st", "sinker", "splitter", "sweeper"]
@@ -400,20 +397,30 @@ if fetch_btn:
             df['pitcher_id'] = df[col]
 
     # Batters: full rolling Statcast & HR stats (cached)
+    st.subheader("Diagnostics: Batter Rolling Feature Errors")
     batter_event = fast_rolling_stats(df, "batter_id", "game_date", roll_windows, main_pitch_types, prefix="b_")
-    batter_hr_rolling = rolling_features_hr(df, "batter_id", "game_date", roll_windows, group_batter=True)
+    batter_hr_rolling, batter_hr_errors = rolling_features_hr(df, "batter_id", "game_date", roll_windows, group_batter=True)
+    if batter_hr_errors:
+        st.code("\n".join(batter_hr_errors), language="text")
+    else:
+        st.success("No batter rolling HR errors.")
     if not batter_event.empty and not batter_hr_rolling.empty:
         batter_merged = pd.merge(batter_event, batter_hr_rolling, how="left", on="batter_id")
     else:
         batter_merged = batter_event
 
     # Pitchers: full rolling Statcast & HR stats (cached)
+    st.subheader("Diagnostics: Pitcher Rolling Feature Errors")
     df_for_pitchers = df.copy()
     if 'batter_id' in df_for_pitchers.columns:
         df_for_pitchers = df_for_pitchers.drop(columns=['batter_id'])
     df_for_pitchers = df_for_pitchers.rename(columns={"pitcher_id": "batter_id"})
     pitcher_event = fast_rolling_stats(df_for_pitchers, "batter_id", "game_date", roll_windows, main_pitch_types, prefix="p_")
-    pitcher_hr_rolling = rolling_features_hr(df, "pitcher_id", "game_date", roll_windows, group_batter=False)
+    pitcher_hr_rolling, pitcher_hr_errors = rolling_features_hr(df, "pitcher_id", "game_date", roll_windows, group_batter=False)
+    if pitcher_hr_errors:
+        st.code("\n".join(pitcher_hr_errors), language="text")
+    else:
+        st.success("No pitcher rolling HR errors.")
     if not pitcher_event.empty and not pitcher_hr_rolling.empty:
         pitcher_merged = pd.merge(pitcher_event, pitcher_hr_rolling, how="left", left_on="batter_id", right_on="pitcher_id")
         pitcher_merged = pitcher_merged.drop(columns=["pitcher_id"], errors='ignore')
