@@ -436,7 +436,16 @@ if fetch_btn:
             batter_merged = pd.merge(batter_event, batter_hr_rolling, how="left", on="batter_id")
         else:
             batter_merged = batter_event
-        st.write(f"Batter merge: {batter_merged.shape[0]} rows, {batter_merged.shape[1]} columns")
+
+        # ----------- ANTI-CRASH: Ensure exactly 1 row per batter_id -----------
+        before = batter_merged.shape[0]
+        batter_merged = batter_merged.drop_duplicates(subset=["batter_id"])
+        after = batter_merged.shape[0]
+        st.write(f"Batter merge: {batter_merged.shape[0]} rows, {batter_merged.shape[1]} columns (deduped {before-after} rows)")
+
+        if batter_merged['batter_id'].duplicated().any():
+            st.error("Batter_merged still has duplicate batter_id values! This will crash the main merge.")
+            st.stop()
     except Exception as e:
         st.error(f"Error merging batter features: {e}")
         st.stop()
@@ -448,7 +457,16 @@ if fetch_btn:
             pitcher_merged = pitcher_merged.drop(columns=["pitcher_id"], errors='ignore')
         else:
             pitcher_merged = pitcher_event
-        st.write(f"Pitcher merge: {pitcher_merged.shape[0]} rows, {pitcher_merged.shape[1]} columns")
+
+        # ----------- ANTI-CRASH: Ensure exactly 1 row per pitcher batter_id -----------
+        before = pitcher_merged.shape[0]
+        pitcher_merged = pitcher_merged.drop_duplicates(subset=["batter_id"])
+        after = pitcher_merged.shape[0]
+        st.write(f"Pitcher merge: {pitcher_merged.shape[0]} rows, {pitcher_merged.shape[1]} columns (deduped {before-after} rows)")
+
+        if pitcher_merged['batter_id'].duplicated().any():
+            st.error("Pitcher_merged still has duplicate batter_id values! This will crash the main merge.")
+            st.stop()
     except Exception as e:
         st.error(f"Error merging pitcher features: {e}")
         st.stop()
@@ -464,7 +482,6 @@ if fetch_btn:
     except Exception as e:
         st.error(f"Error merging event-level features: {e}")
         st.stop()
-
     # ====== Add park_hand_hr_rate to event-level ======
     if 'stand' in df.columns and 'park' in df.columns:
         df['park_hand_hr_rate'] = [
