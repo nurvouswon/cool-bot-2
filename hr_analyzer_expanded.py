@@ -482,51 +482,106 @@ if fetch_btn:
     else:
         pitcher_merged = pitcher_event
 
-    # Merge all advanced features into event-level dataset
-    df = pd.merge(df, batter_merged.reset_index(drop=True), how="left", left_on="batter_id", right_on="batter_id")
-    df = pd.merge(df, pitcher_merged.reset_index(drop=True), how="left", left_on="pitcher_id", right_on="batter_id", suffixes=('', '_pitcherstat'))
-    if 'batter_id_pitcherstat' in df.columns:
-        df = df.drop(columns=['batter_id_pitcherstat'])
-    df = dedup_columns(df)
+    # Merge all advanced features into event-level dataset (defensive, with debug logs)
+    merge_debug = []
+    try:
+        if not df.empty and not batter_merged.empty:
+            merge_debug.append(f"DF shape before batter merge: {df.shape}")
+            merge_debug.append(f"Batter merged shape: {batter_merged.shape}")
+            df = pd.merge(df, batter_merged.reset_index(drop=True), how="left", left_on="batter_id", right_on="batter_id")
+            merge_debug.append(f"DF shape after batter merge: {df.shape}")
+        if not df.empty and not pitcher_merged.empty:
+            merge_debug.append(f"Pitcher merged shape: {pitcher_merged.shape}")
+            df = pd.merge(df, pitcher_merged.reset_index(drop=True), how="left", left_on="pitcher_id", right_on="batter_id", suffixes=('', '_pitcherstat'))
+            merge_debug.append(f"DF shape after pitcher merge: {df.shape}")
+        if 'batter_id_pitcherstat' in df.columns:
+            df = df.drop(columns=['batter_id_pitcherstat'])
+        df = dedup_columns(df)
+        merge_debug.append(f"Final DF shape after dedup: {df.shape}")
+    except Exception as e:
+        st.error(f"Error during merging/feature consolidation: {e}")
+        st.write("Merge debug log:", merge_debug)
+        st.stop()
 
-    # ====== Add park_hand_hr_rate to event-level ======
-    if 'stand' in df.columns and 'park' in df.columns:
-        df['park_hand_hr_rate'] = [
-            park_hand_hr_rate_map.get(str(park).lower(), {}).get(str(stand).upper(), 1.0)
-            for park, stand in zip(df['park'], df['stand'])
-        ]
-    else:
-        df['park_hand_hr_rate'] = 1.0
+    # Defensive: add park_hand_hr_rate if missing
+    try:
+        if 'stand' in df.columns and 'park' in df.columns:
+            df['park_hand_hr_rate'] = [
+                park_hand_hr_rate_map.get(str(park).lower(), {}).get(str(stand).upper(), 1.0)
+                for park, stand in zip(df['park'], df['stand'])
+            ]
+        else:
+            df['park_hand_hr_rate'] = 1.0
+    except Exception as e:
+        st.warning(f"Could not calculate park_hand_hr_rate: {e}")
 
-    # ====== DOWNCAST NUMERICS FOR RAM OPTIMIZATION ======
-    df = downcast_numeric(df)
-    progress.progress(80, "Event-level feature engineering/merges complete.")
+    # Defensive: downcast numerics for RAM
+    try:
+        df = downcast_numeric(df)
+    except Exception as e:
+        st.warning(f"Downcast numeric failed: {e}")
 
-    # =================== DIAGNOSTICS: event-level output preview ===================
-    st.write("Event-level dataframe sample:", df.head(20))
+    # ========== EVENT-LEVEL OUTPUT & DOWNLOADS ==========
 
-    # =================== DOWNLOADS: CSV & PARQUET ===================
-    st.markdown("#### Download Event-Level Feature CSV / Parquet:")
-    st.dataframe(df.head(20), use_container_width=True)
-    st.download_button(
-        "⬇️ Download Event-Level CSV",
-        data=df.to_csv(index=False),
-        file_name="event_level_hr_features.csv",
-        key="download_event_csv"
-    )
-    event_parquet = io.BytesIO()
-    df.to_parquet(event_parquet, index=False)
-    st.download_button(
-        "⬇️ Download Event-Level Parquet",
-        data=event_parquet.getvalue(),
-        file_name="event_level_hr_features.parquet",
-        mime="application/octet-stream",
-        key="download_event_parquet"
-    )
+    # Defensive: display dataframe sample
+    try:
+        st.write("Event-level dataframe sample:", df.head(20))
+    except Exception as e:
+        st.error(f"Error displaying dataframe sample: {e}")
+        st.stop()
 
-    st.success("Event-level file(s) and debug outputs ready.")
-    progress.progress(100, "All complete.")
+    try:
+        st.markdown("#### Download Event-Level Feature CSV / Parquet:")
+        st.dataframe(df.head(20), use_container_width=True)
+
+        if df.empty:
+            st.error("DF is empty. Not writing files.")
+            st.stop()
+
+        # Try writing files
+        csv_data, parquet_data = None, None
+        try:
+            csv_data = df.to_csv(index=False)
+        except Exception as e:
+            st.error(f"Could not generate CSV: {e}")
+            csv_data = None
+        try:
+            event_parquet = io.BytesIO()
+            df.to_parquet(event_parquet, index=False)
+            parquet_data = event_parquet.getvalue()
+        except Exception as e:
+            st.error(f"Could not generate Parquet: {e}")
+            parquet_data = None
+
+        if csv_data:
+            st.download_button(
+                "⬇️ Download Event-Level CSV",
+                data=csv_data,
+                file_name="event_level_hr_features.csv",
+                key="download_event_csv"
+            )
+        if parquet_data:
+            st.download_button(
+                "⬇️ Download Event-Level Parquet",
+                data=parquet_data,
+                file_name="event_level_hr_features.parquet",
+                mime="application/octet-stream",
+                key="download_event_parquet"
+            )
+        if csv_data or parquet_data:
+            st.success("Event-level file(s) and debug outputs ready.")
+            progress.progress(100, "All complete.")
+        else:
+            st.error("No output file was successfully created.")
+
+    except Exception as e:
+        st.error(f"Error in output/download section: {e}")
+        st.write("Merge debug log:", merge_debug)
+        st.stop()
 
     # ---- RAM Cleanup ----
-    del df, batter_event, pitcher_event, batter_merged, pitcher_merged, batter_hr_rolling, pitcher_hr_rolling
-    gc.collect()
+    try:
+        del df, batter_event, pitcher_event, batter_merged, pitcher_merged, batter_hr_rolling, pitcher_hr_rolling
+        gc.collect()
+    except Exception as e:
+        st.warning(f"RAM cleanup exception: {e}")
