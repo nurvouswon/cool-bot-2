@@ -118,10 +118,13 @@ park_hr_percent_map_lhp = {
     'WAS': 0.90, 'WSH': 0.90
 }
 
+# =================== UTILITY FUNCTIONS ===================
 def dedup_columns(df):
+    """Remove duplicate columns after merging."""
     return df.loc[:, ~df.columns.duplicated()]
 
 def downcast_numeric(df):
+    """Downcast numeric columns to save memory."""
     for col in df.select_dtypes(include=['float']):
         df[col] = pd.to_numeric(df[col], downcast='float')
     for col in df.select_dtypes(include=['int']):
@@ -166,6 +169,7 @@ def rolling_apply(series, window, func):
     result = series.rolling(window, min_periods=1).apply(func)
     return result.iloc[-1] if not result.empty else np.nan
 
+# ========== ADVANCED HR ROLLING FEATURES ==========
 @st.cache_data(show_spinner=True, max_entries=8, ttl=7200)
 def rolling_features_hr(df, id_col, date_col, windows, group_batter=True):
     records = []
@@ -208,6 +212,7 @@ def rolling_features_hr(df, id_col, date_col, windows, group_batter=True):
             records.append(row)
     return pd.DataFrame(records)
 
+# ============= FAST ROLLING STATS (BATTER/PITCHER, PITCH TYPE) =============
 @st.cache_data(show_spinner=True, max_entries=8, ttl=7200)
 def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix=""):
     df = df.copy()
@@ -317,7 +322,21 @@ if fetch_btn:
         if col in df.columns:
             df[col] = df[col].astype(str).str.replace('.0','',regex=False).str.strip()
 
-    # ==== [Insert your park/city/context logic using your maps here] ====
+    # Map park/city/context using your provided context maps
+    if 'home_team_code' in df.columns:
+        df['team_code'] = df['home_team_code'].str.upper()
+        df['park'] = df['home_team_code'].str.lower().str.replace(' ', '_')
+    if 'home_team' in df.columns and 'park' not in df.columns:
+        df['park'] = df['home_team'].str.lower().str.replace(' ', '_')
+    if 'team_code' not in df.columns and 'park' in df.columns:
+        park_to_team = {v:k for k,v in team_code_to_park.items()}
+        df['team_code'] = df['park'].map(park_to_team).str.upper()
+    df['team_code'] = df['team_code'].astype(str).str.upper()
+    df['park'] = df['team_code'].map(team_code_to_park).str.lower()
+    df['park_hr_rate'] = df['park'].map(park_hr_rate_map).fillna(1.0)
+    df['park_altitude'] = df['park'].map(park_altitude_map).fillna(0)
+    df['roof_status'] = df['park'].map(roof_status_map).fillna("open")
+    df['city'] = df['team_code'].map(mlb_team_city_map).fillna("")
 
     # ====== Handedness fields ======
     if 'stand' in df.columns:
@@ -331,7 +350,16 @@ if fetch_btn:
     else:
         df['pitcher_hand'] = np.nan
 
-    # ==== [Insert your park HR percent logic here] ====
+    # ========== DEEP RESEARCH: Park HR percent columns by hand/team ==========
+    df['park_hr_pct_all'] = df['team_code'].map(park_hr_percent_map_all).fillna(1.0)
+    df['park_hr_pct_rhb'] = df['team_code'].map(park_hr_percent_map_rhb).fillna(1.0)
+    df['park_hr_pct_lhb'] = df['team_code'].map(park_hr_percent_map_lhb).fillna(1.0)
+    df['park_hr_pct_hand'] = [
+        park_hr_percent_map_rhb.get(team, 1.0) if str(stand).upper() == "R"
+        else park_hr_percent_map_lhb.get(team, 1.0) if str(stand).upper() == "L"
+        else park_hr_percent_map_all.get(team, 1.0)
+        for team, stand in zip(df['team_code'], df['batter_hand'])
+    ]
 
     # ================== SLG NUMERIC FOR ROLLING ==================
     slg_map = {'single':1, 'double':2, 'triple':3, 'home_run':4, 'homerun':4}
@@ -362,21 +390,21 @@ if fetch_btn:
         if col in df.columns:
             df['pitcher_id'] = df[col]
 
-    # ======= DEBUG/DIAGNOSTIC BLOCKS FOR MERGES =======
+    # =========== ROLLING STATS & DEBUG DIAGNOSTICS ===========
     st.subheader("Diagnostics: Batter Fast Rolling Feature Errors")
     try:
         batter_event = fast_rolling_stats(df, "batter_id", "game_date", roll_windows, main_pitch_types, prefix="b_")
-        st.write(f"Fast Rolling: Successfully processed {batter_event.shape[0]} groups with no errors.")
+        st.success(f"Fast Rolling: Successfully processed {batter_event.shape[0]} groups with no errors.")
     except Exception as e:
-        st.error(f"Batter fast rolling feature error: {e}")
+        st.error(f"Fast Rolling error in batter_event: {e}")
         st.stop()
 
     st.subheader("Diagnostics: Batter Rolling HR Feature Errors")
     try:
         batter_hr_rolling = rolling_features_hr(df, "batter_id", "game_date", roll_windows, group_batter=True)
-        st.write(f"Rolling HR: Successfully processed {batter_hr_rolling.shape[0]} groups with no errors.")
+        st.success(f"Rolling HR: Successfully processed {batter_hr_rolling.shape[0]} groups with no errors.")
     except Exception as e:
-        st.error(f"Batter rolling HR feature error: {e}")
+        st.error(f"Rolling HR error in batter_hr_rolling: {e}")
         st.stop()
 
     st.subheader("Diagnostics: Pitcher Fast Rolling Feature Errors")
@@ -386,29 +414,26 @@ if fetch_btn:
             df_for_pitchers = df_for_pitchers.drop(columns=['batter_id'])
         df_for_pitchers = df_for_pitchers.rename(columns={"pitcher_id": "batter_id"})
         pitcher_event = fast_rolling_stats(df_for_pitchers, "batter_id", "game_date", roll_windows, main_pitch_types, prefix="p_")
-        st.write(f"Fast Rolling: Successfully processed {pitcher_event.shape[0]} groups with no errors.")
+        st.success(f"Fast Rolling: Successfully processed {pitcher_event.shape[0]} groups with no errors.")
     except Exception as e:
-        st.error(f"Pitcher fast rolling feature error: {e}")
+        st.error(f"Fast Rolling error in pitcher_event: {e}")
         st.stop()
 
     st.subheader("Diagnostics: Pitcher Rolling HR Feature Errors")
     try:
         pitcher_hr_rolling = rolling_features_hr(df, "pitcher_id", "game_date", roll_windows, group_batter=False)
-        st.write(f"Rolling HR: Successfully processed {pitcher_hr_rolling.shape[0]} groups with no errors.")
+        st.success(f"Rolling HR: Successfully processed {pitcher_hr_rolling.shape[0]} groups with no errors.")
     except Exception as e:
-        st.error(f"Pitcher rolling HR feature error: {e}")
+        st.error(f"Rolling HR error in pitcher_hr_rolling: {e}")
         st.stop()
 
+    # ========== ADVANCED MERGING WITH DIAGNOSTICS ==========
     st.subheader("Diagnostics: Feature Merge")
-    # Now robust, defensive merges
+
     try:
-        st.info("Merging batter rolling and event features...")
+        st.write("Merging batter rolling and event features...")
         if not batter_event.empty and not batter_hr_rolling.empty:
-            batter_merged = pd.merge(
-                batter_event.reset_index(drop=True),
-                batter_hr_rolling.reset_index(drop=True),
-                how="left", on="batter_id"
-            )
+            batter_merged = pd.merge(batter_event, batter_hr_rolling, how="left", on="batter_id")
         else:
             batter_merged = batter_event
         st.write(f"Batter merge: {batter_merged.shape[0]} rows, {batter_merged.shape[1]} columns")
@@ -417,13 +442,9 @@ if fetch_btn:
         st.stop()
 
     try:
-        st.info("Merging pitcher rolling and event features...")
+        st.write("Merging pitcher rolling and event features...")
         if not pitcher_event.empty and not pitcher_hr_rolling.empty:
-            pitcher_merged = pd.merge(
-                pitcher_event.reset_index(drop=True),
-                pitcher_hr_rolling.reset_index(drop=True),
-                how="left", left_on="batter_id", right_on="pitcher_id"
-            )
+            pitcher_merged = pd.merge(pitcher_event, pitcher_hr_rolling, how="left", left_on="batter_id", right_on="pitcher_id")
             pitcher_merged = pitcher_merged.drop(columns=["pitcher_id"], errors='ignore')
         else:
             pitcher_merged = pitcher_event
@@ -433,63 +454,45 @@ if fetch_btn:
         st.stop()
 
     try:
-        st.info("Merging all advanced features into event-level dataset...")
-        df_merged = pd.merge(
-            df.reset_index(drop=True),
-            batter_merged.reset_index(drop=True),
-            how="left", left_on="batter_id", right_on="batter_id"
-        )
-        st.write(f"Post batter merge event df: {df_merged.shape[0]} rows, {df_merged.shape[1]} columns")
-        df_merged = pd.merge(
-            df_merged,
-            pitcher_merged.reset_index(drop=True),
-            how="left", left_on="pitcher_id", right_on="batter_id",
-            suffixes=('', '_pitcherstat')
-        )
-        if 'batter_id_pitcherstat' in df_merged.columns:
-            df_merged = df_merged.drop(columns=['batter_id_pitcherstat'])
-        df_merged = dedup_columns(df_merged)
-        st.write(f"Final merged event df: {df_merged.shape[0]} rows, {df_merged.shape[1]} columns")
+        st.write("Merging all advanced features into event-level dataset...")
+        df = pd.merge(df, batter_merged.reset_index(drop=True), how="left", left_on="batter_id", right_on="batter_id")
+        df = pd.merge(df, pitcher_merged.reset_index(drop=True), how="left", left_on="pitcher_id", right_on="batter_id", suffixes=('', '_pitcherstat'))
+        if 'batter_id_pitcherstat' in df.columns:
+            df = df.drop(columns=['batter_id_pitcherstat'])
+        df = dedup_columns(df)
+        st.write(f"Post batter+pitcher merge event df: {df.shape[0]} rows, {df.shape[1]} columns")
     except Exception as e:
-        st.error(f"Error merging all advanced features: {e}")
+        st.error(f"Error merging event-level features: {e}")
         st.stop()
 
     # ====== Add park_hand_hr_rate to event-level ======
-    try:
-        if 'stand' in df_merged.columns and 'park' in df_merged.columns:
-            df_merged['park_hand_hr_rate'] = [
-                park_hand_hr_rate_map.get(str(park).lower(), {}).get(str(stand).upper(), 1.0)
-                for park, stand in zip(df_merged['park'], df_merged['stand'])
-            ]
-        else:
-            df_merged['park_hand_hr_rate'] = 1.0
-        st.write("Added park_hand_hr_rate successfully.")
-    except Exception as e:
-        st.warning(f"Error adding park_hand_hr_rate: {e}")
+    if 'stand' in df.columns and 'park' in df.columns:
+        df['park_hand_hr_rate'] = [
+            park_hand_hr_rate_map.get(str(park).lower(), {}).get(str(stand).upper(), 1.0)
+            for park, stand in zip(df['park'], df['stand'])
+        ]
+    else:
+        df['park_hand_hr_rate'] = 1.0
 
     # ====== DOWNCAST NUMERICS FOR RAM OPTIMIZATION ======
-    try:
-        df_merged = downcast_numeric(df_merged)
-        st.write("Downcasted numerics successfully.")
-    except Exception as e:
-        st.warning(f"Error in downcasting numerics: {e}")
-
-    progress.progress(90, "Event-level feature engineering/merges complete.")
+    df = downcast_numeric(df)
+    progress.progress(80, "Event-level feature engineering/merges complete.")
 
     # =================== DIAGNOSTICS: event-level output preview ===================
-    st.write("Event-level dataframe sample:", df_merged.head(20))
+    st.subheader("Diagnostics: Final Event-level DataFrame Preview")
+    st.write("Event-level dataframe sample:", df.head(20))
 
     # =================== DOWNLOADS: CSV & PARQUET ===================
     st.markdown("#### Download Event-Level Feature CSV / Parquet:")
-    st.dataframe(df_merged.head(20), use_container_width=True)
+    st.dataframe(df.head(20), use_container_width=True)
     st.download_button(
         "⬇️ Download Event-Level CSV",
-        data=df_merged.to_csv(index=False),
+        data=df.to_csv(index=False),
         file_name="event_level_hr_features.csv",
         key="download_event_csv"
     )
     event_parquet = io.BytesIO()
-    df_merged.to_parquet(event_parquet, index=False)
+    df.to_parquet(event_parquet, index=False)
     st.download_button(
         "⬇️ Download Event-Level Parquet",
         data=event_parquet.getvalue(),
@@ -502,5 +505,5 @@ if fetch_btn:
     progress.progress(100, "All complete.")
 
     # ---- RAM Cleanup ----
-    del df, df_merged, batter_event, pitcher_event, batter_merged, pitcher_merged, batter_hr_rolling, pitcher_hr_rolling
+    del df, batter_event, pitcher_event, batter_merged, pitcher_merged, batter_hr_rolling, pitcher_hr_rolling
     gc.collect()
