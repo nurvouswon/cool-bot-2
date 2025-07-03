@@ -131,6 +131,7 @@ def downcast_numeric(df):
     return df
 
 def parse_custom_weather_string_v2(s):
+    # [Your function unchanged]
     if pd.isna(s):
         return pd.Series([np.nan]*7, index=['temp','wind_vector','wind_field_dir','wind_mph','humidity','condition','wind_dir_string'])
     s = str(s)
@@ -169,6 +170,7 @@ def rolling_apply(series, window, func):
     return result.iloc[-1] if not result.empty else np.nan
 
 # ========== ADVANCED HR ROLLING FEATURES ==========
+@st.cache_data(show_spinner=True, max_entries=8, ttl=7200)
 def rolling_features_hr(df, id_col, date_col, windows, group_batter=True):
     records = []
     for id_val, group in df.groupby(id_col, sort=False):
@@ -201,7 +203,7 @@ def rolling_features_hr(df, id_col, date_col, windows, group_batter=True):
     return pd.DataFrame(records)
 
 # ============= FAST ROLLING STATS (BATTER/PITCHER, PITCH TYPE) =============
-@st.cache_data(show_spinner=True, max_entries=4, ttl=3600)
+@st.cache_data(show_spinner=True, max_entries=8, ttl=7200)
 def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix=""):
     df = df.copy()
     if id_col in df.columns and date_col in df.columns:
@@ -378,7 +380,7 @@ if fetch_btn:
         if col in df.columns:
             df['pitcher_id'] = df[col]
 
-    # Batters: full rolling Statcast & HR stats
+    # Batters: full rolling Statcast & HR stats (cached)
     batter_event = fast_rolling_stats(df, "batter_id", "game_date", roll_windows, main_pitch_types, prefix="b_")
     batter_hr_rolling = rolling_features_hr(df, "batter_id", "game_date", roll_windows, group_batter=True)
     if not batter_event.empty and not batter_hr_rolling.empty:
@@ -386,7 +388,7 @@ if fetch_btn:
     else:
         batter_merged = batter_event
 
-    # Pitchers: full rolling Statcast & HR stats
+    # Pitchers: full rolling Statcast & HR stats (cached)
     df_for_pitchers = df.copy()
     if 'batter_id' in df_for_pitchers.columns:
         df_for_pitchers = df_for_pitchers.drop(columns=['batter_id'])
