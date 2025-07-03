@@ -1,3 +1,5 @@
+# [PASTE YOUR CONTEXT MAPS AND DICTIONARIES HERE]
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -117,8 +119,8 @@ park_hr_percent_map_lhp = {
     'PHI': 1.16, 'PIT': 0.78, 'SD': 1.02, 'SEA': 0.97, 'SF': 0.82, 'STL': 0.96, 'TB': 0.94, 'TEX': 1.01, 'TOR': 1.06,
     'WAS': 0.90, 'WSH': 0.90
 }
+# ========== YOUR UTILITY FUNCTIONS ==========
 
-# =================== UTILITY FUNCTIONS ===================
 def dedup_columns(df):
     return df.loc[:, ~df.columns.duplicated()]
 
@@ -167,55 +169,34 @@ def rolling_apply(series, window, func):
     result = series.rolling(window, min_periods=1).apply(func)
     return result.iloc[-1] if not result.empty else np.nan
 
-# ========== ADVANCED HR ROLLING FEATURES (ANTI-CRASH) ==========
+# ================= ADVANCED ROLLING FEATURE FUNCTIONS ================
 @st.cache_data(show_spinner=True, max_entries=8, ttl=7200)
 def rolling_features_hr(df, id_col, date_col, windows, group_batter=True):
     records = []
-    errors = []
-    group_counter = 0
+    err_list = []
     for id_val, group in df.groupby(id_col, sort=False):
-        group_counter += 1
-        try:
-            if group.empty or date_col not in group:
-                continue
-            group = group.sort_values(date_col).copy()
-            group[date_col] = pd.to_datetime(group[date_col], errors='coerce')
-            hr_outcome = group['hr_outcome'] if 'hr_outcome' in group.columns else pd.Series([0]*len(group))
-            outs = group['outs_when_up'] if 'outs_when_up' in group.columns else pd.Series([0]*len(group))
-            for w in windows:
-                try:
-                    roll_hr = hr_outcome.rolling(w, min_periods=1).sum().iloc[-1] if len(hr_outcome) else 0
-                except Exception:
-                    roll_hr = np.nan
-                try:
-                    roll_pa = len(hr_outcome.iloc[-w:])
-                except Exception:
-                    roll_pa = np.nan
+        group = group.sort_values(date_col)
+        hr_outcome = group['hr_outcome'] if 'hr_outcome' in group.columns else pd.Series([0]*len(group))
+        outs = group['outs_when_up'] if 'outs_when_up' in group.columns else pd.Series([0]*len(group))
+        for w in windows:
+            try:
+                roll_hr = hr_outcome.rolling(w, min_periods=1).sum().iloc[-1]
+                roll_pa = len(hr_outcome.iloc[-w:])
                 pa_per_hr = roll_pa / roll_hr if roll_hr > 0 else np.nan
                 hr_per_pa = roll_hr / roll_pa if roll_pa > 0 else 0
                 if not group_batter:
-                    try:
-                        roll_outs = outs.rolling(w, min_periods=1).sum().iloc[-1] if len(outs) else 0
-                    except Exception:
-                        roll_outs = 0
+                    roll_outs = outs.rolling(w, min_periods=1).sum().iloc[-1]
                     hr9 = (roll_hr / (roll_outs/3)) * 9 if roll_outs > 0 else np.nan
                     hr_percent = roll_hr / roll_pa if roll_pa > 0 else 0
-                # Defensive: last_hr_idx/last_hr_days
+                # Defensive handling for last_hr_days
                 if hr_outcome.ne(0).any():
+                    reversed_nonzero = hr_outcome[::-1].ne(0)
+                    last_hr_idx = reversed_nonzero.idxmax()
+                    if isinstance(last_hr_idx, (pd.Series, np.ndarray)):
+                        last_hr_idx = last_hr_idx.iloc[0] if hasattr(last_hr_idx, 'iloc') else last_hr_idx[0]
                     try:
-                        reversed_nonzero = hr_outcome[::-1].ne(0)
-                        last_hr_idx = reversed_nonzero.idxmax()
-                        if isinstance(last_hr_idx, (pd.Series, np.ndarray)):
-                            last_hr_idx = last_hr_idx.iloc[0] if hasattr(last_hr_idx, 'iloc') else last_hr_idx[0]
-                        try:
-                            last_hr_date = group[date_col].loc[last_hr_idx]
-                            anchor_date = group[date_col].iloc[-1]
-                            if pd.isnull(last_hr_date) or pd.isnull(anchor_date):
-                                last_hr_days = np.nan
-                            else:
-                                last_hr_days = (anchor_date - last_hr_date).days
-                        except Exception:
-                            last_hr_days = np.nan
+                        last_hr_date = group[date_col].loc[last_hr_idx]
+                        last_hr_days = (pd.Timestamp(group[date_col].iloc[-1]) - pd.Timestamp(last_hr_date)).days
                     except Exception:
                         last_hr_days = np.nan
                 else:
@@ -232,22 +213,15 @@ def rolling_features_hr(df, id_col, date_col, windows, group_batter=True):
                     row[f"p_rolling_hr9_{w}"] = hr9
                     row[f"p_rolling_hr_percent_{w}"] = hr_percent
                 records.append(row)
-        except Exception as err:
-            errors.append(f"ID={id_val}, error={err}")
-            continue
-    # Show diagnostic summary
-    if errors:
-        st.warning(f"Rolling HR: {len(errors)} errors in groups. Example: {errors[:3]}")
-    else:
-        st.info(f"Rolling HR: Successfully processed {group_counter} groups with no errors.")
-    return pd.DataFrame(records)
+            except Exception as e:
+                err_list.append((id_val, w, str(e)))
+    df_out = pd.DataFrame(records)
+    return df_out, err_list
 
-# ============= FAST ROLLING STATS (DEFENSIVE & DIAGNOSTIC) =============
 @st.cache_data(show_spinner=True, max_entries=8, ttl=7200)
 def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix=""):
     results = []
-    errors = []
-    group_counter = 0
+    err_list = []
     try:
         df = df.copy()
         if id_col in df.columns and date_col in df.columns:
@@ -263,7 +237,6 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
         if 'hit_distance_sc' in df.columns:
             df['hard_hit'] = (df['launch_speed'] >= 95).astype(float)
         for name, group in df.groupby(id_col, sort=False):
-            group_counter += 1
             try:
                 out_row = {}
                 ls = group['launch_speed'] if 'launch_speed' in group.columns else None
@@ -274,87 +247,58 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
                 spray = group['spray_angle'] if 'spray_angle' in group.columns else None
                 slg = group['slg_numeric'] if 'slg_numeric' in group.columns else None
                 for w in windows:
-                    try:
-                        if ls is not None:
-                            out_row[f"{prefix}avg_exit_velo_{w}"] = ls.rolling(w, min_periods=1).mean().iloc[-1]
-                            out_row[f"{prefix}hard_hit_rate_{w}"] = ls.rolling(w, min_periods=1).apply(lambda x: np.mean(x >= 95)).iloc[-1]
-                    except Exception: pass
-                    try:
-                        if la is not None:
-                            out_row[f"{prefix}fb_rate_{w}"] = la.rolling(w, min_periods=1).apply(lambda x: np.mean(x >= 25)).iloc[-1]
-                            out_row[f"{prefix}sweet_spot_rate_{w}"] = la.rolling(w, min_periods=1).apply(lambda x: np.mean((x >= 8) & (x <= 32))).iloc[-1]
-                    except Exception: pass
-                    try:
-                        if spray is not None:
-                            out_row[f"{prefix}spray_angle_avg_{w}"] = spray.rolling(w, min_periods=1).mean().iloc[-1]
-                            out_row[f"{prefix}spray_angle_std_{w}"] = spray.rolling(w, min_periods=1).std().iloc[-1]
-                    except Exception: pass
-                    try:
-                        if ls is not None and la is not None:
-                            barrels = ((ls >= 98) & (la >= 26) & (la <= 30)).astype(float)
-                            out_row[f"{prefix}barrel_rate_{w}"] = barrels.rolling(w, min_periods=1).mean().iloc[-1]
-                    except Exception: pass
-                    try:
-                        if hd is not None:
-                            out_row[f"{prefix}hit_dist_avg_{w}"] = hd.rolling(w, min_periods=1).mean().iloc[-1]
-                    except Exception: pass
-                    try:
-                        if pull is not None:
-                            out_row[f"{prefix}pull_rate_{w}"] = pull.rolling(w, min_periods=1).mean().iloc[-1]
-                    except Exception: pass
-                    try:
-                        if hard is not None:
-                            out_row[f"{prefix}hard_contact_rate_{w}"] = hard.rolling(w, min_periods=1).mean().iloc[-1]
-                    except Exception: pass
-                    try:
-                        if slg is not None:
-                            out_row[f"{prefix}slg_{w}"] = slg.rolling(w, min_periods=1).mean().iloc[-1]
-                    except Exception: pass
+                    if ls is not None:
+                        out_row[f"{prefix}avg_exit_velo_{w}"] = ls.rolling(w, min_periods=1).mean().iloc[-1]
+                        out_row[f"{prefix}hard_hit_rate_{w}"] = ls.rolling(w, min_periods=1).apply(lambda x: np.mean(x >= 95)).iloc[-1]
+                    if la is not None:
+                        out_row[f"{prefix}fb_rate_{w}"] = la.rolling(w, min_periods=1).apply(lambda x: np.mean(x >= 25)).iloc[-1]
+                        out_row[f"{prefix}sweet_spot_rate_{w}"] = la.rolling(w, min_periods=1).apply(lambda x: np.mean((x >= 8) & (x <= 32))).iloc[-1]
+                    if spray is not None:
+                        out_row[f"{prefix}spray_angle_avg_{w}"] = spray.rolling(w, min_periods=1).mean().iloc[-1]
+                        out_row[f"{prefix}spray_angle_std_{w}"] = spray.rolling(w, min_periods=1).std().iloc[-1]
+                    if ls is not None and la is not None:
+                        barrels = ((ls >= 98) & (la >= 26) & (la <= 30)).astype(float)
+                        out_row[f"{prefix}barrel_rate_{w}"] = barrels.rolling(w, min_periods=1).mean().iloc[-1]
+                    if hd is not None:
+                        out_row[f"{prefix}hit_dist_avg_{w}"] = hd.rolling(w, min_periods=1).mean().iloc[-1]
+                    if pull is not None:
+                        out_row[f"{prefix}pull_rate_{w}"] = pull.rolling(w, min_periods=1).mean().iloc[-1]
+                    if hard is not None:
+                        out_row[f"{prefix}hard_contact_rate_{w}"] = hard.rolling(w, min_periods=1).mean().iloc[-1]
+                    if slg is not None:
+                        out_row[f"{prefix}slg_{w}"] = slg.rolling(w, min_periods=1).mean().iloc[-1]
                 if pitch_types is not None and "pitch_type" in group.columns:
                     for pt in pitch_types:
                         pt_group = group[group['pitch_type'] == pt]
                         for w in windows:
                             key = f"{prefix}{pt}_"
                             if not pt_group.empty:
-                                try:
-                                    if 'launch_speed' in pt_group.columns:
-                                        out_row[f"{key}avg_exit_velo_{w}"] = pt_group['launch_speed'].rolling(w, min_periods=1).mean().iloc[-1]
-                                        out_row[f"{key}hard_hit_rate_{w}"] = pt_group['launch_speed'].rolling(w, min_periods=1).apply(lambda x: np.mean(x >= 95)).iloc[-1]
-                                except Exception: pass
-                                try:
-                                    if 'launch_angle' in pt_group.columns:
-                                        out_row[f"{key}fb_rate_{w}"] = pt_group['launch_angle'].rolling(w, min_periods=1).apply(lambda x: np.mean(x >= 25)).iloc[-1]
-                                        out_row[f"{key}sweet_spot_rate_{w}"] = pt_group['launch_angle'].rolling(w, min_periods=1).apply(lambda x: np.mean((x >= 8) & (x <= 32))).iloc[-1]
-                                except Exception: pass
-                                try:
-                                    if 'spray_angle' in pt_group.columns:
-                                        out_row[f"{key}spray_angle_avg_{w}"] = pt_group['spray_angle'].rolling(w, min_periods=1).mean().iloc[-1]
-                                        out_row[f"{key}spray_angle_std_{w}"] = pt_group['spray_angle'].rolling(w, min_periods=1).std().iloc[-1]
-                                except Exception: pass
-                                try:
-                                    if 'launch_speed' in pt_group.columns and 'launch_angle' in pt_group.columns:
-                                        barrel_flags = pd.concat([
-                                            pt_group['launch_speed'].reset_index(drop=True),
-                                            pt_group['launch_angle'].reset_index(drop=True)
-                                        ], axis=1).apply(lambda row: (row[0] >= 98) & (26 <= row[1] <= 30), axis=1)
-                                        out_row[f"{key}barrel_rate_{w}"] = rolling_apply(barrel_flags, w, np.mean)
-                                except Exception: pass
+                                if 'launch_speed' in pt_group.columns:
+                                    out_row[f"{key}avg_exit_velo_{w}"] = pt_group['launch_speed'].rolling(w, min_periods=1).mean().iloc[-1]
+                                    out_row[f"{key}hard_hit_rate_{w}"] = pt_group['launch_speed'].rolling(w, min_periods=1).apply(lambda x: np.mean(x >= 95)).iloc[-1]
+                                if 'launch_angle' in pt_group.columns:
+                                    out_row[f"{key}fb_rate_{w}"] = pt_group['launch_angle'].rolling(w, min_periods=1).apply(lambda x: np.mean(x >= 25)).iloc[-1]
+                                    out_row[f"{key}sweet_spot_rate_{w}"] = pt_group['launch_angle'].rolling(w, min_periods=1).apply(lambda x: np.mean((x >= 8) & (x <= 32))).iloc[-1]
+                                if 'spray_angle' in pt_group.columns:
+                                    out_row[f"{key}spray_angle_avg_{w}"] = pt_group['spray_angle'].rolling(w, min_periods=1).mean().iloc[-1]
+                                    out_row[f"{key}spray_angle_std_{w}"] = pt_group['spray_angle'].rolling(w, min_periods=1).std().iloc[-1]
+                                if 'launch_speed' in pt_group.columns and 'launch_angle' in pt_group.columns:
+                                    barrel_flags = pd.concat([
+                                        pt_group['launch_speed'].reset_index(drop=True),
+                                        pt_group['launch_angle'].reset_index(drop=True)
+                                    ], axis=1).apply(lambda row: (row[0] >= 98) & (26 <= row[1] <= 30), axis=1)
+                                    out_row[f"{key}barrel_rate_{w}"] = rolling_apply(barrel_flags, w, np.mean)
                             else:
                                 for feat in ['avg_exit_velo', 'hard_hit_rate', 'barrel_rate', 'fb_rate', 'sweet_spot_rate', 'spray_angle_avg', 'spray_angle_std']:
                                     out_row[f"{key}{feat}_{w}"] = np.nan
                 out_row[id_col] = name
                 results.append(out_row)
-            except Exception as err:
-                errors.append(f"{id_col}={name}, err={err}")
-                continue
-    except Exception as outer_err:
-        errors.append(f"OUTER_ERR: {outer_err}")
-    # Diagnostics
-    if errors:
-        st.warning(f"Fast Rolling: {len(errors)} errors in groups. Example: {errors[:3]}")
-    else:
-        st.info(f"Fast Rolling: Successfully processed {group_counter} groups with no errors.")
-    return pd.DataFrame(results)
+            except Exception as e:
+                err_list.append((name, str(e)))
+    except Exception as e:
+        err_list.append(("General groupby error", str(e)))
+    df_out = pd.DataFrame(results)
+    return df_out, err_list
 
 # ==================== STREAMLIT APP MAIN ====================
 st.set_page_config("MLB HR Analyzer", layout="wide")
@@ -391,7 +335,7 @@ if fetch_btn:
         if col in df.columns:
             df[col] = df[col].astype(str).str.replace('.0','',regex=False).str.strip()
 
-    # Map park/city/context using your provided context maps (plug yours in!)
+    # Map park/city/context using your provided context maps
     if 'home_team_code' in df.columns:
         df['team_code'] = df['home_team_code'].str.upper()
         df['park'] = df['home_team_code'].str.lower().str.replace(' ', '_')
@@ -459,129 +403,102 @@ if fetch_btn:
         if col in df.columns:
             df['pitcher_id'] = df[col]
 
-    # Batters: full rolling Statcast & HR stats (diagnostic, anti-crash)
-    st.subheader("Diagnostics: Batter Rolling Feature Errors")
-    batter_event = fast_rolling_stats(df, "batter_id", "game_date", roll_windows, main_pitch_types, prefix="b_")
-    batter_hr_rolling = rolling_features_hr(df, "batter_id", "game_date", roll_windows, group_batter=True)
+    # ========== BATTER ROLLING FEATURES ==========
+    with st.spinner("Diagnostics: Batter Rolling Feature Calculation..."):
+        batter_event, batter_event_errs = fast_rolling_stats(df, "batter_id", "game_date", roll_windows, main_pitch_types, prefix="b_")
+        st.subheader("Diagnostics: Batter Fast Rolling Feature Errors")
+        if len(batter_event_errs) == 0:
+            st.success(f"Fast Rolling: Successfully processed {batter_event.shape[0]} groups with no errors.")
+        else:
+            st.warning(f"Fast Rolling errors for batters: {batter_event_errs}")
+
+        batter_hr_rolling, batter_hr_rolling_errs = rolling_features_hr(df, "batter_id", "game_date", roll_windows, group_batter=True)
+        st.subheader("Diagnostics: Batter Rolling HR Feature Errors")
+        if len(batter_hr_rolling_errs) == 0:
+            st.success(f"Rolling HR: Successfully processed {batter_hr_rolling.shape[0]} groups with no errors.")
+        else:
+            st.warning(f"Rolling HR errors for batters: {batter_hr_rolling_errs}")
+
     if not batter_event.empty and not batter_hr_rolling.empty:
         batter_merged = pd.merge(batter_event, batter_hr_rolling, how="left", on="batter_id")
     else:
         batter_merged = batter_event
 
-    # Pitchers: full rolling Statcast & HR stats (diagnostic, anti-crash)
-    st.subheader("Diagnostics: Pitcher Rolling Feature Errors")
+    # ========== PITCHER ROLLING FEATURES ==========
     df_for_pitchers = df.copy()
     if 'batter_id' in df_for_pitchers.columns:
         df_for_pitchers = df_for_pitchers.drop(columns=['batter_id'])
     df_for_pitchers = df_for_pitchers.rename(columns={"pitcher_id": "batter_id"})
-    pitcher_event = fast_rolling_stats(df_for_pitchers, "batter_id", "game_date", roll_windows, main_pitch_types, prefix="p_")
-    pitcher_hr_rolling = rolling_features_hr(df, "pitcher_id", "game_date", roll_windows, group_batter=False)
+    with st.spinner("Diagnostics: Pitcher Rolling Feature Calculation..."):
+        pitcher_event, pitcher_event_errs = fast_rolling_stats(df_for_pitchers, "batter_id", "game_date", roll_windows, main_pitch_types, prefix="p_")
+        st.subheader("Diagnostics: Pitcher Fast Rolling Feature Errors")
+        if len(pitcher_event_errs) == 0:
+            st.success(f"Fast Rolling: Successfully processed {pitcher_event.shape[0]} groups with no errors.")
+        else:
+            st.warning(f"Fast Rolling errors for pitchers: {pitcher_event_errs}")
+
+        pitcher_hr_rolling, pitcher_hr_rolling_errs = rolling_features_hr(df, "pitcher_id", "game_date", roll_windows, group_batter=False)
+        st.subheader("Diagnostics: Pitcher Rolling HR Feature Errors")
+        if len(pitcher_hr_rolling_errs) == 0:
+            st.success(f"Rolling HR: Successfully processed {pitcher_hr_rolling.shape[0]} groups with no errors.")
+        else:
+            st.warning(f"Rolling HR errors for pitchers: {pitcher_hr_rolling_errs}")
+
     if not pitcher_event.empty and not pitcher_hr_rolling.empty:
         pitcher_merged = pd.merge(pitcher_event, pitcher_hr_rolling, how="left", left_on="batter_id", right_on="pitcher_id")
         pitcher_merged = pitcher_merged.drop(columns=["pitcher_id"], errors='ignore')
     else:
         pitcher_merged = pitcher_event
 
-    # Merge all advanced features into event-level dataset (defensive, with debug logs)
-    merge_debug = []
-    try:
-        if not df.empty and not batter_merged.empty:
-            merge_debug.append(f"DF shape before batter merge: {df.shape}")
-            merge_debug.append(f"Batter merged shape: {batter_merged.shape}")
+    # Merge all advanced features into event-level dataset
+    with st.spinner("Merging advanced features..."):
+        try:
             df = pd.merge(df, batter_merged.reset_index(drop=True), how="left", left_on="batter_id", right_on="batter_id")
-            merge_debug.append(f"DF shape after batter merge: {df.shape}")
-        if not df.empty and not pitcher_merged.empty:
-            merge_debug.append(f"Pitcher merged shape: {pitcher_merged.shape}")
             df = pd.merge(df, pitcher_merged.reset_index(drop=True), how="left", left_on="pitcher_id", right_on="batter_id", suffixes=('', '_pitcherstat'))
-            merge_debug.append(f"DF shape after pitcher merge: {df.shape}")
-        if 'batter_id_pitcherstat' in df.columns:
-            df = df.drop(columns=['batter_id_pitcherstat'])
-        df = dedup_columns(df)
-        merge_debug.append(f"Final DF shape after dedup: {df.shape}")
-    except Exception as e:
-        st.error(f"Error during merging/feature consolidation: {e}")
-        st.write("Merge debug log:", merge_debug)
-        st.stop()
-
-    # Defensive: add park_hand_hr_rate if missing
-    try:
-        if 'stand' in df.columns and 'park' in df.columns:
-            df['park_hand_hr_rate'] = [
-                park_hand_hr_rate_map.get(str(park).lower(), {}).get(str(stand).upper(), 1.0)
-                for park, stand in zip(df['park'], df['stand'])
-            ]
-        else:
-            df['park_hand_hr_rate'] = 1.0
-    except Exception as e:
-        st.warning(f"Could not calculate park_hand_hr_rate: {e}")
-
-    # Defensive: downcast numerics for RAM
-    try:
-        df = downcast_numeric(df)
-    except Exception as e:
-        st.warning(f"Downcast numeric failed: {e}")
-
-    # ========== EVENT-LEVEL OUTPUT & DOWNLOADS ==========
-
-    # Defensive: display dataframe sample
-    try:
-        st.write("Event-level dataframe sample:", df.head(20))
-    except Exception as e:
-        st.error(f"Error displaying dataframe sample: {e}")
-        st.stop()
-
-    try:
-        st.markdown("#### Download Event-Level Feature CSV / Parquet:")
-        st.dataframe(df.head(20), use_container_width=True)
-
-        if df.empty:
-            st.error("DF is empty. Not writing files.")
+            if 'batter_id_pitcherstat' in df.columns:
+                df = df.drop(columns=['batter_id_pitcherstat'])
+            df = dedup_columns(df)
+            st.success("Merged advanced rolling features successfully!")
+        except Exception as merge_error:
+            st.error(f"Error merging advanced features: {merge_error}")
             st.stop()
 
-        # Try writing files
-        csv_data, parquet_data = None, None
-        try:
-            csv_data = df.to_csv(index=False)
-        except Exception as e:
-            st.error(f"Could not generate CSV: {e}")
-            csv_data = None
-        try:
-            event_parquet = io.BytesIO()
-            df.to_parquet(event_parquet, index=False)
-            parquet_data = event_parquet.getvalue()
-        except Exception as e:
-            st.error(f"Could not generate Parquet: {e}")
-            parquet_data = None
+    # ====== Add park_hand_hr_rate to event-level ======
+    if 'stand' in df.columns and 'park' in df.columns:
+        df['park_hand_hr_rate'] = [
+            park_hand_hr_rate_map.get(str(park).lower(), {}).get(str(stand).upper(), 1.0)
+            for park, stand in zip(df['park'], df['stand'])
+        ]
+    else:
+        df['park_hand_hr_rate'] = 1.0
 
-        if csv_data:
-            st.download_button(
-                "⬇️ Download Event-Level CSV",
-                data=csv_data,
-                file_name="event_level_hr_features.csv",
-                key="download_event_csv"
-            )
-        if parquet_data:
-            st.download_button(
-                "⬇️ Download Event-Level Parquet",
-                data=parquet_data,
-                file_name="event_level_hr_features.parquet",
-                mime="application/octet-stream",
-                key="download_event_parquet"
-            )
-        if csv_data or parquet_data:
-            st.success("Event-level file(s) and debug outputs ready.")
-            progress.progress(100, "All complete.")
-        else:
-            st.error("No output file was successfully created.")
+    # ====== DOWNCAST NUMERICS FOR RAM OPTIMIZATION ======
+    df = downcast_numeric(df)
+    progress.progress(80, "Event-level feature engineering/merges complete.")
 
-    except Exception as e:
-        st.error(f"Error in output/download section: {e}")
-        st.write("Merge debug log:", merge_debug)
-        st.stop()
+    # =================== DIAGNOSTICS: event-level output preview ===================
+    st.write("Event-level dataframe sample:", df.head(20))
+    st.markdown("#### Download Event-Level Feature CSV / Parquet:")
+    st.dataframe(df.head(20), use_container_width=True)
+    st.download_button(
+        "⬇️ Download Event-Level CSV",
+        data=df.to_csv(index=False),
+        file_name="event_level_hr_features.csv",
+        key="download_event_csv"
+    )
+    event_parquet = io.BytesIO()
+    df.to_parquet(event_parquet, index=False)
+    st.download_button(
+        "⬇️ Download Event-Level Parquet",
+        data=event_parquet.getvalue(),
+        file_name="event_level_hr_features.parquet",
+        mime="application/octet-stream",
+        key="download_event_parquet"
+    )
+
+    st.success("Event-level file(s) and debug outputs ready.")
+    progress.progress(100, "All complete.")
 
     # ---- RAM Cleanup ----
-    try:
-        del df, batter_event, pitcher_event, batter_merged, pitcher_merged, batter_hr_rolling, pitcher_hr_rolling
-        gc.collect()
-    except Exception as e:
-        st.warning(f"RAM cleanup exception: {e}")
+    del df, batter_event, pitcher_event, batter_merged, pitcher_merged, batter_hr_rolling, pitcher_hr_rolling
+    gc.collect()
