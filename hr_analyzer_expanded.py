@@ -186,14 +186,14 @@ def rolling_features_hr(df, id_col, date_col, windows, group_batter=True):
                 roll_outs = outs.rolling(w, min_periods=1).sum().iloc[-1]
                 hr9 = (roll_hr / (roll_outs/3)) * 9 if roll_outs > 0 else np.nan
                 hr_percent = roll_hr / roll_pa if roll_pa > 0 else 0
+            # --- FIXED BLOCK FOR last_hr_idx & last_hr_days ---
             if hr_outcome.ne(0).any():
-            # Get the index of the last HR event in the group
                 reversed_nonzero = hr_outcome[::-1].ne(0)
                 last_hr_idx = reversed_nonzero.idxmax()
-            # Sometimes idxmax can return a Series if there are duplicate indices, so coerce to scalar
+                # Sometimes idxmax can return a Series if there are duplicate indices, so coerce to scalar
                 if isinstance(last_hr_idx, (pd.Series, np.ndarray)):
-                last_hr_idx = last_hr_idx.iloc[0] if hasattr(last_hr_idx, 'iloc') else last_hr_idx[0]
-            # Defensive: check index exists
+                    last_hr_idx = last_hr_idx.iloc[0] if hasattr(last_hr_idx, 'iloc') else last_hr_idx[0]
+                # Defensive: check index exists
                 try:
                     last_hr_date = group[date_col].loc[last_hr_idx]
                     last_hr_days = (pd.Timestamp(group[date_col].iloc[-1]) - pd.Timestamp(last_hr_date)).days
@@ -201,6 +201,7 @@ def rolling_features_hr(df, id_col, date_col, windows, group_batter=True):
                     last_hr_days = np.nan
             else:
                 last_hr_days = np.nan
+            # --- END FIXED BLOCK ---
             row = {
                 id_col: id_val,
                 f"{'b_' if group_batter else 'p_'}rolling_hr_{w}": roll_hr,
