@@ -185,7 +185,8 @@ def rolling_features_hr(df, id_col, date_col, windows, group_batter=True):
             if not group_batter:
                 roll_outs = outs.rolling(w, min_periods=1).sum().iloc[-1]
                 hr9 = (roll_hr / (roll_outs/3)) * 9 if roll_outs > 0 else np.nan
-                hr_percent = roll_hr / roll_pa if roll_pa > 0 else 0last_hr_idx = (hr_outcome[::-1].ne(0)).idxmax() if hr_outcome.ne(0).any() else None
+                hr_percent = roll_hr / roll_pa if roll_pa > 0 else 0
+                last_hr_idx = (hr_outcome[::-1].ne(0)).idxmax() if hr_outcome.ne(0).any() else None
         if last_hr_idx is not None:
             last_hr_value = group[date_col].loc[last_hr_idx]
             if isinstance(last_hr_value, pd.Series):
