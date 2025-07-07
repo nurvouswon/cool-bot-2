@@ -117,10 +117,13 @@ park_hr_percent_map_lhp = {
     'PHI': 1.16, 'PIT': 0.78, 'SD': 1.02, 'SEA': 0.97, 'SF': 0.82, 'STL': 0.96, 'TB': 0.94, 'TEX': 1.01, 'TOR': 1.06,
     'WAS': 0.90, 'WSH': 0.90
 }
+# =================== UTILITY FUNCTIONS ===================
 def dedup_columns(df):
+    """Remove duplicate columns after merging."""
     return df.loc[:, ~df.columns.duplicated()]
 
 def downcast_numeric(df):
+    """Downcast numeric columns to save memory."""
     for col in df.select_dtypes(include=['float']):
         df[col] = pd.to_numeric(df[col], downcast='float')
     for col in df.select_dtypes(include=['int']):
@@ -165,6 +168,7 @@ def rolling_apply(series, window, func):
     result = series.rolling(window, min_periods=1).apply(func)
     return result.iloc[-1] if not result.empty else np.nan
 
+# ========== ADVANCED HR ROLLING FEATURES ==========
 @st.cache_data(show_spinner=True, max_entries=8, ttl=7200)
 def rolling_features_hr(df, id_col, date_col, windows, group_batter=True):
     records = []
@@ -177,23 +181,10 @@ def rolling_features_hr(df, id_col, date_col, windows, group_batter=True):
             roll_pa = len(hr_outcome.iloc[-w:])
             pa_per_hr = roll_pa / roll_hr if roll_hr > 0 else np.nan
             hr_per_pa = roll_hr / roll_pa if roll_pa > 0 else 0
-            row = {id_col: id_val}
-            if group_batter:
-                row[f"b_hr_count_{w}"] = roll_hr
-                row[f"b_hr_rate_{w}"] = hr_per_pa
-            else:
-                row[f"p_hr_count_{w}"] = roll_hr
-                row[f"p_hr_rate_{w}"] = hr_per_pa
             if not group_batter:
                 roll_outs = outs.rolling(w, min_periods=1).sum().iloc[-1]
                 hr9 = (roll_hr / (roll_outs/3)) * 9 if roll_outs > 0 else np.nan
                 hr_percent = roll_hr / roll_pa if roll_pa > 0 else 0
-                row[f"p_rolling_hr9_{w}"] = hr9
-                row[f"p_rolling_hr_percent_{w}"] = hr_percent
-            row[f"{'b_' if group_batter else 'p_'}rolling_hr_{w}"] = roll_hr
-            row[f"{'b_' if group_batter else 'p_'}rolling_pa_{w}"] = roll_pa
-            row[f"{'b_' if group_batter else 'p_'}pa_per_hr_{w}"] = pa_per_hr if group_batter else np.nan
-            row[f"{'b_' if group_batter else 'p_'}hr_per_pa_{w}"] = hr_per_pa if group_batter else np.nan
             if hr_outcome.ne(0).any():
                 reversed_nonzero = hr_outcome[::-1].ne(0)
                 last_hr_idx = reversed_nonzero.idxmax()
@@ -206,10 +197,21 @@ def rolling_features_hr(df, id_col, date_col, windows, group_batter=True):
                     last_hr_days = np.nan
             else:
                 last_hr_days = np.nan
-            row[f"{'b_' if group_batter else 'p_'}time_since_hr_{w}"] = last_hr_days
+            row = {
+                id_col: id_val,
+                f"{'b_' if group_batter else 'p_'}rolling_hr_{w}": roll_hr,
+                f"{'b_' if group_batter else 'p_'}rolling_pa_{w}": roll_pa,
+                f"{'b_' if group_batter else 'p_'}pa_per_hr_{w}": pa_per_hr if group_batter else np.nan,
+                f"{'b_' if group_batter else 'p_'}hr_per_pa_{w}": hr_per_pa if group_batter else np.nan,
+                f"{'b_' if group_batter else 'p_'}time_since_hr_{w}": last_hr_days,
+            }
+            if not group_batter:
+                row[f"p_rolling_hr9_{w}"] = hr9
+                row[f"p_rolling_hr_percent_{w}"] = hr_percent
             records.append(row)
     return pd.DataFrame(records)
 
+# ============= FAST ROLLING STATS (BATTER/PITCHER, PITCH TYPE) =============
 @st.cache_data(show_spinner=True, max_entries=8, ttl=7200)
 def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix=""):
     df = df.copy()
@@ -225,6 +227,9 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
         df['spray_angle'] = [calculate_spray_angle(x, y) for x, y in zip(df['hc_x'], df['hc_y'])]
     if 'hit_distance_sc' in df.columns:
         df['hard_hit'] = (df['launch_speed'] >= 95).astype(float)
+    # -------- Pitch type column to lower for matching --------
+    if 'pitch_type' in df.columns:
+        df['pitch_type'] = df['pitch_type'].str.lower()
     results = []
     for name, group in df.groupby(id_col, sort=False):
         out_row = {}
@@ -312,10 +317,6 @@ if fetch_btn:
         df['game_date'] = pd.to_datetime(df['game_date'], errors='coerce').dt.strftime('%Y-%m-%d')
     progress.progress(12, "Loaded and formatted Statcast columns.")
 
-    # -- Pitch type normalization fix --
-    if 'pitch_type' in df.columns:
-        df['pitch_type'] = df['pitch_type'].str.lower()
-
     # =================== STATCAST EVENT-LEVEL ENGINEERING ===================
     progress.progress(18, "Adding park/city/context and cleaning Statcast event data...")
 
@@ -323,7 +324,47 @@ if fetch_btn:
         if col in df.columns:
             df[col] = df[col].astype(str).str.replace('.0','',regex=False).str.strip()
 
-    # (Paste your park/city/context mapping code and other dictionary logic here)
+    # ---- YOU: Insert your context maps/dictionaries here ----
+    # Example: team_code_to_park = {...} etc.
+
+    # Map park/city/context using your provided context maps
+    if 'home_team_code' in df.columns:
+        df['team_code'] = df['home_team_code'].str.upper()
+        df['park'] = df['home_team_code'].str.lower().str.replace(' ', '_')
+    if 'home_team' in df.columns and 'park' not in df.columns:
+        df['park'] = df['home_team'].str.lower().str.replace(' ', '_')
+    if 'team_code' not in df.columns and 'park' in df.columns:
+        park_to_team = {v:k for k,v in team_code_to_park.items()}
+        df['team_code'] = df['park'].map(park_to_team).str.upper()
+    df['team_code'] = df['team_code'].astype(str).str.upper()
+    df['park'] = df['team_code'].map(team_code_to_park).str.lower()
+    df['park_hr_rate'] = df['park'].map(park_hr_rate_map).fillna(1.0)
+    df['park_altitude'] = df['park'].map(park_altitude_map).fillna(0)
+    df['roof_status'] = df['park'].map(roof_status_map).fillna("open")
+    df['city'] = df['team_code'].map(mlb_team_city_map).fillna("")
+
+    # ====== Handedness fields ======
+    if 'stand' in df.columns:
+        df['batter_hand'] = df['stand']
+    else:
+        df['batter_hand'] = np.nan
+    if 'p_throws' in df.columns:
+        df['pitcher_hand'] = df['p_throws']
+    elif 'p_throw' in df.columns:
+        df['pitcher_hand'] = df['p_throw']
+    else:
+        df['pitcher_hand'] = np.nan
+
+    # ========== DEEP RESEARCH: Park HR percent columns by hand/team ==========
+    df['park_hr_pct_all'] = df['team_code'].map(park_hr_percent_map_all).fillna(1.0)
+    df['park_hr_pct_rhb'] = df['team_code'].map(park_hr_percent_map_rhb).fillna(1.0)
+    df['park_hr_pct_lhb'] = df['team_code'].map(park_hr_percent_map_lhb).fillna(1.0)
+    df['park_hr_pct_hand'] = [
+        park_hr_percent_map_rhb.get(team, 1.0) if str(stand).upper() == "R"
+        else park_hr_percent_map_lhb.get(team, 1.0) if str(stand).upper() == "L"
+        else park_hr_percent_map_all.get(team, 1.0)
+        for team, stand in zip(df['team_code'], df['batter_hand'])
+    ]
 
     # ================== SLG NUMERIC FOR ROLLING ==================
     slg_map = {'single':1, 'double':2, 'triple':3, 'home_run':4, 'homerun':4}
@@ -342,6 +383,7 @@ if fetch_btn:
     ]
     df = df[df['events_clean'].isin(valid_events)].copy()
 
+    # ========== ADVANCED ROLLING HR/9, HR%, TIME-SINCE-HR FEATURES ==========
     progress.progress(22, "Computing rolling Statcast features (batter & pitcher, pitch type, deep windows, spray angle, rolling HR/9, HR%, time-since-HR)...")
     roll_windows = [3, 5, 7, 14, 20, 30, 60]
     main_pitch_types = ["ff", "sl", "cu", "ch", "si", "fc", "fs", "st", "sinker", "splitter", "sweeper"]
@@ -353,6 +395,7 @@ if fetch_btn:
         if col in df.columns:
             df['pitcher_id'] = df[col]
 
+    # =========== ROLLING STATS & DEBUG DIAGNOSTICS ===========
     st.subheader("Diagnostics: Batter Fast Rolling Feature Errors")
     try:
         batter_event = fast_rolling_stats(df, "batter_id", "game_date", roll_windows, main_pitch_types, prefix="b_")
@@ -399,6 +442,7 @@ if fetch_btn:
         else:
             batter_merged = batter_event
 
+        # ----------- ANTI-CRASH: Ensure exactly 1 row per batter_id -----------
         before = batter_merged.shape[0]
         batter_merged = batter_merged.drop_duplicates(subset=["batter_id"])
         after = batter_merged.shape[0]
@@ -419,6 +463,7 @@ if fetch_btn:
         else:
             pitcher_merged = pitcher_event
 
+        # ----------- ANTI-CRASH: Ensure exactly 1 row per pitcher batter_id -----------
         before = pitcher_merged.shape[0]
         pitcher_merged = pitcher_merged.drop_duplicates(subset=["batter_id"])
         after = pitcher_merged.shape[0]
@@ -442,7 +487,6 @@ if fetch_btn:
     except Exception as e:
         st.error(f"Error merging event-level features: {e}")
         st.stop()
-
     # ====== Add park_hand_hr_rate to event-level ======
     if 'stand' in df.columns and 'park' in df.columns:
         df['park_hand_hr_rate'] = [
@@ -451,6 +495,72 @@ if fetch_btn:
         ]
     else:
         df['park_hand_hr_rate'] = 1.0
+
+    # ========== ADD REQUIRED ROLLING HR & RATE COLS TO EVENT LEVEL ==========
+    required_cols = [
+        'b_hr_count_14', 'b_hr_count_20', 'b_hr_count_3', 'b_hr_count_30', 'b_hr_count_5', 'b_hr_count_60', 'b_hr_count_7',
+        'b_hr_rate_14', 'b_hr_rate_20', 'b_hr_rate_3', 'b_hr_rate_30', 'b_hr_rate_5', 'b_hr_rate_60', 'b_hr_rate_7',
+        'p_hr_count_14', 'p_hr_count_20', 'p_hr_count_3', 'p_hr_count_30', 'p_hr_count_5', 'p_hr_count_60', 'p_hr_count_7',
+        'p_hr_rate_14', 'p_hr_rate_20', 'p_hr_rate_3', 'p_hr_rate_30', 'p_hr_rate_5', 'p_hr_rate_60', 'p_hr_rate_7',
+        'pitcher_park_hr_pct_all', 'pitcher_park_hr_pct_hand', 'pitcher_park_hr_pct_lhp', 'pitcher_park_hr_pct_rhp'
+    ]
+    # Compute rolling counts/rates from existing fields
+    for w in [3,5,7,14,20,30,60]:
+        # Batter HR count/rate
+        count_col = f'b_rolling_hr_{w}'
+        pa_col = f'b_rolling_pa_{w}'
+        hr_rate_col = f'b_hr_rate_{w}'
+        hr_count_col = f'b_hr_count_{w}'
+        if count_col in df.columns:
+            df[hr_count_col] = df[count_col]
+            df[hr_rate_col] = df[count_col] / df[pa_col].replace(0, np.nan)
+        else:
+            df[hr_count_col] = 0
+            df[hr_rate_col] = 0
+        # Pitcher HR count/rate
+        pcount_col = f'p_rolling_hr_{w}'
+        ppa_col = f'p_rolling_pa_{w}'
+        phr_rate_col = f'p_hr_rate_{w}'
+        phr_count_col = f'p_hr_count_{w}'
+        if pcount_col in df.columns:
+            df[phr_count_col] = df[pcount_col]
+            df[phr_rate_col] = df[pcount_col] / df[ppa_col].replace(0, np.nan)
+        else:
+            df[phr_count_col] = 0
+            df[phr_rate_col] = 0
+
+    # Pitcher park HR % mappings (by hand, all, LHP, RHP)
+    if 'team_code' in df.columns and 'pitcher_hand' in df.columns:
+        df['pitcher_park_hr_pct_all'] = df['team_code'].map(park_hr_percent_map_pitcher_all).fillna(1.0)
+        df['pitcher_park_hr_pct_rhp'] = np.where(
+            df['pitcher_hand'].str.upper() == "R",
+            df['team_code'].map(park_hr_percent_map_rhp).fillna(1.0),
+            1.0
+        )
+        df['pitcher_park_hr_pct_lhp'] = np.where(
+            df['pitcher_hand'].str.upper() == "L",
+            df['team_code'].map(park_hr_percent_map_lhp).fillna(1.0),
+            1.0
+        )
+        df['pitcher_park_hr_pct_hand'] = [
+            park_hr_percent_map_rhp.get(tc, 1.0) if str(ph).upper() == "R"
+            else park_hr_percent_map_lhp.get(tc, 1.0) if str(ph).upper() == "L"
+            else park_hr_percent_map_pitcher_all.get(tc, 1.0)
+            for tc, ph in zip(df['team_code'], df['pitcher_hand'])
+        ]
+    else:
+        df['pitcher_park_hr_pct_all'] = 1.0
+        df['pitcher_park_hr_pct_rhp'] = 1.0
+        df['pitcher_park_hr_pct_lhp'] = 1.0
+        df['pitcher_park_hr_pct_hand'] = 1.0
+
+    # Ensure all required columns exist (add as 0 or 1 if not)
+    for col in required_cols:
+        if col not in df.columns:
+            if 'pct' in col or 'rate' in col:
+                df[col] = 1.0
+            else:
+                df[col] = 0
 
     # ====== DOWNCAST NUMERICS FOR RAM OPTIMIZATION ======
     df = downcast_numeric(df)
