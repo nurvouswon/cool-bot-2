@@ -117,13 +117,10 @@ park_hr_percent_map_lhp = {
     'PHI': 1.16, 'PIT': 0.78, 'SD': 1.02, 'SEA': 0.97, 'SF': 0.82, 'STL': 0.96, 'TB': 0.94, 'TEX': 1.01, 'TOR': 1.06,
     'WAS': 0.90, 'WSH': 0.90
 }
-
 def dedup_columns(df):
-    """Remove duplicate columns after merging."""
     return df.loc[:, ~df.columns.duplicated()]
 
 def downcast_numeric(df):
-    """Downcast numeric columns to save memory."""
     for col in df.select_dtypes(include=['float']):
         df[col] = pd.to_numeric(df[col], downcast='float')
     for col in df.select_dtypes(include=['int']):
@@ -180,10 +177,7 @@ def rolling_features_hr(df, id_col, date_col, windows, group_batter=True):
             roll_pa = len(hr_outcome.iloc[-w:])
             pa_per_hr = roll_pa / roll_hr if roll_hr > 0 else np.nan
             hr_per_pa = roll_hr / roll_pa if roll_pa > 0 else 0
-            # NEW: Always include count/rate columns for both batter and pitcher logic
-            row = {
-                id_col: id_val
-            }
+            row = {id_col: id_val}
             if group_batter:
                 row[f"b_hr_count_{w}"] = roll_hr
                 row[f"b_hr_rate_{w}"] = hr_per_pa
@@ -196,12 +190,10 @@ def rolling_features_hr(df, id_col, date_col, windows, group_batter=True):
                 hr_percent = roll_hr / roll_pa if roll_pa > 0 else 0
                 row[f"p_rolling_hr9_{w}"] = hr9
                 row[f"p_rolling_hr_percent_{w}"] = hr_percent
-            # Keep original fields too if you want:
             row[f"{'b_' if group_batter else 'p_'}rolling_hr_{w}"] = roll_hr
             row[f"{'b_' if group_batter else 'p_'}rolling_pa_{w}"] = roll_pa
             row[f"{'b_' if group_batter else 'p_'}pa_per_hr_{w}"] = pa_per_hr if group_batter else np.nan
             row[f"{'b_' if group_batter else 'p_'}hr_per_pa_{w}"] = hr_per_pa if group_batter else np.nan
-            # Last HR days
             if hr_outcome.ne(0).any():
                 reversed_nonzero = hr_outcome[::-1].ne(0)
                 last_hr_idx = reversed_nonzero.idxmax()
@@ -350,7 +342,6 @@ if fetch_btn:
     ]
     df = df[df['events_clean'].isin(valid_events)].copy()
 
-    # ========== ADVANCED ROLLING HR/9, HR%, TIME-SINCE-HR FEATURES ==========
     progress.progress(22, "Computing rolling Statcast features (batter & pitcher, pitch type, deep windows, spray angle, rolling HR/9, HR%, time-since-HR)...")
     roll_windows = [3, 5, 7, 14, 20, 30, 60]
     main_pitch_types = ["ff", "sl", "cu", "ch", "si", "fc", "fs", "st", "sinker", "splitter", "sweeper"]
