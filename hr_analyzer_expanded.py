@@ -218,75 +218,127 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
     if id_col in df.columns and date_col in df.columns:
         df = df.drop_duplicates(subset=[id_col, date_col], keep='last')
         df = df.sort_values([id_col, date_col])
+    # ----------- COERCE/CREATE NUMERIC COLUMNS WITH ERROR HANDLING -----------
+    num_cols = ['launch_speed', 'launch_angle', 'hc_x', 'hc_y', 'hit_distance_sc', 'slg_numeric']
+    for col in num_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+        else:
+            df[col] = np.nan
     if 'launch_speed' in df.columns:
-        df['launch_speed'] = pd.to_numeric(df['launch_speed'], errors='coerce')
-    if 'launch_angle' in df.columns:
-        df['launch_angle'] = pd.to_numeric(df['launch_angle'], errors='coerce')
+        df['hard_hit'] = (df['launch_speed'] >= 95).astype(float)
     if 'hc_x' in df.columns and 'hc_y' in df.columns:
         df['pull'] = ((df['hc_x'] > 200) & (df['hc_x'] < 300)).astype(float)
         df['spray_angle'] = [calculate_spray_angle(x, y) for x, y in zip(df['hc_x'], df['hc_y'])]
-    if 'hit_distance_sc' in df.columns:
-        df['hard_hit'] = (df['launch_speed'] >= 95).astype(float)
     # -------- Pitch type column to lower for matching --------
     if 'pitch_type' in df.columns:
-        df['pitch_type'] = df['pitch_type'].str.lower()
+        df['pitch_type'] = df['pitch_type'].astype(str).str.lower()
     results = []
+    error_groups = []
     for name, group in df.groupby(id_col, sort=False):
         out_row = {}
-        ls = group['launch_speed'] if 'launch_speed' in group.columns else None
-        la = group['launch_angle'] if 'launch_angle' in group.columns else None
-        hd = group['hit_distance_sc'] if 'hit_distance_sc' in group.columns else None
-        pull = group['pull'] if 'pull' in group.columns else None
-        hard = group['hard_hit'] if 'hard_hit' in group.columns else None
-        spray = group['spray_angle'] if 'spray_angle' in group.columns else None
-        slg = group['slg_numeric'] if 'slg_numeric' in group.columns else None
-        for w in windows:
-            if ls is not None:
-                out_row[f"{prefix}avg_exit_velo_{w}"] = ls.rolling(w, min_periods=1).mean().iloc[-1]
-                out_row[f"{prefix}hard_hit_rate_{w}"] = ls.rolling(w, min_periods=1).apply(lambda x: np.mean(x >= 95)).iloc[-1]
-            if la is not None:
-                out_row[f"{prefix}fb_rate_{w}"] = la.rolling(w, min_periods=1).apply(lambda x: np.mean(x >= 25)).iloc[-1]
-                out_row[f"{prefix}sweet_spot_rate_{w}"] = la.rolling(w, min_periods=1).apply(lambda x: np.mean((x >= 8) & (x <= 32))).iloc[-1]
-            if spray is not None:
-                out_row[f"{prefix}spray_angle_avg_{w}"] = spray.rolling(w, min_periods=1).mean().iloc[-1]
-                out_row[f"{prefix}spray_angle_std_{w}"] = spray.rolling(w, min_periods=1).std().iloc[-1]
-            if ls is not None and la is not None:
-                barrels = ((ls >= 98) & (la >= 26) & (la <= 30)).astype(float)
-                out_row[f"{prefix}barrel_rate_{w}"] = barrels.rolling(w, min_periods=1).mean().iloc[-1]
-            if hd is not None:
-                out_row[f"{prefix}hit_dist_avg_{w}"] = hd.rolling(w, min_periods=1).mean().iloc[-1]
-            if pull is not None:
-                out_row[f"{prefix}pull_rate_{w}"] = pull.rolling(w, min_periods=1).mean().iloc[-1]
-            if hard is not None:
-                out_row[f"{prefix}hard_contact_rate_{w}"] = hard.rolling(w, min_periods=1).mean().iloc[-1]
-            if slg is not None:
-                out_row[f"{prefix}slg_{w}"] = slg.rolling(w, min_periods=1).mean().iloc[-1]
-        if pitch_types is not None and "pitch_type" in group.columns:
-            for pt in pitch_types:
-                pt_group = group[group['pitch_type'] == pt]
-                for w in windows:
-                    key = f"{prefix}{pt}_"
-                    if not pt_group.empty:
-                        if 'launch_speed' in pt_group.columns:
-                            out_row[f"{key}avg_exit_velo_{w}"] = pt_group['launch_speed'].rolling(w, min_periods=1).mean().iloc[-1]
-                            out_row[f"{key}hard_hit_rate_{w}"] = pt_group['launch_speed'].rolling(w, min_periods=1).apply(lambda x: np.mean(x >= 95)).iloc[-1]
-                        if 'launch_angle' in pt_group.columns:
-                            out_row[f"{key}fb_rate_{w}"] = pt_group['launch_angle'].rolling(w, min_periods=1).apply(lambda x: np.mean(x >= 25)).iloc[-1]
-                            out_row[f"{key}sweet_spot_rate_{w}"] = pt_group['launch_angle'].rolling(w, min_periods=1).apply(lambda x: np.mean((x >= 8) & (x <= 32))).iloc[-1]
-                        if 'spray_angle' in pt_group.columns:
-                            out_row[f"{key}spray_angle_avg_{w}"] = pt_group['spray_angle'].rolling(w, min_periods=1).mean().iloc[-1]
-                            out_row[f"{key}spray_angle_std_{w}"] = pt_group['spray_angle'].rolling(w, min_periods=1).std().iloc[-1]
-                        if 'launch_speed' in pt_group.columns and 'launch_angle' in pt_group.columns:
-                            barrel_flags = pd.concat([
-                                pt_group['launch_speed'].reset_index(drop=True),
-                                pt_group['launch_angle'].reset_index(drop=True)
-                            ], axis=1).apply(lambda row: (row[0] >= 98) & (26 <= row[1] <= 30), axis=1)
-                            out_row[f"{key}barrel_rate_{w}"] = rolling_apply(barrel_flags, w, np.mean)
-                    else:
-                        for feat in ['avg_exit_velo', 'hard_hit_rate', 'barrel_rate', 'fb_rate', 'sweet_spot_rate', 'spray_angle_avg', 'spray_angle_std']:
-                            out_row[f"{key}{feat}_{w}"] = np.nan
+        try:
+            ls = group['launch_speed'] if 'launch_speed' in group.columns else None
+            la = group['launch_angle'] if 'launch_angle' in group.columns else None
+            hd = group['hit_distance_sc'] if 'hit_distance_sc' in group.columns else None
+            pull = group['pull'] if 'pull' in group.columns else None
+            hard = group['hard_hit'] if 'hard_hit' in group.columns else None
+            spray = group['spray_angle'] if 'spray_angle' in group.columns else None
+            slg = group['slg_numeric'] if 'slg_numeric' in group.columns else None
+            for w in windows:
+                if ls is not None and pd.api.types.is_numeric_dtype(ls):
+                    out_row[f"{prefix}avg_exit_velo_{w}"] = ls.rolling(w, min_periods=1).mean().iloc[-1]
+                    out_row[f"{prefix}hard_hit_rate_{w}"] = ls.rolling(w, min_periods=1).apply(lambda x: np.mean(x >= 95)).iloc[-1]
+                else:
+                    out_row[f"{prefix}avg_exit_velo_{w}"] = np.nan
+                    out_row[f"{prefix}hard_hit_rate_{w}"] = np.nan
+                if la is not None and pd.api.types.is_numeric_dtype(la):
+                    out_row[f"{prefix}fb_rate_{w}"] = la.rolling(w, min_periods=1).apply(lambda x: np.mean(x >= 25)).iloc[-1]
+                    out_row[f"{prefix}sweet_spot_rate_{w}"] = la.rolling(w, min_periods=1).apply(lambda x: np.mean((x >= 8) & (x <= 32))).iloc[-1]
+                else:
+                    out_row[f"{prefix}fb_rate_{w}"] = np.nan
+                    out_row[f"{prefix}sweet_spot_rate_{w}"] = np.nan
+                if spray is not None and pd.api.types.is_numeric_dtype(spray):
+                    out_row[f"{prefix}spray_angle_avg_{w}"] = spray.rolling(w, min_periods=1).mean().iloc[-1]
+                    out_row[f"{prefix}spray_angle_std_{w}"] = spray.rolling(w, min_periods=1).std().iloc[-1]
+                else:
+                    out_row[f"{prefix}spray_angle_avg_{w}"] = np.nan
+                    out_row[f"{prefix}spray_angle_std_{w}"] = np.nan
+                if ls is not None and la is not None and pd.api.types.is_numeric_dtype(ls) and pd.api.types.is_numeric_dtype(la):
+                    barrels = ((ls >= 98) & (la >= 26) & (la <= 30)).astype(float)
+                    out_row[f"{prefix}barrel_rate_{w}"] = barrels.rolling(w, min_periods=1).mean().iloc[-1]
+                else:
+                    out_row[f"{prefix}barrel_rate_{w}"] = np.nan
+                if hd is not None and pd.api.types.is_numeric_dtype(hd):
+                    out_row[f"{prefix}hit_dist_avg_{w}"] = hd.rolling(w, min_periods=1).mean().iloc[-1]
+                else:
+                    out_row[f"{prefix}hit_dist_avg_{w}"] = np.nan
+                if pull is not None and pd.api.types.is_numeric_dtype(pull):
+                    out_row[f"{prefix}pull_rate_{w}"] = pull.rolling(w, min_periods=1).mean().iloc[-1]
+                else:
+                    out_row[f"{prefix}pull_rate_{w}"] = np.nan
+                if hard is not None and pd.api.types.is_numeric_dtype(hard):
+                    out_row[f"{prefix}hard_contact_rate_{w}"] = hard.rolling(w, min_periods=1).mean().iloc[-1]
+                else:
+                    out_row[f"{prefix}hard_contact_rate_{w}"] = np.nan
+                if slg is not None and pd.api.types.is_numeric_dtype(slg):
+                    out_row[f"{prefix}slg_{w}"] = slg.rolling(w, min_periods=1).mean().iloc[-1]
+                else:
+                    out_row[f"{prefix}slg_{w}"] = np.nan
+            # Pitch type splits
+            if pitch_types is not None and "pitch_type" in group.columns:
+                for pt in pitch_types:
+                    pt_group = group[group['pitch_type'] == pt]
+                    for w in windows:
+                        key = f"{prefix}{pt}_"
+                        if not pt_group.empty:
+                            # Apply same dtype check as above
+                            ls_pt = pt_group['launch_speed'] if 'launch_speed' in pt_group.columns else None
+                            la_pt = pt_group['launch_angle'] if 'launch_angle' in pt_group.columns else None
+                            spray_pt = pt_group['spray_angle'] if 'spray_angle' in pt_group.columns else None
+                            if ls_pt is not None and pd.api.types.is_numeric_dtype(ls_pt):
+                                out_row[f"{key}avg_exit_velo_{w}"] = ls_pt.rolling(w, min_periods=1).mean().iloc[-1]
+                                out_row[f"{key}hard_hit_rate_{w}"] = ls_pt.rolling(w, min_periods=1).apply(lambda x: np.mean(x >= 95)).iloc[-1]
+                            else:
+                                out_row[f"{key}avg_exit_velo_{w}"] = np.nan
+                                out_row[f"{key}hard_hit_rate_{w}"] = np.nan
+                            if la_pt is not None and pd.api.types.is_numeric_dtype(la_pt):
+                                out_row[f"{key}fb_rate_{w}"] = la_pt.rolling(w, min_periods=1).apply(lambda x: np.mean(x >= 25)).iloc[-1]
+                                out_row[f"{key}sweet_spot_rate_{w}"] = la_pt.rolling(w, min_periods=1).apply(lambda x: np.mean((x >= 8) & (x <= 32))).iloc[-1]
+                            else:
+                                out_row[f"{key}fb_rate_{w}"] = np.nan
+                                out_row[f"{key}sweet_spot_rate_{w}"] = np.nan
+                            if spray_pt is not None and pd.api.types.is_numeric_dtype(spray_pt):
+                                out_row[f"{key}spray_angle_avg_{w}"] = spray_pt.rolling(w, min_periods=1).mean().iloc[-1]
+                                out_row[f"{key}spray_angle_std_{w}"] = spray_pt.rolling(w, min_periods=1).std().iloc[-1]
+                            else:
+                                out_row[f"{key}spray_angle_avg_{w}"] = np.nan
+                                out_row[f"{key}spray_angle_std_{w}"] = np.nan
+                            if ls_pt is not None and la_pt is not None and pd.api.types.is_numeric_dtype(ls_pt) and pd.api.types.is_numeric_dtype(la_pt):
+                                barrel_flags = pd.concat([
+                                    ls_pt.reset_index(drop=True),
+                                    la_pt.reset_index(drop=True)
+                                ], axis=1).apply(lambda row: (row[0] >= 98) & (26 <= row[1] <= 30), axis=1)
+                                out_row[f"{key}barrel_rate_{w}"] = rolling_apply(barrel_flags, w, np.mean)
+                            else:
+                                out_row[f"{key}barrel_rate_{w}"] = np.nan
+                        else:
+                            for feat in ['avg_exit_velo', 'hard_hit_rate', 'barrel_rate', 'fb_rate', 'sweet_spot_rate', 'spray_angle_avg', 'spray_angle_std']:
+                                out_row[f"{key}{feat}_{w}"] = np.nan
+        except Exception as e:
+            error_groups.append((name, str(e)))
+            # Mark all outputs for this group as NaN to keep shape
+            for w in windows:
+                for feat in [
+                    "avg_exit_velo", "hard_hit_rate", "fb_rate", "sweet_spot_rate", "spray_angle_avg", "spray_angle_std",
+                    "barrel_rate", "hit_dist_avg", "pull_rate", "hard_contact_rate", "slg"
+                ]:
+                    out_row[f"{prefix}{feat}_{w}"] = np.nan
+            out_row[id_col] = name
         out_row[id_col] = name
         results.append(out_row)
+    if error_groups:
+        st.warning(f"Fast rolling: {len(error_groups)} group(s) could not be aggregated due to missing or non-numeric data. Group(s): {[g[0] for g in error_groups][:10]}")
     return pd.DataFrame(results)
 
 # ==================== STREAMLIT APP MAIN ====================
@@ -334,7 +386,7 @@ if fetch_btn:
     if 'home_team' in df.columns and 'park' not in df.columns:
         df['park'] = df['home_team'].str.lower().str.replace(' ', '_')
     if 'team_code' not in df.columns and 'park' in df.columns:
-        park_to_team = {v:k for k,v in team_code_to_park.items()}
+        park_to_team = {v: k for k, v in team_code_to_park.items()}
         df['team_code'] = df['park'].map(park_to_team).str.upper()
     df['team_code'] = df['team_code'].astype(str).str.upper()
     df['park'] = df['team_code'].map(team_code_to_park).str.lower()
@@ -367,7 +419,7 @@ if fetch_btn:
     ]
 
     # ================== SLG NUMERIC FOR ROLLING ==================
-    slg_map = {'single':1, 'double':2, 'triple':3, 'home_run':4, 'homerun':4}
+    slg_map = {'single': 1, 'double': 2, 'triple': 3, 'home_run': 4, 'homerun': 4}
     if 'events' in df.columns:
         df['events_clean'] = df['events'].astype(str).str.lower().str.replace(' ', '')
     else:
@@ -441,13 +493,10 @@ if fetch_btn:
             batter_merged = pd.merge(batter_event, batter_hr_rolling, how="left", on="batter_id")
         else:
             batter_merged = batter_event
-
-        # ----------- ANTI-CRASH: Ensure exactly 1 row per batter_id -----------
         before = batter_merged.shape[0]
         batter_merged = batter_merged.drop_duplicates(subset=["batter_id"])
         after = batter_merged.shape[0]
         st.write(f"Batter merge: {batter_merged.shape[0]} rows, {batter_merged.shape[1]} columns (deduped {before-after} rows)")
-
         if batter_merged['batter_id'].duplicated().any():
             st.error("Batter_merged still has duplicate batter_id values! This will crash the main merge.")
             st.stop()
@@ -462,13 +511,10 @@ if fetch_btn:
             pitcher_merged = pitcher_merged.drop(columns=["pitcher_id"], errors='ignore')
         else:
             pitcher_merged = pitcher_event
-
-        # ----------- ANTI-CRASH: Ensure exactly 1 row per pitcher batter_id -----------
         before = pitcher_merged.shape[0]
         pitcher_merged = pitcher_merged.drop_duplicates(subset=["batter_id"])
         after = pitcher_merged.shape[0]
         st.write(f"Pitcher merge: {pitcher_merged.shape[0]} rows, {pitcher_merged.shape[1]} columns (deduped {before-after} rows)")
-
         if pitcher_merged['batter_id'].duplicated().any():
             st.error("Pitcher_merged still has duplicate batter_id values! This will crash the main merge.")
             st.stop()
@@ -487,6 +533,7 @@ if fetch_btn:
     except Exception as e:
         st.error(f"Error merging event-level features: {e}")
         st.stop()
+
     # ====== Add park_hand_hr_rate to event-level ======
     if 'stand' in df.columns and 'park' in df.columns:
         df['park_hand_hr_rate'] = [
@@ -504,9 +551,7 @@ if fetch_btn:
         'p_hr_rate_14', 'p_hr_rate_20', 'p_hr_rate_3', 'p_hr_rate_30', 'p_hr_rate_5', 'p_hr_rate_60', 'p_hr_rate_7',
         'pitcher_park_hr_pct_all', 'pitcher_park_hr_pct_hand', 'pitcher_park_hr_pct_lhp', 'pitcher_park_hr_pct_rhp'
     ]
-    # Compute rolling counts/rates from existing fields
-    for w in [3,5,7,14,20,30,60]:
-        # Batter HR count/rate
+    for w in [3, 5, 7, 14, 20, 30, 60]:
         count_col = f'b_rolling_hr_{w}'
         pa_col = f'b_rolling_pa_{w}'
         hr_rate_col = f'b_hr_rate_{w}'
@@ -517,7 +562,6 @@ if fetch_btn:
         else:
             df[hr_count_col] = 0
             df[hr_rate_col] = 0
-        # Pitcher HR count/rate
         pcount_col = f'p_rolling_hr_{w}'
         ppa_col = f'p_rolling_pa_{w}'
         phr_rate_col = f'p_hr_rate_{w}'
@@ -529,7 +573,6 @@ if fetch_btn:
             df[phr_count_col] = 0
             df[phr_rate_col] = 0
 
-    # Pitcher park HR % mappings (by hand, all, LHP, RHP)
     if 'team_code' in df.columns and 'pitcher_hand' in df.columns:
         df['pitcher_park_hr_pct_all'] = df['team_code'].map(park_hr_percent_map_pitcher_all).fillna(1.0)
         df['pitcher_park_hr_pct_rhp'] = np.where(
@@ -554,7 +597,6 @@ if fetch_btn:
         df['pitcher_park_hr_pct_lhp'] = 1.0
         df['pitcher_park_hr_pct_hand'] = 1.0
 
-    # Ensure all required columns exist (add as 0 or 1 if not)
     for col in required_cols:
         if col not in df.columns:
             if 'pct' in col or 'rate' in col:
