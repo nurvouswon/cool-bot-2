@@ -367,6 +367,8 @@ if fetch_btn:
     df.columns = [str(c).strip().lower().replace(" ", "_") for c in df.columns]
     if 'game_date' in df.columns:
         df['game_date'] = pd.to_datetime(df['game_date'], errors='coerce').dt.strftime('%Y-%m-%d')
+    if 'pitch_type' in df.columns:
+        df['pitch_type'] = df['pitch_type'].astype(str).str.lower()
     progress.progress(12, "Loaded and formatted Statcast columns.")
 
     # =================== STATCAST EVENT-LEVEL ENGINEERING ===================
