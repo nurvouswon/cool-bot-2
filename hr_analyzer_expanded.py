@@ -50,7 +50,7 @@ mlb_team_city_map = {
     'CHC': 'Chicago', 'CIN': 'Cincinnati', 'CLE': 'Cleveland', 'COL': 'Denver', 'CWS': 'Chicago',
     'CHW': 'Chicago', 'DET': 'Detroit', 'HOU': 'Houston', 'KC': 'Kansas City', 'LAA': 'Anaheim',
     'LAD': 'Los Angeles', 'MIA': 'Miami', 'MIL': 'Milwaukee', 'MIN': 'Minneapolis', 'NYM': 'New York',
-    'NYY': 'New York', 'OAK': 'West Sacramento', 'ATH': 'West Sacramento', 'PHI': 'Philadelphia', 'PIT': 'Pittsburgh',
+    'NYY': 'New York', 'OAK': 'Oakland', 'ATH': 'Oakland', 'PHI': 'Philadelphia', 'PIT': 'Pittsburgh',
     'SD': 'San Diego', 'SEA': 'Seattle', 'SF': 'San Francisco', 'STL': 'St. Louis', 'TB': 'St. Petersburg',
     'TEX': 'Arlington', 'TOR': 'Toronto', 'WSH': 'Washington', 'WAS': 'Washington'
 }
@@ -117,11 +117,13 @@ park_hr_percent_map_lhp = {
     'PHI': 1.16, 'PIT': 0.78, 'SD': 1.02, 'SEA': 0.97, 'SF': 0.82, 'STL': 0.96, 'TB': 0.94, 'TEX': 1.01, 'TOR': 1.06,
     'WAS': 0.90, 'WSH': 0.90
 }
-
+# =================== UTILITY FUNCTIONS ===================
 def dedup_columns(df):
+    """Remove duplicate columns after merging."""
     return df.loc[:, ~df.columns.duplicated()]
 
 def downcast_numeric(df):
+    """Downcast numeric columns to save memory."""
     for col in df.select_dtypes(include=['float']):
         df[col] = pd.to_numeric(df[col], downcast='float')
     for col in df.select_dtypes(include=['int']):
@@ -216,6 +218,7 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
     if id_col in df.columns and date_col in df.columns:
         df = df.drop_duplicates(subset=[id_col, date_col], keep='last')
         df = df.sort_values([id_col, date_col])
+    # ----------- COERCE/CREATE NUMERIC COLUMNS WITH ERROR HANDLING -----------
     num_cols = ['launch_speed', 'launch_angle', 'hc_x', 'hc_y', 'hit_distance_sc', 'slg_numeric']
     for col in num_cols:
         if col in df.columns:
@@ -227,6 +230,7 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
     if 'hc_x' in df.columns and 'hc_y' in df.columns:
         df['pull'] = ((df['hc_x'] > 200) & (df['hc_x'] < 300)).astype(float)
         df['spray_angle'] = [calculate_spray_angle(x, y) for x, y in zip(df['hc_x'], df['hc_y'])]
+    # -------- Pitch type column to lower for matching --------
     if 'pitch_type' in df.columns:
         df['pitch_type'] = df['pitch_type'].astype(str).str.lower()
     results = []
@@ -288,6 +292,7 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
                     for w in windows:
                         key = f"{prefix}{pt}_"
                         if not pt_group.empty:
+                            # Apply same dtype check as above
                             ls_pt = pt_group['launch_speed'] if 'launch_speed' in pt_group.columns else None
                             la_pt = pt_group['launch_angle'] if 'launch_angle' in pt_group.columns else None
                             spray_pt = pt_group['spray_angle'] if 'spray_angle' in pt_group.columns else None
@@ -322,6 +327,7 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
                                 out_row[f"{key}{feat}_{w}"] = np.nan
         except Exception as e:
             error_groups.append((name, str(e)))
+            # Mark all outputs for this group as NaN to keep shape
             for w in windows:
                 for feat in [
                     "avg_exit_velo", "hard_hit_rate", "fb_rate", "sweet_spot_rate", "spray_angle_avg", "spray_angle_std",
@@ -334,35 +340,6 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
     if error_groups:
         st.warning(f"Fast rolling: {len(error_groups)} group(s) could not be aggregated due to missing or non-numeric data. Group(s): {[g[0] for g in error_groups][:10]}")
     return pd.DataFrame(results)
-
-# =========== BATTED BALL PROFILE (SEASON-TO-DATE) =============
-def compute_batter_pitcher_profiles(df):
-    # Define stat columns to aggregate
-    profile_cols = [
-        "gb_rate", "air_rate", "fb_rate", "ld_rate", "pu_rate", "pull_rate", "straight_rate", "oppo_rate",
-        "pull_gb_rate", "straight_gb_rate", "oppo_gb_rate",
-        "pull_air_rate", "straight_air_rate", "oppo_air_rate"
-    ]
-    # Calculate for batter
-    batter_prof = df.groupby("batter_id").agg({
-        "gb_rate": "mean", "air_rate": "mean", "fb_rate": "mean", "ld_rate": "mean", "pu_rate": "mean",
-        "pull_rate": "mean", "straight_rate": "mean", "oppo_rate": "mean",
-        "pull_gb_rate": "mean", "straight_gb_rate": "mean", "oppo_gb_rate": "mean",
-        "pull_air_rate": "mean", "straight_air_rate": "mean", "oppo_air_rate": "mean"
-    }).reset_index()
-    # Calculate for pitcher
-    pitcher_prof = df.groupby("pitcher_id").agg({
-        "gb_rate": "mean", "air_rate": "mean", "fb_rate": "mean", "ld_rate": "mean", "pu_rate": "mean",
-        "pull_rate": "mean", "straight_rate": "mean", "oppo_rate": "mean",
-        "pull_gb_rate": "mean", "straight_gb_rate": "mean", "oppo_gb_rate": "mean",
-        "pull_air_rate": "mean", "straight_air_rate": "mean", "oppo_air_rate": "mean"
-    }).reset_index()
-    # Rename columns for clarity
-    batter_prof = batter_prof.add_prefix("bb_")
-    batter_prof = batter_prof.rename(columns={"bb_batter_id": "batter_id"})
-    pitcher_prof = pitcher_prof.add_prefix("bb_")
-    pitcher_prof = pitcher_prof.rename(columns={"bb_pitcher_id": "pitcher_id"})
-    return batter_prof, pitcher_prof
 
 # ==================== STREAMLIT APP MAIN ====================
 st.set_page_config("MLB HR Analyzer", layout="wide")
@@ -509,16 +486,6 @@ if fetch_btn:
         st.error(f"Rolling HR error in pitcher_hr_rolling: {e}")
         st.stop()
 
-    # ========== BATTED BALL PROFILE (SEASON-TO-DATE) ==============
-    st.subheader("Diagnostics: Batted Ball Profile Aggregation")
-    try:
-        batter_bb_profile, pitcher_bb_profile = compute_batter_pitcher_profiles(df)
-        st.success(f"Batted Ball Profiles computed for {batter_bb_profile.shape[0]} batters and {pitcher_bb_profile.shape[0]} pitchers.")
-    except Exception as e:
-        st.error(f"Error in computing batted ball profiles: {e}")
-        batter_bb_profile = pd.DataFrame()
-        pitcher_bb_profile = pd.DataFrame()
-
     # ========== ADVANCED MERGING WITH DIAGNOSTICS ==========
     st.subheader("Diagnostics: Feature Merge")
 
@@ -563,11 +530,6 @@ if fetch_btn:
         df = pd.merge(df, pitcher_merged.reset_index(drop=True), how="left", left_on="pitcher_id", right_on="batter_id", suffixes=('', '_pitcherstat'))
         if 'batter_id_pitcherstat' in df.columns:
             df = df.drop(columns=['batter_id_pitcherstat'])
-        # NEW: Merge batted ball profile for batter and pitcher
-        if not batter_bb_profile.empty:
-            df = pd.merge(df, batter_bb_profile, how="left", on="batter_id")
-        if not pitcher_bb_profile.empty:
-            df = pd.merge(df, pitcher_bb_profile, how="left", left_on="pitcher_id", right_on="pitcher_id", suffixes=('', '_pitcherbb'))
         df = dedup_columns(df)
         st.write(f"Post batter+pitcher merge event df: {df.shape[0]} rows, {df.shape[1]} columns")
     except Exception as e:
@@ -676,8 +638,4 @@ if fetch_btn:
 
     # ---- RAM Cleanup ----
     del df, batter_event, pitcher_event, batter_merged, pitcher_merged, batter_hr_rolling, pitcher_hr_rolling
-    if 'batter_bb_profile' in locals():
-        del batter_bb_profile
-    if 'pitcher_bb_profile' in locals():
-        del pitcher_bb_profile
     gc.collect()
