@@ -117,13 +117,12 @@ park_hr_percent_map_lhp = {
     'PHI': 1.16, 'PIT': 0.78, 'SD': 1.02, 'SEA': 0.97, 'SF': 0.82, 'STL': 0.96, 'TB': 0.94, 'TEX': 1.01, 'TOR': 1.06,
     'WAS': 0.90, 'WSH': 0.90
 }
+
 # =================== UTILITY FUNCTIONS ===================
 def dedup_columns(df):
-    """Remove duplicate columns after merging."""
     return df.loc[:, ~df.columns.duplicated()]
 
 def downcast_numeric(df):
-    """Downcast numeric columns to save memory."""
     for col in df.select_dtypes(include=['float']):
         df[col] = pd.to_numeric(df[col], downcast='float')
     for col in df.select_dtypes(include=['int']):
@@ -211,7 +210,7 @@ def rolling_features_hr(df, id_col, date_col, windows, group_batter=True):
             records.append(row)
     return pd.DataFrame(records)
 
-# =========== ROLLING BATTED BALL PROFILE FEATURES (NEW UPGRADE) ===========
+# =========== ROLLING BATTED BALL PROFILE FEATURES (unchanged) ===========
 def rolling_batted_ball_profiles(df, id_col, date_col, windows, prefix="b_"):
     profile_cols = [
         'gb_rate','air_rate','fb_rate','ld_rate','pu_rate',
@@ -233,7 +232,7 @@ def rolling_batted_ball_profiles(df, id_col, date_col, windows, prefix="b_"):
             results.append(row)
     return pd.DataFrame(results)
 
-# ============= FAST ROLLING STATS (BATTER/PITCHER, PITCH TYPE) =============
+# ============= FAST ROLLING STATS (unchanged) =============
 @st.cache_data(show_spinner=True, max_entries=8, ttl=7200)
 def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix=""):
     df = df.copy()
@@ -305,7 +304,6 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
                     out_row[f"{prefix}slg_{w}"] = slg.rolling(w, min_periods=1).mean().iloc[-1]
                 else:
                     out_row[f"{prefix}slg_{w}"] = np.nan
-            # Pitch type splits...
             if pitch_types is not None and "pitch_type" in group.columns:
                 for pt in pitch_types:
                     pt_group = group[group['pitch_type'] == pt]
@@ -358,6 +356,48 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
     if error_groups:
         st.warning(f"Fast rolling: {len(error_groups)} group(s) could not be aggregated due to missing or non-numeric data. Group(s): {[g[0] for g in error_groups][:10]}")
     return pd.DataFrame(results)
+
+# =========== NEW: ROLLING HOMER STREAK (consecutive games with HR) ===========
+def rolling_homer_streak(df, id_col, date_col, outcome_col="hr_outcome"):
+    streaks = []
+    for key, group in df.groupby(id_col):
+        group = group.sort_values(date_col)
+        streak = 0
+        out = []
+        for val in group[outcome_col]:
+            if val == 1:
+                streak += 1
+            else:
+                streak = 0
+            out.append(streak)
+        subdf = group[[id_col, date_col]].copy()
+        subdf['rolling_homer_streak'] = out
+        streaks.append(subdf)
+    return pd.concat(streaks, ignore_index=True)
+
+# =========== NEW: ROLLING HR VS LHP/RHP ===========
+def rolling_hr_vs_hand(df, id_col, date_col, hand_col, outcome_col="hr_outcome", windows=(3,5,7,14,20,30,60)):
+    records = []
+    for key, group in df.groupby(id_col):
+        group = group.sort_values(date_col)
+        for hand in ['L', 'R']:
+            filt = group[hand_col].str.upper() == hand
+            sub = group[filt]
+            if sub.empty:
+                continue
+            for w in windows:
+                roll_hr = sub[outcome_col].rolling(w, min_periods=1).sum().iloc[-1]
+                roll_pa = sub[outcome_col].rolling(w, min_periods=1).count().iloc[-1]
+                pa_per_hr = roll_pa / roll_hr if roll_hr > 0 else np.nan
+                hr_per_pa = roll_hr / roll_pa if roll_pa > 0 else 0
+                records.append({
+                    id_col: key,
+                    f'b_rolling_hr_{hand}_{w}': roll_hr,
+                    f'b_rolling_pa_{hand}_{w}': roll_pa,
+                    f'b_pa_per_hr_{hand}_{w}': pa_per_hr,
+                    f'b_hr_per_pa_{hand}_{w}': hr_per_pa
+                })
+    return pd.DataFrame(records)
 
 # ==================== STREAMLIT APP MAIN ====================
 st.set_page_config("MLB HR Analyzer", layout="wide")
@@ -576,6 +616,20 @@ if fetch_btn:
         st.error(f"Error merging event-level features: {e}")
         st.stop()
 
+    # ====== NEW: Add rolling_homer_streak column ======
+    try:
+        streak_df = rolling_homer_streak(df, "batter_id", "game_date", "hr_outcome")
+        df = pd.merge(df, streak_df, how="left", on=["batter_id", "game_date"])
+    except Exception as e:
+        st.warning(f"Failed to compute rolling homer streaks: {e}")
+
+    # ====== NEW: Add rolling HR vs LHP/RHP columns ======
+    try:
+        hand_hr_df = rolling_hr_vs_hand(df, "batter_id", "game_date", "pitcher_hand", "hr_outcome", roll_windows)
+        df = pd.merge(df, hand_hr_df, how="left", on="batter_id")
+    except Exception as e:
+        st.warning(f"Failed to compute rolling HR vs LHP/RHP: {e}")
+
     # ====== Add park_hand_hr_rate to event-level ======
     if 'stand' in df.columns and 'park' in df.columns:
         df['park_hand_hr_rate'] = [
@@ -649,6 +703,14 @@ if fetch_btn:
     # ====== DOWNCAST NUMERICS FOR RAM OPTIMIZATION ======
     df = downcast_numeric(df)
     progress.progress(80, "Event-level feature engineering/merges complete.")
+
+    # =============== DROP ALL-EMPTY (NaN) COLUMNS ==============
+    # This will drop any column where every value is NaN or blank
+    df = df.dropna(axis=1, how='all')
+    # Also drop columns that are all empty string or whitespace
+    all_empty_cols = [c for c in df.columns if (df[c].astype(str).str.strip() == '').all()]
+    if all_empty_cols:
+        df = df.drop(columns=all_empty_cols)
 
     # =================== DIAGNOSTICS: event-level output preview ===================
     st.subheader("Diagnostics: Final Event-level DataFrame Preview")
