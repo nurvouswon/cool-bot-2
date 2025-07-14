@@ -428,7 +428,30 @@ if fetch_btn:
     if 'pitch_type' in df.columns:
         df['pitch_type'] = df['pitch_type'].astype(str).str.lower()
     progress.progress(12, "Loaded and formatted Statcast columns.")
+    # 1. Downcast numeric columns to save RAM/CPU for groupby/rolling
+    for col in df.select_dtypes(include=['float64', 'int64']):
+       df[col] = pd.to_numeric(df[col], downcast='float' if 'float' in str(df[col].dtype) else 'integer')
 
+    # 2. Convert heavy string/object columns to categorical
+    for col in ['batter_id', 'pitcher_id', 'events']:
+        if col in df.columns and df[col].dtype == object:
+            df[col] = df[col].astype('category')
+
+    # 3. Drop clearly empty columns (all NaN)
+    df = df.dropna(axis=1, how='all')
+
+    # 4. Filter batters/pitchers with at least MIN_EVENTS events for rolling windows
+    MIN_EVENTS = 3  # You can bump this to 5 or 7 if you want even tighter windows
+
+    if 'batter_id' in df.columns:
+        valid_batters = df['batter_id'].value_counts()
+        valid_batters = valid_batters[valid_batters >= MIN_EVENTS].index
+        df = df[df['batter_id'].isin(valid_batters)]
+
+    if 'pitcher_id' in df.columns:
+        valid_pitchers = df['pitcher_id'].value_counts()
+        valid_pitchers = valid_pitchers[valid_pitchers >= MIN_EVENTS].index
+        df = df[df['pitcher_id'].isin(valid_pitchers)]
     # =================== STATCAST EVENT-LEVEL ENGINEERING ===================
     progress.progress(18, "Adding park/city/context and cleaning Statcast event data...")
 
@@ -436,9 +459,6 @@ if fetch_btn:
         if col in df.columns:
             df[col] = df[col].astype(str).str.replace('.0','',regex=False).str.strip()
 
-    # ---- Insert your context maps/dictionaries here ----
-
-    # Map park/city/context using your provided context maps
     if 'home_team_code' in df.columns:
         df['team_code'] = df['home_team_code'].str.upper()
         df['park'] = df['home_team_code'].str.lower().str.replace(' ', '_')
