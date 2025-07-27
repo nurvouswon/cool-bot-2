@@ -2,18 +2,16 @@ import snowflake.connector
 from snowflake.connector.pandas_tools import write_pandas
 import pandas as pd
 
-# Snowflake connection (replace with your info securely)
+# ----------------- Snowflake Connection -----------------
 conn = snowflake.connector.connect(
-    user='<YOUR_USER>',
-    password='<YOUR_PASSWORD>',
-    account='<YOUR_ACCOUNT>',  # e.g. xy12345.us-east-1
-    warehouse='<YOUR_WAREHOUSE>',
-    database='<YOUR_DATABASE>',
-    schema='<YOUR_SCHEMA>',
-    role='<YOUR_ROLE>'
+    user=st.secrets["snowflake"]["user"],
+    password=st.secrets["snowflake"]["password"],
+    account=st.secrets["snowflake"]["account"],
+    warehouse=st.secrets["snowflake"]["warehouse"],
+    database=st.secrets["snowflake"]["database"],
+    schema=st.secrets["snowflake"]["schema"]
 )
-
-cur = conn.cursor()
+cursor = conn.cursor()
 
 # === All your maps ===
 park_hr_rate_map = {
