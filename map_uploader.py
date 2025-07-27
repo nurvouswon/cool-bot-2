@@ -233,6 +233,8 @@ create_table_sqls = {
 def create_and_upload(table_name, df):
     print(f"Creating table {table_name}...")
     cur.execute(create_table_sqls[table_name])
+    conn.commit()   # <--- Add this line here!
+    
     print(f"Uploading data to {table_name} ({len(df)} rows)...")
     success, nchunks, nrows, _ = write_pandas(conn, df, table_name)
     print(f"Inserted {nrows} rows into {table_name}.\n")
