@@ -12,7 +12,7 @@ conn = snowflake.connector.connect(
     database=st.secrets["snowflake"]["database"],
     schema=st.secrets["snowflake"]["schema"]
 )
-cursor = conn.cursor()
+cur = conn.cursor()
 
 # === All your maps ===
 park_hr_rate_map = {
