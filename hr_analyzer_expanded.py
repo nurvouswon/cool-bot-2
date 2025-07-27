@@ -50,7 +50,7 @@ mlb_team_city_map = {
     'CHC': 'Chicago', 'CIN': 'Cincinnati', 'CLE': 'Cleveland', 'COL': 'Denver', 'CWS': 'Chicago',
     'CHW': 'Chicago', 'DET': 'Detroit', 'HOU': 'Houston', 'KC': 'Kansas City', 'LAA': 'Anaheim',
     'LAD': 'Los Angeles', 'MIA': 'Miami', 'MIL': 'Milwaukee', 'MIN': 'Minneapolis', 'NYM': 'New York',
-    'NYY': 'New York', 'OAK': 'Oakland', 'ATH': 'Oakland', 'PHI': 'Philadelphia', 'PIT': 'Pittsburgh',
+    'NYY': 'New York', 'OAK': 'West Sacramento', 'ATH': 'West Sacramento', 'PHI': 'Philadelphia', 'PIT': 'Pittsburgh',
     'SD': 'San Diego', 'SEA': 'Seattle', 'SF': 'San Francisco', 'STL': 'St. Louis', 'TB': 'St. Petersburg',
     'TEX': 'Arlington', 'TOR': 'Toronto', 'WSH': 'Washington', 'WAS': 'Washington'
 }
@@ -117,13 +117,12 @@ park_hr_percent_map_lhp = {
     'PHI': 1.16, 'PIT': 0.78, 'SD': 1.02, 'SEA': 0.97, 'SF': 0.82, 'STL': 0.96, 'TB': 0.94, 'TEX': 1.01, 'TOR': 1.06,
     'WAS': 0.90, 'WSH': 0.90
 }
+
 # =================== UTILITY FUNCTIONS ===================
 def dedup_columns(df):
-    """Remove duplicate columns after merging."""
     return df.loc[:, ~df.columns.duplicated()]
 
 def downcast_numeric(df):
-    """Downcast numeric columns to save memory."""
     for col in df.select_dtypes(include=['float']):
         df[col] = pd.to_numeric(df[col], downcast='float')
     for col in df.select_dtypes(include=['int']):
@@ -211,14 +210,35 @@ def rolling_features_hr(df, id_col, date_col, windows, group_batter=True):
             records.append(row)
     return pd.DataFrame(records)
 
-# ============= FAST ROLLING STATS (BATTER/PITCHER, PITCH TYPE) =============
+# =========== ROLLING BATTED BALL PROFILE FEATURES (unchanged) ===========
+def rolling_batted_ball_profiles(df, id_col, date_col, windows, prefix="b_"):
+    profile_cols = [
+        'gb_rate','air_rate','fb_rate','ld_rate','pu_rate',
+        'pull_rate','straight_rate','oppo_rate',
+        'pull_gb_rate','straight_gb_rate','oppo_gb_rate',
+        'pull_air_rate','straight_air_rate','oppo_air_rate'
+    ]
+    for col in profile_cols:
+        if col not in df.columns:
+            df[col] = np.nan
+    results = []
+    for name, group in df.groupby(id_col, sort=False):
+        group = group.sort_values(date_col)
+        for w in windows:
+            row = {id_col: name}
+            for col in profile_cols:
+                windowed = group[col].rolling(w, min_periods=1).mean()
+                row[f"{prefix}{col}_{w}"] = windowed.iloc[-1] if not windowed.empty else np.nan
+            results.append(row)
+    return pd.DataFrame(results)
+
+# ============= FAST ROLLING STATS (unchanged) =============
 @st.cache_data(show_spinner=True, max_entries=8, ttl=7200)
 def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix=""):
     df = df.copy()
     if id_col in df.columns and date_col in df.columns:
         df = df.drop_duplicates(subset=[id_col, date_col], keep='last')
         df = df.sort_values([id_col, date_col])
-    # ----------- COERCE/CREATE NUMERIC COLUMNS WITH ERROR HANDLING -----------
     num_cols = ['launch_speed', 'launch_angle', 'hc_x', 'hc_y', 'hit_distance_sc', 'slg_numeric']
     for col in num_cols:
         if col in df.columns:
@@ -230,7 +250,6 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
     if 'hc_x' in df.columns and 'hc_y' in df.columns:
         df['pull'] = ((df['hc_x'] > 200) & (df['hc_x'] < 300)).astype(float)
         df['spray_angle'] = [calculate_spray_angle(x, y) for x, y in zip(df['hc_x'], df['hc_y'])]
-    # -------- Pitch type column to lower for matching --------
     if 'pitch_type' in df.columns:
         df['pitch_type'] = df['pitch_type'].astype(str).str.lower()
     results = []
@@ -285,14 +304,12 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
                     out_row[f"{prefix}slg_{w}"] = slg.rolling(w, min_periods=1).mean().iloc[-1]
                 else:
                     out_row[f"{prefix}slg_{w}"] = np.nan
-            # Pitch type splits
             if pitch_types is not None and "pitch_type" in group.columns:
                 for pt in pitch_types:
                     pt_group = group[group['pitch_type'] == pt]
                     for w in windows:
                         key = f"{prefix}{pt}_"
                         if not pt_group.empty:
-                            # Apply same dtype check as above
                             ls_pt = pt_group['launch_speed'] if 'launch_speed' in pt_group.columns else None
                             la_pt = pt_group['launch_angle'] if 'launch_angle' in pt_group.columns else None
                             spray_pt = pt_group['spray_angle'] if 'spray_angle' in pt_group.columns else None
@@ -327,7 +344,6 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
                                 out_row[f"{key}{feat}_{w}"] = np.nan
         except Exception as e:
             error_groups.append((name, str(e)))
-            # Mark all outputs for this group as NaN to keep shape
             for w in windows:
                 for feat in [
                     "avg_exit_velo", "hard_hit_rate", "fb_rate", "sweet_spot_rate", "spray_angle_avg", "spray_angle_std",
@@ -340,6 +356,48 @@ def fast_rolling_stats(df, id_col, date_col, windows, pitch_types=None, prefix="
     if error_groups:
         st.warning(f"Fast rolling: {len(error_groups)} group(s) could not be aggregated due to missing or non-numeric data. Group(s): {[g[0] for g in error_groups][:10]}")
     return pd.DataFrame(results)
+
+# =========== NEW: ROLLING HOMER STREAK (consecutive games with HR) ===========
+def rolling_homer_streak(df, id_col, date_col, outcome_col="hr_outcome"):
+    streaks = []
+    for key, group in df.groupby(id_col):
+        group = group.sort_values(date_col)
+        streak = 0
+        out = []
+        for val in group[outcome_col]:
+            if val == 1:
+                streak += 1
+            else:
+                streak = 0
+            out.append(streak)
+        subdf = group[[id_col, date_col]].copy()
+        subdf['rolling_homer_streak'] = out
+        streaks.append(subdf)
+    return pd.concat(streaks, ignore_index=True)
+
+# =========== NEW: ROLLING HR VS LHP/RHP ===========
+def rolling_hr_vs_hand(df, id_col, date_col, hand_col, outcome_col="hr_outcome", windows=(3,5,7,14,20,30,60)):
+    records = []
+    for key, group in df.groupby(id_col):
+        group = group.sort_values(date_col)
+        for hand in ['L', 'R']:
+            filt = group[hand_col].str.upper() == hand
+            sub = group[filt]
+            if sub.empty:
+                continue
+            for w in windows:
+                roll_hr = sub[outcome_col].rolling(w, min_periods=1).sum().iloc[-1]
+                roll_pa = sub[outcome_col].rolling(w, min_periods=1).count().iloc[-1]
+                pa_per_hr = roll_pa / roll_hr if roll_hr > 0 else np.nan
+                hr_per_pa = roll_hr / roll_pa if roll_pa > 0 else 0
+                records.append({
+                    id_col: key,
+                    f'b_rolling_hr_{hand}_{w}': roll_hr,
+                    f'b_rolling_pa_{hand}_{w}': roll_pa,
+                    f'b_pa_per_hr_{hand}_{w}': pa_per_hr,
+                    f'b_hr_per_pa_{hand}_{w}': hr_per_pa
+                })
+    return pd.DataFrame(records)
 
 # ==================== STREAMLIT APP MAIN ====================
 st.set_page_config("MLB HR Analyzer", layout="wide")
@@ -370,7 +428,30 @@ if fetch_btn:
     if 'pitch_type' in df.columns:
         df['pitch_type'] = df['pitch_type'].astype(str).str.lower()
     progress.progress(12, "Loaded and formatted Statcast columns.")
+    # 1. Downcast numeric columns to save RAM/CPU for groupby/rolling
+    for col in df.select_dtypes(include=['float64', 'int64']):
+       df[col] = pd.to_numeric(df[col], downcast='float' if 'float' in str(df[col].dtype) else 'integer')
 
+    # 2. Convert heavy string/object columns to categorical
+    for col in ['batter_id', 'pitcher_id', 'events']:
+        if col in df.columns and df[col].dtype == object:
+            df[col] = df[col].astype('category')
+
+    # 3. Drop clearly empty columns (all NaN)
+    df = df.dropna(axis=1, how='all')
+
+    # 4. Filter batters/pitchers with at least MIN_EVENTS events for rolling windows
+    MIN_EVENTS = 3  # You can bump this to 5 or 7 if you want even tighter windows
+
+    if 'batter_id' in df.columns:
+        valid_batters = df['batter_id'].value_counts()
+        valid_batters = valid_batters[valid_batters >= MIN_EVENTS].index
+        df = df[df['batter_id'].isin(valid_batters)]
+
+    if 'pitcher_id' in df.columns:
+        valid_pitchers = df['pitcher_id'].value_counts()
+        valid_pitchers = valid_pitchers[valid_pitchers >= MIN_EVENTS].index
+        df = df[df['pitcher_id'].isin(valid_pitchers)]
     # =================== STATCAST EVENT-LEVEL ENGINEERING ===================
     progress.progress(18, "Adding park/city/context and cleaning Statcast event data...")
 
@@ -378,10 +459,6 @@ if fetch_btn:
         if col in df.columns:
             df[col] = df[col].astype(str).str.replace('.0','',regex=False).str.strip()
 
-    # ---- YOU: Insert your context maps/dictionaries here ----
-    # Example: team_code_to_park = {...} etc.
-
-    # Map park/city/context using your provided context maps
     if 'home_team_code' in df.columns:
         df['team_code'] = df['home_team_code'].str.upper()
         df['park'] = df['home_team_code'].str.lower().str.replace(' ', '_')
@@ -449,6 +526,27 @@ if fetch_btn:
         if col in df.columns:
             df['pitcher_id'] = df[col]
 
+    # ===================== BATTED BALL PROFILE ROLLING =====================
+    st.subheader("Diagnostics: Batter Batted Ball Profile Rolling")
+    try:
+        batter_bb_profile = rolling_batted_ball_profiles(df, "batter_id", "game_date", roll_windows, prefix="b_")
+        st.success(f"Batted Ball Profile: Successfully processed {batter_bb_profile.shape[0]} batters.")
+    except Exception as e:
+        st.error(f"Rolling batted ball profile error in batter: {e}")
+        st.stop()
+
+    st.subheader("Diagnostics: Pitcher Batted Ball Profile Rolling")
+    try:
+        df_for_pitchers = df.copy()
+        if 'batter_id' in df_for_pitchers.columns:
+            df_for_pitchers = df_for_pitchers.drop(columns=['batter_id'])
+        df_for_pitchers = df_for_pitchers.rename(columns={"pitcher_id": "batter_id"})
+        pitcher_bb_profile = rolling_batted_ball_profiles(df_for_pitchers, "batter_id", "game_date", roll_windows, prefix="p_")
+        st.success(f"Batted Ball Profile: Successfully processed {pitcher_bb_profile.shape[0]} pitchers.")
+    except Exception as e:
+        st.error(f"Rolling batted ball profile error in pitcher: {e}")
+        st.stop()
+
     # =========== ROLLING STATS & DEBUG DIAGNOSTICS ===========
     st.subheader("Diagnostics: Batter Fast Rolling Feature Errors")
     try:
@@ -468,11 +566,11 @@ if fetch_btn:
 
     st.subheader("Diagnostics: Pitcher Fast Rolling Feature Errors")
     try:
-        df_for_pitchers = df.copy()
-        if 'batter_id' in df_for_pitchers.columns:
-            df_for_pitchers = df_for_pitchers.drop(columns=['batter_id'])
-        df_for_pitchers = df_for_pitchers.rename(columns={"pitcher_id": "batter_id"})
-        pitcher_event = fast_rolling_stats(df_for_pitchers, "batter_id", "game_date", roll_windows, main_pitch_types, prefix="p_")
+        df_for_pitchers_event = df.copy()
+        if 'batter_id' in df_for_pitchers_event.columns:
+            df_for_pitchers_event = df_for_pitchers_event.drop(columns=['batter_id'])
+        df_for_pitchers_event = df_for_pitchers_event.rename(columns={"pitcher_id": "batter_id"})
+        pitcher_event = fast_rolling_stats(df_for_pitchers_event, "batter_id", "game_date", roll_windows, main_pitch_types, prefix="p_")
         st.success(f"Fast Rolling: Successfully processed {pitcher_event.shape[0]} groups with no errors.")
     except Exception as e:
         st.error(f"Fast Rolling error in pitcher_event: {e}")
@@ -490,11 +588,12 @@ if fetch_btn:
     st.subheader("Diagnostics: Feature Merge")
 
     try:
-        st.write("Merging batter rolling and event features...")
-        if not batter_event.empty and not batter_hr_rolling.empty:
-            batter_merged = pd.merge(batter_event, batter_hr_rolling, how="left", on="batter_id")
-        else:
-            batter_merged = batter_event
+        st.write("Merging batter rolling, event, and batted ball profile features...")
+        batter_merged = batter_event
+        if not batter_hr_rolling.empty:
+            batter_merged = pd.merge(batter_merged, batter_hr_rolling, how="left", on="batter_id")
+        if not batter_bb_profile.empty:
+            batter_merged = pd.merge(batter_merged, batter_bb_profile, how="left", on="batter_id")
         before = batter_merged.shape[0]
         batter_merged = batter_merged.drop_duplicates(subset=["batter_id"])
         after = batter_merged.shape[0]
@@ -507,12 +606,13 @@ if fetch_btn:
         st.stop()
 
     try:
-        st.write("Merging pitcher rolling and event features...")
-        if not pitcher_event.empty and not pitcher_hr_rolling.empty:
-            pitcher_merged = pd.merge(pitcher_event, pitcher_hr_rolling, how="left", left_on="batter_id", right_on="pitcher_id")
+        st.write("Merging pitcher rolling, event, and batted ball profile features...")
+        pitcher_merged = pitcher_event
+        if not pitcher_hr_rolling.empty:
+            pitcher_merged = pd.merge(pitcher_merged, pitcher_hr_rolling, how="left", left_on="batter_id", right_on="pitcher_id")
             pitcher_merged = pitcher_merged.drop(columns=["pitcher_id"], errors='ignore')
-        else:
-            pitcher_merged = pitcher_event
+        if not pitcher_bb_profile.empty:
+            pitcher_merged = pd.merge(pitcher_merged, pitcher_bb_profile, how="left", on="batter_id")
         before = pitcher_merged.shape[0]
         pitcher_merged = pitcher_merged.drop_duplicates(subset=["batter_id"])
         after = pitcher_merged.shape[0]
@@ -535,6 +635,20 @@ if fetch_btn:
     except Exception as e:
         st.error(f"Error merging event-level features: {e}")
         st.stop()
+
+    # ====== NEW: Add rolling_homer_streak column ======
+    try:
+        streak_df = rolling_homer_streak(df, "batter_id", "game_date", "hr_outcome")
+        df = pd.merge(df, streak_df, how="left", on=["batter_id", "game_date"])
+    except Exception as e:
+        st.warning(f"Failed to compute rolling homer streaks: {e}")
+
+    # ====== NEW: Add rolling HR vs LHP/RHP columns ======
+    try:
+        hand_hr_df = rolling_hr_vs_hand(df, "batter_id", "game_date", "pitcher_hand", "hr_outcome", roll_windows)
+        df = pd.merge(df, hand_hr_df, how="left", on="batter_id")
+    except Exception as e:
+        st.warning(f"Failed to compute rolling HR vs LHP/RHP: {e}")
 
     # ====== Add park_hand_hr_rate to event-level ======
     if 'stand' in df.columns and 'park' in df.columns:
@@ -610,6 +724,14 @@ if fetch_btn:
     df = downcast_numeric(df)
     progress.progress(80, "Event-level feature engineering/merges complete.")
 
+    # =============== DROP ALL-EMPTY (NaN) COLUMNS ==============
+    # This will drop any column where every value is NaN or blank
+    df = df.dropna(axis=1, how='all')
+    # Also drop columns that are all empty string or whitespace
+    all_empty_cols = [c for c in df.columns if (df[c].astype(str).str.strip() == '').all()]
+    if all_empty_cols:
+        df = df.drop(columns=all_empty_cols)
+
     # =================== DIAGNOSTICS: event-level output preview ===================
     st.subheader("Diagnostics: Final Event-level DataFrame Preview")
     st.write("Event-level dataframe sample:", df.head(20))
@@ -637,5 +759,7 @@ if fetch_btn:
     progress.progress(100, "All complete.")
 
     # ---- RAM Cleanup ----
-    del df, batter_event, pitcher_event, batter_merged, pitcher_merged, batter_hr_rolling, pitcher_hr_rolling
-    gc.collect()
+    del df, batter_event, pitcher_event, batter_merged, pitcher_merged
+    del batter_hr_rolling, pitcher_hr_rolling
+    del batter_bb_profile, pitcher_bb_profile
+    gc.collect() 
