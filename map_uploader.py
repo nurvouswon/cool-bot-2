@@ -258,8 +258,15 @@ tables_and_dfs = [
 def create_and_upload(table_name, df):
     print(f"Creating table {table_name}...")
     cur.execute(CREATE_TABLE_STATEMENTS[table_name])
-    conn.commit()  # important to commit the create table before loading data
+    conn.commit()
     
+    cur.execute(f"SHOW TABLES LIKE '{table_name}' IN SCHEMA {schema_name}")
+    tables = cur.fetchall()
+    if not tables:
+        raise Exception(f"Table {schema_name}.{table_name} was not created successfully!")
+    else:
+        print(f"Table found: {tables}")
+
     full_table_name = f'{schema_name}.{table_name}'
     print(f"Uploading data to {full_table_name} ({len(df)} rows)...")
     
@@ -268,6 +275,7 @@ def create_and_upload(table_name, df):
         print(f"Inserted {nrows} rows into {full_table_name}.\n")
     else:
         print(f"Failed to insert rows into {full_table_name}.\n")
+
 
 # Run uploads
 for table, data in tables_and_dfs:
