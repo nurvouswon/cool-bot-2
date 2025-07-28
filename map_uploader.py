@@ -253,6 +253,9 @@ def create_and_upload(table_name, df):
     cur.execute(CREATE_TABLE_STATEMENTS[table_name])
     conn.commit()
     
+    # Rename dataframe columns to uppercase to match Snowflake column names
+    df.columns = [col.upper() for col in df.columns]
+    
     print(f"Uploading data to {table_name} ({len(df)} rows) ...")
     success, nchunks, nrows, _ = write_pandas(conn, df, table_name)
     
